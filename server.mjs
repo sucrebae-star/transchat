@@ -178,14 +178,45 @@ function mergeStates(previousState, nextState) {
     return sanitizeSharedState(nextState);
   }
 
+  const deletedUsers = mergeDeletedUsers(previousState.deletedUsers || {}, nextState.deletedUsers || {});
+  const deletedRooms = mergeDeletedRooms(previousState.deletedRooms || {}, nextState.deletedRooms || {});
+
   return sanitizeSharedState({
     ...previousState,
     ...nextState,
+    deletedUsers,
+    deletedRooms,
     users: mergeUsers(previousState.users || [], nextState.users || []),
     invites: mergeInvites(previousState.invites || [], nextState.invites || []),
-    rooms: mergeRooms(previousState.rooms || [], nextState.rooms || []),
+    rooms: mergeRooms(previousState.rooms || [], nextState.rooms || [], deletedRooms),
     updatedAt: Number(nextState.updatedAt || Date.now()),
   });
+}
+
+function mergeDeletedUsers(previousDeletedUsers, nextDeletedUsers) {
+  const merged = {
+    ...(previousDeletedUsers || {}),
+  };
+
+  Object.entries(nextDeletedUsers || {}).forEach(([userId, deletedAt]) => {
+    if (!String(userId || "").trim()) return;
+    merged[userId] = Math.max(Number(merged[userId] || 0), Number(deletedAt || Date.now()));
+  });
+
+  return merged;
+}
+
+function mergeDeletedRooms(previousDeletedRooms, nextDeletedRooms) {
+  const merged = {
+    ...(previousDeletedRooms || {}),
+  };
+
+  Object.entries(nextDeletedRooms || {}).forEach(([roomId, deletedAt]) => {
+    if (!String(roomId || "").trim()) return;
+    merged[roomId] = Math.max(Number(merged[roomId] || 0), Number(deletedAt || Date.now()));
+  });
+
+  return merged;
 }
 
 function mergeUsers(previousUsers, nextUsers) {
@@ -224,12 +255,15 @@ function mergeInvites(previousInvites, nextInvites) {
   });
 }
 
-function mergeRooms(previousRooms, nextRooms) {
+function mergeRooms(previousRooms, nextRooms, deletedRooms = {}) {
   const previousById = new Map(previousRooms.map((room) => [room.id, room]));
   const nextById = new Map(nextRooms.map((room) => [room.id, room]));
+  const deletedRoomIds = new Set(Object.keys(deletedRooms || {}));
   const mergedIds = new Set([...previousById.keys(), ...nextById.keys()]);
 
-  return [...mergedIds].map((id) => {
+  return [...mergedIds]
+    .filter((id) => !deletedRoomIds.has(id))
+    .map((id) => {
     const previous = previousById.get(id);
     const next = nextById.get(id);
     if (!previous) return next;
@@ -251,7 +285,7 @@ function mergeRooms(previousRooms, nextRooms) {
       createdAt: Math.min(Number(previous.createdAt || Date.now()), Number(next.createdAt || Date.now())),
       expiredAt: next.expiredAt || previous.expiredAt || null,
     };
-  });
+    });
 }
 
 function mergeMessages(previousMessages, nextMessages) {
@@ -568,19 +602,25 @@ function sanitizeSharedState(state) {
     return null;
   }
 
-  const users = (state.users || []).filter((user) => !isDemoUser(user));
+  const deletedUsers = sanitizeDeletedUsers(state.deletedUsers);
+  const deletedUserIds = new Set(Object.keys(deletedUsers));
+  const deletedRooms = sanitizeDeletedRooms(state.deletedRooms);
+  const deletedRoomIds = new Set(Object.keys(deletedRooms));
+
+  const users = (state.users || []).filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user));
   const userIds = new Set(users.map((user) => user.id));
 
   const rooms = (state.rooms || [])
-    .filter((room) => !isDemoRoom(room) && !shouldDiscardRoom(room))
+    .filter((room) => !deletedRoomIds.has(room.id) && !isDemoRoom(room) && !shouldDiscardRoom(room))
     .map((room) => {
       const persistent = isPersistentRoom(room);
+      const participants = deriveRoomParticipantIds(room, users);
       return {
         ...room,
         disableExpiration: persistent,
         status: persistent && room.status === "expired" ? "active" : room.status,
         expiredAt: persistent ? null : room.expiredAt || null,
-        participants: (room.participants || []).filter((participantId) => userIds.has(participantId)),
+        participants,
         accessByUser: filterRecordByAllowedKeys(room.accessByUser, userIds),
         unreadByUser: filterRecordByAllowedKeys(room.unreadByUser, userIds),
       };
@@ -589,6 +629,8 @@ function sanitizeSharedState(state) {
 
   return {
     ...state,
+    deletedUsers,
+    deletedRooms,
     updatedAt: Number(state.updatedAt || Date.now()),
     users: users.map((user) => ({
       ...user,
@@ -631,6 +673,33 @@ function normalizeRoomTitle(title) {
 
 function filterRecordByAllowedKeys(record, allowedIds) {
   return Object.fromEntries(Object.entries(record || {}).filter(([key]) => allowedIds.has(key)));
+}
+
+function deriveRoomParticipantIds(room, users = []) {
+  const userIds = new Set((users || []).map((user) => user.id));
+  const participantIds = new Set((room?.participants || []).filter((participantId) => userIds.has(participantId)));
+  (users || []).forEach((user) => {
+    if (user?.currentRoomId === room?.id && userIds.has(user.id)) {
+      participantIds.add(user.id);
+    }
+  });
+  return [...participantIds];
+}
+
+function sanitizeDeletedRooms(record) {
+  return Object.fromEntries(
+    Object.entries(record || {})
+      .filter(([roomId]) => Boolean(String(roomId || "").trim()))
+      .map(([roomId, deletedAt]) => [roomId, Number(deletedAt || Date.now())])
+  );
+}
+
+function sanitizeDeletedUsers(record) {
+  return Object.fromEntries(
+    Object.entries(record || {})
+      .filter(([userId]) => Boolean(String(userId || "").trim()))
+      .map(([userId, deletedAt]) => [userId, Number(deletedAt || Date.now())])
+  );
 }
 
 async function loadServerState() {

@@ -34,6 +34,7 @@
     eventSource: null,
     serverEventsConnected: false,
     compositionActive: false,
+    compositionTarget: null,
     pendingRenderWhileComposing: false,
     typingSignals: {},
     presenceSignals: {},
@@ -296,6 +297,10 @@
     toastEmptyDraftCopy: "텍스트를 입력하거나 미디어를 첨부해 주세요.",
     toastInviteAction: "초대 응답 완료",
     toastInviteActionCopy: "선택한 초대의 상태가 업데이트되었습니다.",
+    toastRoomDeleted: "방이 삭제되었습니다",
+    toastRoomDeletedCopy: "{title} 방이 삭제되었습니다.",
+    logoutButton: "로그아웃",
+    logoutCopy: "현재 계정을 삭제하고 첫 화면으로 돌아갑니다.",
     toastRoomLeft: "방에서 나갔습니다",
     toastRoomLeftCopy: "{title} 방을 나왔습니다.",
     toastRoomFastForward: "만료 테스트 적용",
@@ -512,6 +517,10 @@
     toastEmptyDraftCopy: "Type a message or attach media first.",
     toastInviteAction: "Invite response saved",
     toastInviteActionCopy: "The invite status was updated.",
+    toastRoomDeleted: "Room deleted",
+    toastRoomDeletedCopy: "{title} was deleted.",
+    logoutButton: "Log out",
+    logoutCopy: "Delete this account and return to the first screen.",
     toastRoomLeft: "Left room",
     toastRoomLeftCopy: "You left {title}.",
     toastRoomFastForward: "Expiration test applied",
@@ -728,6 +737,10 @@
     toastEmptyDraftCopy: "Hay nhap tin nhan hoac dinh kem media.",
     toastInviteAction: "Da cap nhat loi moi",
     toastInviteActionCopy: "Trang thai loi moi da duoc luu.",
+    toastRoomDeleted: "Da xoa phong",
+    toastRoomDeletedCopy: "Phong {title} da bi xoa.",
+    logoutButton: "Dang xuat",
+    logoutCopy: "Xoa tai khoan hien tai va quay lai man hinh dau tien.",
     toastRoomLeft: "Da roi phong",
     toastRoomLeftCopy: "Ban da roi phong {title}.",
     toastRoomFastForward: "Da ap dung thu nghiem het han",
@@ -1041,21 +1054,29 @@
       users: [],
       invites: [],
       rooms: [],
+      deletedUsers: {},
+      deletedRooms: {},
       updatedAt: Date.now(),
     };
   }
 
   function sanitizeAppState(parsed) {
+    const deletedUsers = sanitizeDeletedUsers(parsed?.deletedUsers);
+    const deletedUserIds = new Set(Object.keys(deletedUsers));
+    const deletedRooms = sanitizeDeletedRooms(parsed?.deletedRooms);
+    const deletedRoomIds = new Set(Object.keys(deletedRooms));
     const nextState = {
       ...parsed,
       settings: {
         theme: parsed?.settings?.theme || "system",
       },
+      deletedUsers,
+      deletedRooms,
       updatedAt: Number(parsed.updatedAt || Date.now()),
     };
 
     const users = (parsed.users || [])
-      .filter((user) => !isDemoUser(user))
+      .filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user))
       .map((user) => ({
         ...user,
         preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
@@ -1063,15 +1084,16 @@
     const userIds = new Set(users.map((user) => user.id));
 
     const rooms = (parsed.rooms || [])
-      .filter((room) => !isDemoRoom(room) && !shouldDiscardRoom(room))
+      .filter((room) => !deletedRoomIds.has(room.id) && !isDemoRoom(room) && !shouldDiscardRoom(room))
       .map((room) => {
         const persistent = isPersistentRoom(room);
+        const participants = deriveRoomParticipantIds(room, users);
         return {
           ...room,
           disableExpiration: persistent,
           status: persistent && room.status === "expired" ? "active" : room.status,
           expiredAt: persistent ? null : room.expiredAt || null,
-          participants: (room.participants || []).filter((participantId) => userIds.has(participantId)),
+          participants,
           accessByUser: filterRecordByAllowedKeys(room.accessByUser, userIds),
           unreadByUser: filterRecordByAllowedKeys(room.unreadByUser, userIds),
         };
@@ -1122,6 +1144,33 @@
     return Object.fromEntries(Object.entries(record || {}).filter(([key]) => allowedIds.has(key)));
   }
 
+  function deriveRoomParticipantIds(room, users = appState.users || []) {
+    const userIds = new Set((users || []).map((user) => user.id));
+    const participantIds = new Set((room?.participants || []).filter((participantId) => userIds.has(participantId)));
+    (users || []).forEach((user) => {
+      if (user?.currentRoomId === room?.id && userIds.has(user.id)) {
+        participantIds.add(user.id);
+      }
+    });
+    return [...participantIds];
+  }
+
+  function sanitizeDeletedRooms(record) {
+    return Object.fromEntries(
+      Object.entries(record || {})
+        .filter(([roomId]) => Boolean(String(roomId || "").trim()))
+        .map(([roomId, deletedAt]) => [roomId, Number(deletedAt || Date.now())])
+    );
+  }
+
+  function sanitizeDeletedUsers(record) {
+    return Object.fromEntries(
+      Object.entries(record || {})
+        .filter(([userId]) => Boolean(String(userId || "").trim()))
+        .map(([userId, deletedAt]) => [userId, Number(deletedAt || Date.now())])
+    );
+  }
+
   function uid(prefix) {
     return `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
   }
@@ -1156,6 +1205,9 @@
 
     if (uiState.activeRoomId && !appState.rooms.some((room) => room.id === uiState.activeRoomId)) {
       uiState.activeRoomId = null;
+      uiState.directoryTab = "all-rooms";
+      uiState.chatDetailsOpen = false;
+      uiState.attachmentMenuOpen = false;
     }
   }
 
@@ -1176,6 +1228,7 @@
   }
 
   function applyStateSnapshot(nextState, options = {}) {
+    const previousActiveRoom = appState.rooms.find((room) => room.id === uiState.activeRoomId) || null;
     if (options.source === "server" && shouldPreserveLocalActiveUser(nextState)) {
       scheduleServerStateSync();
       return false;
@@ -1184,6 +1237,9 @@
     appState = nextState;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
     syncUiWithCurrentUserState();
+    if (previousActiveRoom && !appState.rooms.some((room) => room.id === previousActiveRoom.id)) {
+      pushToast("toastRoomDeleted", "toastRoomDeletedCopy", { title: previousActiveRoom.title });
+    }
     render();
     return true;
   }
@@ -1754,7 +1810,7 @@
 
   function renderAllRoomsScreen(currentUser) {
     const activeRooms = appState.rooms
-      .filter((room) => room.status === "active" && room.participants.includes(currentUser.id))
+      .filter((room) => room.status === "active" && deriveRoomParticipantIds(room).includes(currentUser.id))
       .sort((a, b) => (b.lastMessageAt || b.createdAt) - (a.lastMessageAt || a.createdAt));
     const rooms = getFilteredRooms();
 
@@ -1858,7 +1914,7 @@
     }
     if (uiState.directoryTab === "chat") {
       const rooms = appState.rooms
-        .filter((room) => room.status === "active" && room.participants.includes(currentUser.id))
+        .filter((room) => room.status === "active" && deriveRoomParticipantIds(room).includes(currentUser.id))
         .sort((a, b) => (b.lastMessageAt || b.createdAt) - (a.lastMessageAt || a.createdAt));
       return renderRoomDirectory(rooms, currentUser, {
         emptyTitle: t("activeRoomsEmptyTitle"),
@@ -1906,7 +1962,7 @@
 
   function renderFriendCard(friend) {
     const activeRoom = appState.rooms.find((room) => room.id === uiState.activeRoomId && room.status === "active");
-    const alreadyInRoom = activeRoom ? activeRoom.participants.includes(friend.id) : false;
+    const alreadyInRoom = activeRoom ? deriveRoomParticipantIds(activeRoom).includes(friend.id) : false;
     const pendingInvite = activeRoom
       ? appState.invites.some((invite) => invite.roomId === activeRoom.id && invite.inviteeId === friend.id && invite.status === "pending")
       : false;
@@ -1995,6 +2051,13 @@
               }).join("")
             : `<span>${escapeHtml(t("inviteResultEmpty"))}</span>`}
         </div>
+        <div class="setting-card">
+          <strong>${escapeHtml(t("logoutButton"))}</strong>
+          <span>${escapeHtml(t("logoutCopy"))}</span>
+          <div class="button-row" style="margin-top: 12px;">
+            <button class="button button-danger" data-action="logout-current-user">${escapeHtml(t("logoutButton"))}</button>
+          </div>
+        </div>
       </div>
     `;
   }
@@ -2015,7 +2078,7 @@
 
     const creator = appState.users.find((user) => user.id === room.creatorId);
     const isExpired = room.status === "expired";
-    const participantCount = room.participants.length;
+    const participantCount = deriveRoomParticipantIds(room).length;
     return `
       <section class="chat-panel">
         <header class="chat-header">
@@ -2060,7 +2123,7 @@
   }
 
   function renderChatDetailsPanel(room) {
-    const participants = room.participants
+    const participants = deriveRoomParticipantIds(room)
       .map((participantId) => appState.users.find((user) => user.id === participantId))
       .filter(Boolean);
 
@@ -2596,7 +2659,7 @@
   function renderParticipantsModal() {
     const room = appState.rooms.find((item) => item.id === uiState.activeRoomId);
     const participants = room
-      ? room.participants.map((participantId) => appState.users.find((user) => user.id === participantId)).filter(Boolean)
+      ? deriveRoomParticipantIds(room).map((participantId) => appState.users.find((user) => user.id === participantId)).filter(Boolean)
       : [];
     return `
       <section class="modal">
@@ -2916,6 +2979,10 @@
       render();
       return;
     }
+    if (action === "logout-current-user") {
+      logoutCurrentUser();
+      return;
+    }
     if (action === "reset-demo") {
       resetDemo();
       return;
@@ -2939,6 +3006,10 @@
     }
     if (target.dataset.input === "room-search") {
       uiState.roomSearch = target.value;
+      if (runtime.compositionActive) {
+        runtime.pendingRenderWhileComposing = true;
+        return;
+      }
       render();
       return;
     }
@@ -3054,20 +3125,27 @@
 
   function onRootCompositionStart(event) {
     const target = event.target;
-    if (target instanceof HTMLInputElement && target.dataset.input === "composer") {
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
       runtime.compositionActive = true;
+      runtime.compositionTarget = target.dataset.input || target.name || target.id || null;
     }
   }
 
   function onRootCompositionEnd(event) {
     const target = event.target;
-    if (target instanceof HTMLInputElement && target.dataset.input === "composer") {
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
       runtime.compositionActive = false;
-      setDraft(target.dataset.roomId, { text: target.value });
-      if (runtime.pendingRenderWhileComposing) {
-        runtime.pendingRenderWhileComposing = false;
-        render();
+      runtime.compositionTarget = null;
+      if (target.dataset.input === "room-search") {
+        uiState.roomSearch = target.value;
       }
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "composer") {
+      setDraft(target.dataset.roomId, { text: target.value });
+    }
+    if (runtime.pendingRenderWhileComposing) {
+      runtime.pendingRenderWhileComposing = false;
+      render();
     }
   }
 
@@ -3158,14 +3236,17 @@
     const currentUser = getCurrentUser();
     if (!currentUser) return;
     const now = Date.now();
+    const effectiveRoomId = roomId || currentUser.currentRoomId || null;
     currentUser.lastSeenAt = now;
-    currentUser.currentRoomId = roomId || null;
+    if (roomId) {
+      currentUser.currentRoomId = roomId;
+    }
     runtime.presenceSignals[currentUser.id] = {
       userId: currentUser.id,
-      currentRoomId: currentUser.currentRoomId,
+      currentRoomId: effectiveRoomId,
       lastSeenAt: now,
     };
-    sendPresenceSignal(currentUser.currentRoomId);
+    sendPresenceSignal(effectiveRoomId);
   }
 
   function switchUser(userId) {
@@ -3352,6 +3433,13 @@
     const room = appState.rooms.find((item) => item.id === roomId);
     const currentUser = getCurrentUser();
     if (!room || !currentUser || room.status === "expired") return;
+    if (room.creatorId === currentUser.id) {
+      deleteRoom(roomId);
+      persistState();
+      pushToast("toastRoomDeleted", "toastRoomDeletedCopy", { title: room.title });
+      render();
+      return;
+    }
     room.participants = room.participants.filter((participantId) => participantId !== currentUser.id);
     room.messages.push(systemMessage(uid("sys"), "systemUserLeft", { name: currentUser.name }, Date.now()));
     currentUser.currentRoomId = null;
@@ -3363,6 +3451,104 @@
     uiState.attachmentMenuOpen = false;
     persistState();
     pushToast("toastRoomLeft", "toastRoomLeftCopy", { title: room.title });
+    render();
+  }
+
+  function deleteRoom(roomId) {
+    const room = appState.rooms.find((item) => item.id === roomId);
+    if (!room) return;
+
+    room.messages.forEach((message) => {
+      if (message.media?.kind === "video" && message.media.runtimeId) {
+        revokeRuntimeVideo(message.media.runtimeId);
+      }
+    });
+
+    stopTypingForRoom(roomId);
+    delete runtime.typingSignals[roomId];
+    delete uiState.drafts[roomId];
+    appState.deletedRooms = {
+      ...(appState.deletedRooms || {}),
+      [room.id]: Date.now(),
+    };
+    appState.rooms = appState.rooms.filter((item) => item.id !== roomId);
+    appState.invites = appState.invites.filter((invite) => invite.roomId !== roomId);
+    appState.users.forEach((user) => {
+      if (user.currentRoomId === roomId) {
+        user.currentRoomId = null;
+      }
+    });
+
+    if (uiState.activeRoomId === roomId) {
+      uiState.activeRoomId = null;
+    }
+    if (uiState.modal?.data?.roomId === roomId) {
+      uiState.modal = null;
+    }
+    uiState.directoryTab = "all-rooms";
+    uiState.chatDetailsOpen = false;
+    uiState.attachmentMenuOpen = false;
+  }
+
+  function deleteUserAccount(userId) {
+    const user = appState.users.find((item) => item.id === userId);
+    if (!user) return;
+
+    const ownedRoomIds = appState.rooms.filter((room) => room.creatorId === userId).map((room) => room.id);
+    ownedRoomIds.forEach((roomId) => deleteRoom(roomId));
+
+    appState.rooms.forEach((room) => {
+      if ((room.participants || []).includes(userId)) {
+        room.participants = room.participants.filter((participantId) => participantId !== userId);
+        room.messages.push(systemMessage(uid("sys"), "systemUserLeft", { name: user.name }, Date.now()));
+      }
+      if (room.accessByUser) {
+        delete room.accessByUser[userId];
+      }
+      if (room.unreadByUser) {
+        delete room.unreadByUser[userId];
+      }
+    });
+
+    Object.keys(runtime.typingSignals).forEach((roomId) => {
+      if (!runtime.typingSignals[roomId]) return;
+      delete runtime.typingSignals[roomId][userId];
+      if (!Object.keys(runtime.typingSignals[roomId]).length) {
+        delete runtime.typingSignals[roomId];
+      }
+    });
+
+    delete runtime.presenceSignals[userId];
+    appState.invites = appState.invites.filter((invite) => invite.inviterId !== userId && invite.inviteeId !== userId);
+    appState.deletedUsers = {
+      ...(appState.deletedUsers || {}),
+      [userId]: Date.now(),
+    };
+    appState.users = appState.users.filter((item) => item.id !== userId);
+  }
+
+  function logoutCurrentUser() {
+    const currentUser = getCurrentUser();
+    if (!currentUser) return;
+
+    stopTypingForRoom(uiState.activeRoomId);
+    localStorage.setItem(LANDING_UI_KEY, currentUser.uiLanguage || uiState.landing.uiLanguage || "ko");
+    uiState.landing.name = "";
+    uiState.landing.nativeLanguage = currentUser.nativeLanguage || "ko";
+    uiState.landing.uiLanguage = currentUser.uiLanguage || uiState.landing.uiLanguage || "ko";
+
+    deleteUserAccount(currentUser.id);
+    setActiveUserId(null);
+    uiState.activeRoomId = null;
+    uiState.modal = null;
+    uiState.drawer = null;
+    uiState.directoryTab = "all-rooms";
+    uiState.chatDetailsOpen = false;
+    uiState.attachmentMenuOpen = false;
+    uiState.mobileRoomsOpen = false;
+    uiState.previewMedia = null;
+    uiState.roomSearch = "";
+    persistState();
     render();
   }
 
@@ -3474,8 +3660,16 @@
   function getNeededTargetLanguages(room, senderId, fromLanguage) {
     if (!room) return [];
 
+    const audienceIds = new Set(deriveRoomParticipantIds(room));
+    audienceIds.add(room.creatorId);
+    Object.entries(room.accessByUser || {}).forEach(([userId, access]) => {
+      if (access === true || access?.unlocked) {
+        audienceIds.add(userId);
+      }
+    });
+
     const needed = new Set();
-    (room.participants || []).forEach((participantId) => {
+    audienceIds.forEach((participantId) => {
       if (participantId === senderId) return;
       const participant = appState.users.find((user) => user.id === participantId);
       if (!participant) return;
