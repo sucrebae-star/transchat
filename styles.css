@@ -2215,6 +2215,29 @@ body[data-theme="dark"] .mobile-nav-dock {
   gap: 8px;
 }
 
+.landing-ui-language-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.landing-ui-language-icon {
+  font-size: 1rem;
+  color: var(--text-soft);
+}
+
+.landing-ui-language-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.landing-ui-language-buttons .landing-language-button {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  padding: 0;
+}
+
 .landing-language-accordion-trigger {
   appearance: none;
   width: 100%;
@@ -2284,6 +2307,7 @@ body[data-theme="dark"] .mobile-nav-dock {
   display: flex;
   align-items: center;
   gap: 12px;
+  justify-content: space-between;
 }
 
 .list-profile-image {
@@ -2313,6 +2337,69 @@ body[data-theme="dark"] .mobile-nav-dock {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.connection-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.connection-icon-button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 12px;
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+  color: #fff;
+}
+
+.connection-icon-button.accept {
+  background: #18a35b;
+}
+
+.connection-icon-button.reject {
+  background: #ec5d68;
+}
+
+.connection-invite-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
+  flex: 0 0 auto;
+}
+
+.connection-state-pill {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.composer-input-shell {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+
+.mobile-composer-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.mobile-composer .composer-input-shell .composer-input {
+  padding-right: 48px;
+}
+
+.composer-inline-action {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  z-index: 2;
 }
 
 .profile-edit-card {
@@ -2486,6 +2573,10 @@ body[data-theme="dark"] .mobile-composer {
   align-items: center;
 }
 
+.mobile-composer-wrap .composer-input-shell {
+  min-width: 0;
+}
+
 .mobile-composer .composer-input {
   min-height: 44px;
   border-radius: 16px;
@@ -2507,8 +2598,9 @@ body[data-theme="dark"] .mobile-composer {
 }
 
 .mobile-composer .attachment-menu {
-  right: 52px;
+  right: 0;
   bottom: calc(100% + 8px);
+  z-index: 8;
 }
 
 .mobile-chat-menu {

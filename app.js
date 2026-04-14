@@ -31,11 +31,13 @@
     heartbeatTimer: null,
     healthTimer: null,
     serverSyncTimer: null,
+    softRenderTimer: null,
     eventSource: null,
     serverEventsConnected: false,
     compositionActive: false,
     compositionTarget: null,
     pendingRenderWhileComposing: false,
+    lastComposerInputAt: 0,
     typingSignals: {},
     presenceSignals: {},
     lastTypingSignalAt: {},
@@ -807,6 +809,9 @@
     toastProfileImageRemovedCopy: "기본 실루엣 이미지가 적용되었습니다.",
     toastProfileImageInvalid: "이미지 파일만 사용할 수 있습니다",
     toastProfileImageInvalidCopy: "프로필에는 사진 파일만 업로드할 수 있습니다.",
+    connectionInvite: "초대하기",
+    connectionInvited: "초대 보냄",
+    connectionActive: "대화중",
   });
 
   Object.assign(DICTIONARY.en, {
@@ -831,6 +836,9 @@
     toastProfileImageRemovedCopy: "The default silhouette is active again.",
     toastProfileImageInvalid: "Image files only",
     toastProfileImageInvalidCopy: "Only image uploads are supported for profile photos.",
+    connectionInvite: "Invite",
+    connectionInvited: "Invited",
+    connectionActive: "In chat",
   });
 
   Object.assign(DICTIONARY.vi, {
@@ -855,6 +863,9 @@
     toastProfileImageRemovedCopy: "Anh bong nguoi mac dinh da duoc ap dung.",
     toastProfileImageInvalid: "Chi ho tro tep anh",
     toastProfileImageInvalidCopy: "Anh dai dien chi nhan tep hinh anh.",
+    connectionInvite: "Moi",
+    connectionInvited: "Da moi",
+    connectionActive: "Dang tro chuyen",
   });
 
   const TRANSLATION_MEMORY = {
@@ -1080,9 +1091,10 @@
   }
 
   function createUser(name, nativeLanguage, uiLanguage, lastSeenAt, currentRoomId, profileImage = null) {
+    const normalizedName = normalizeDisplayText(name).trim();
     return {
       id: uid("user"),
-      name,
+      name: normalizedName,
       profileImage,
       nativeLanguage,
       preferredChatLanguage: nativeLanguage,
@@ -1169,6 +1181,7 @@
       .filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user))
       .map((user) => ({
         ...user,
+        name: normalizeDisplayText(user.name),
         preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
       }));
     const userIds = new Set(users.map((user) => user.id));
@@ -1180,6 +1193,7 @@
         const participants = deriveRoomParticipantIds(room, users);
         return {
           ...room,
+          title: normalizeDisplayText(room.title),
           disableExpiration: persistent,
           status: persistent && room.status === "expired" ? "active" : room.status,
           expiredAt: persistent ? null : room.expiredAt || null,
@@ -1224,7 +1238,7 @@
   }
 
   function normalizeRoomTitle(title) {
-    return String(title || "")
+    return normalizeDisplayText(title)
       .toLowerCase()
       .replace(/\s+/g, "")
       .replace(/[^\p{L}\p{N}]/gu, "");
@@ -1330,7 +1344,11 @@
     if (previousActiveRoom && !appState.rooms.some((room) => room.id === previousActiveRoom.id)) {
       pushToast("toastRoomDeleted", "toastRoomDeletedCopy", { title: previousActiveRoom.title });
     }
-    render();
+    if (options.source === "server" && shouldDeferNonCriticalRender()) {
+      renderSafelyDuringInput();
+    } else {
+      render();
+    }
     return true;
   }
 
@@ -1455,6 +1473,28 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  // Added: repair legacy mojibake that could have been persisted before UTF-8 handling stabilized on server sync.
+  function normalizeDisplayText(value) {
+    const normalized = String(value ?? "").normalize("NFC");
+    if (!normalized) return "";
+
+    const characters = Array.from(normalized);
+    const isSingleByteOnly = characters.every((character) => character.charCodeAt(0) <= 255);
+    const looksSuspicious = /[ÃÂÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ]/.test(normalized);
+
+    if (!isSingleByteOnly || !looksSuspicious) {
+      return normalized;
+    }
+
+    try {
+      const bytes = Uint8Array.from(characters.map((character) => character.charCodeAt(0)));
+      const repaired = new TextDecoder("utf-8", { fatal: true }).decode(bytes).normalize("NFC");
+      return /[^\u0000-\u007f]/.test(repaired) ? repaired : normalized;
+    } catch (error) {
+      return normalized;
+    }
   }
 
   function getLanguageMeta(languageCode) {
@@ -1714,6 +1754,8 @@
         type="button"
         data-action="set-landing-ui-language"
         data-language="${languageCode}"
+        aria-label="${escapeHtml(LANDING_UI_LANGUAGE_LABELS[languageCode] || languageCode)}"
+        title="${escapeHtml(LANDING_UI_LANGUAGE_LABELS[languageCode] || languageCode)}"
       >
         <span aria-hidden="true">${languageCode === "ko" ? "🇰🇷" : "🇻🇳"}</span>
       </button>
@@ -1728,13 +1770,13 @@
   }
 
   function filterRoomsByQuery(rooms) {
-    const query = uiState.roomSearch.trim().toLowerCase();
+    const query = normalizeDisplayText(uiState.roomSearch).trim().toLowerCase();
     if (!query) return rooms;
     return rooms.filter((room) => {
       const creator = appState.users.find((user) => user.id === room.creatorId);
       return (
-        room.title.toLowerCase().includes(query) ||
-        creator?.name.toLowerCase().includes(query)
+        normalizeDisplayText(room.title).toLowerCase().includes(query) ||
+        normalizeDisplayText(creator?.name).toLowerCase().includes(query)
       );
     });
   }
@@ -1763,6 +1805,185 @@
     return { kind: "offline", label: t("presenceOffline") };
   }
 
+  function shouldDeferNonCriticalRender() {
+    const activeElement = document.activeElement;
+    const activeInput =
+      activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement ? activeElement : null;
+
+    if (runtime.compositionActive) {
+      return true;
+    }
+
+    if (!activeInput || activeInput.dataset.input !== "composer") {
+      return false;
+    }
+
+    return Date.now() - runtime.lastComposerInputAt < 900;
+  }
+
+  function renderSafelyDuringInput(delay = 180) {
+    clearTimeout(runtime.softRenderTimer);
+    runtime.softRenderTimer = setTimeout(() => {
+      runtime.softRenderTimer = null;
+      if (shouldDeferNonCriticalRender()) {
+        renderSafelyDuringInput(delay);
+        return;
+      }
+      render();
+    }, delay);
+  }
+
+  function hasSharedActiveRoom(userId, otherUserId) {
+    return appState.rooms.some((room) => {
+      if (room.status !== "active") return false;
+      const participantIds = new Set(deriveRoomParticipantIds(room));
+      return participantIds.has(userId) && participantIds.has(otherUserId);
+    });
+  }
+
+  function findPendingInvite(inviterId, inviteeId) {
+    return appState.invites.find((invite) => {
+      if (invite.status !== "pending") return false;
+      if (invite.inviterId !== inviterId || invite.inviteeId !== inviteeId) return false;
+      return appState.rooms.some((room) => room.id === invite.roomId && room.status === "active");
+    }) || null;
+  }
+
+  function getConnectionActionState(currentUser, friend) {
+    const incomingInvite = findPendingInvite(friend.id, currentUser.id);
+    if (incomingInvite) {
+      return { kind: "incoming", invite: incomingInvite };
+    }
+
+    if (hasSharedActiveRoom(currentUser.id, friend.id)) {
+      return { kind: "active" };
+    }
+
+    const outgoingInvite = findPendingInvite(currentUser.id, friend.id);
+    if (outgoingInvite) {
+      return { kind: "outgoing", invite: outgoingInvite };
+    }
+
+    return { kind: "invite" };
+  }
+
+  function createConnectionInviteRoom(currentUser, friend) {
+    const title = normalizeDisplayText(`${currentUser.name} · ${friend.name}`);
+    const createdAt = Date.now();
+    const room = {
+      id: uid("room"),
+      title,
+      creatorId: currentUser.id,
+      password: "",
+      isProtected: false,
+      disableExpiration: isPersistentRoomTitle(title),
+      participants: [currentUser.id],
+      accessByUser: { [currentUser.id]: true },
+      unreadByUser: {},
+      lastMessageAt: createdAt,
+      createdAt,
+      status: "active",
+      expiredAt: null,
+      messages: [systemMessage(uid("sys"), "systemUserJoined", { name: currentUser.name }, createdAt)],
+    };
+    appState.rooms.unshift(room);
+    return room;
+  }
+
+  function sendConnectionInvite(friendId) {
+    const currentUser = getCurrentUser();
+    const friend = appState.users.find((user) => user.id === friendId);
+    if (!currentUser || !friend || friend.id === currentUser.id) return;
+
+    const state = getConnectionActionState(currentUser, friend);
+    if (state.kind !== "invite") {
+      render();
+      return;
+    }
+
+    const room = createConnectionInviteRoomAscii(currentUser, friend);
+    const invite = {
+      id: uid("invite"),
+      roomId: room.id,
+      inviterId: currentUser.id,
+      inviteeId: friend.id,
+      status: "pending",
+      createdAt: Date.now(),
+      respondedAt: null,
+    };
+    appState.invites.unshift(invite);
+    room.messages.push(systemMessage(uid("sys"), "systemUserInvited", { inviter: currentUser.name, invitee: friend.name }, Date.now()));
+    room.unreadByUser[friend.id] = (room.unreadByUser[friend.id] || 0) + 1;
+    persistState();
+    pushToast("toastInviteSent", "toastInviteSentCopy", { name: friend.name });
+    render();
+  }
+
+  function createConnectionInviteRoomStable(currentUser, friend) {
+    const title = normalizeDisplayText(`${currentUser.name} · ${friend.name}`);
+    const createdAt = Date.now();
+    const room = {
+      id: uid("room"),
+      title,
+      creatorId: currentUser.id,
+      password: "",
+      isProtected: false,
+      disableExpiration: isPersistentRoomTitle(title),
+      participants: [currentUser.id],
+      accessByUser: { [currentUser.id]: true },
+      unreadByUser: {},
+      lastMessageAt: createdAt,
+      createdAt,
+      status: "active",
+      expiredAt: null,
+      messages: [systemMessage(uid("sys"), "systemUserJoined", { name: currentUser.name }, createdAt)],
+    };
+    appState.rooms.unshift(room);
+    return room;
+  }
+
+  function createConnectionInviteRoomAscii(currentUser, friend) {
+    const title = normalizeDisplayText([currentUser.name, friend.name].join(" - "));
+    const createdAt = Date.now();
+    const room = {
+      id: uid("room"),
+      title,
+      creatorId: currentUser.id,
+      password: "",
+      isProtected: false,
+      disableExpiration: isPersistentRoomTitle(title),
+      participants: [currentUser.id],
+      accessByUser: { [currentUser.id]: true },
+      unreadByUser: {},
+      lastMessageAt: createdAt,
+      createdAt,
+      status: "active",
+      expiredAt: null,
+      messages: [systemMessage(uid("sys"), "systemUserJoined", { name: currentUser.name }, createdAt)],
+    };
+    appState.rooms.unshift(room);
+    return room;
+  }
+
+  function renderConnectionAction(friend, currentUser) {
+    const state = getConnectionActionState(currentUser, friend);
+    if (state.kind === "incoming") {
+      return `
+        <div class="connection-actions">
+          <button class="connection-icon-button accept" type="button" data-action="respond-invite" data-invite-id="${state.invite.id}" data-response="accept" aria-label="${escapeHtml(t("acceptInvite"))}">✓</button>
+          <button class="connection-icon-button reject" type="button" data-action="respond-invite" data-invite-id="${state.invite.id}" data-response="reject" aria-label="${escapeHtml(t("rejectInvite"))}">✕</button>
+        </div>
+      `;
+    }
+    if (state.kind === "active") {
+      return `<span class="status-pill pill-accent connection-state-pill">${escapeHtml(t("connectionActive"))}</span>`;
+    }
+    if (state.kind === "outgoing") {
+      return `<span class="status-pill connection-state-pill">${escapeHtml(t("connectionInvited"))}</span>`;
+    }
+    return `<button class="button button-secondary connection-invite-button" type="button" data-action="send-connection-invite" data-user-id="${friend.id}">${escapeHtml(t("connectionInvite"))}</button>`;
+  }
+
   function render() {
     if (runtime.compositionActive) {
       runtime.pendingRenderWhileComposing = true;
@@ -1773,7 +1994,7 @@
     applyTheme();
     const currentUser = getCurrentUser();
     document.documentElement.lang = getUiLanguage();
-    APP_ROOT.innerHTML = currentUser ? renderShellMobile(currentUser) : renderLanding();
+    APP_ROOT.innerHTML = currentUser ? renderShellMobile(currentUser) : renderLandingEnhanced();
     bindPostRender(focusState, chatScrollState);
   }
 
@@ -1783,9 +2004,6 @@
     return `
       <main class="shell landing">
         <div class="landing-card landing-card-minimal">
-          <div class="landing-language-toggle landing-flag-toggle" aria-label="${escapeHtml(t("labelUiLanguage"))}">
-            ${renderLandingLanguageButtons()}
-          </div>
           <section class="landing-minimal-panel">
             <h1 class="brand landing-brand-minimal">TRANSCHAT</h1>
             <form class="landing-minimal-form" data-form="landing">
@@ -1844,6 +2062,73 @@
     `;
   }
 
+  // Added: keep the existing landing structure but move UI-language controls below native-language selection for visibility.
+  function renderLandingEnhanced() {
+    const selectedNative = getLanguageMeta(uiState.landing.nativeLanguage || "ko");
+    const landingProfileImage = uiState.landing.profileImage || DEFAULT_PROFILE_IMAGE;
+    return `
+      <main class="shell landing">
+        <div class="landing-card landing-card-minimal">
+          <section class="landing-minimal-panel">
+            <h1 class="brand landing-brand-minimal">TRANSCHAT</h1>
+            <form class="landing-minimal-form" data-form="landing">
+              <div class="landing-profile-picker-block">
+                <button
+                  class="landing-profile-picker"
+                  type="button"
+                  data-action="trigger-landing-profile"
+                  aria-label="${escapeHtml(t("landingPhotoLabel"))}"
+                >
+                  ${renderProfileImage(landingProfileImage, "landing-profile-image", t("landingPhotoLabel"))}
+                </button>
+                <div class="landing-profile-copy">
+                  <strong>${escapeHtml(t("landingPhotoLabel"))}</strong>
+                  <span>${escapeHtml(t("landingPhotoHelper"))}</span>
+                </div>
+                <input data-input="landing-profile-image" type="file" accept="image/*" hidden>
+              </div>
+              <div class="landing-input-row">
+                <input
+                  id="entry-name"
+                  name="name"
+                  type="text"
+                  maxlength="24"
+                  value="${escapeHtml(uiState.landing.name)}"
+                  placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+                  autocapitalize="off"
+                  autocomplete="off"
+                />
+                <button class="landing-submit-button" type="submit" aria-label="${escapeHtml(t("enterButton"))}">&rarr;</button>
+              </div>
+              <div class="landing-language-accordion">
+                <button
+                  class="landing-language-accordion-trigger"
+                  type="button"
+                  data-action="toggle-landing-native-accordion"
+                  aria-expanded="${uiState.landing.nativeAccordionOpen ? "true" : "false"}"
+                >
+                  <span class="landing-language-trigger-main">
+                    <span aria-hidden="true">${selectedNative.flag}</span>
+                    <span>${escapeHtml(selectedNative.nativeLabel)}</span>
+                  </span>
+                  <span class="landing-language-trigger-caret" aria-hidden="true">${uiState.landing.nativeAccordionOpen ? "&minus;" : "+"}</span>
+                </button>
+                ${uiState.landing.nativeAccordionOpen
+                  ? `<div class="landing-language-accordion-panel">${renderLanguageAccordionOptions(uiState.landing.nativeLanguage)}</div>`
+                  : ""}
+              </div>
+              <div class="landing-ui-language-row" aria-label="${escapeHtml(t("labelUiLanguage"))}">
+                <span class="landing-ui-language-icon" aria-hidden="true">🖥️</span>
+                <div class="landing-ui-language-buttons">${renderLandingLanguageButtons()}</div>
+              </div>
+            </form>
+          </section>
+        </div>
+      </main>
+      ${renderToastStack()}
+    `;
+  }
+
   function renderShellMobile(currentUser) {
     const activeRoom = uiState.directoryTab === "chat"
       ? appState.rooms.find((room) => room.id === uiState.activeRoomId && room.status === "active") || null
@@ -1890,7 +2175,7 @@
     if (uiState.directoryTab === "me") {
       return renderMyInfoScreenMobile(currentUser);
     }
-    return activeRoom ? renderChatRoomMobile(currentUser, activeRoom) : renderChatListScreenMobile(currentUser);
+    return activeRoom ? renderChatRoomMobileEnhanced(currentUser, activeRoom) : renderChatListScreenMobile(currentUser);
   }
 
   function renderBottomDirectoryMobile() {
@@ -1953,7 +2238,7 @@
     return `
       <button class="room-card mobile-room-card ${uiState.activeRoomId === room.id ? "active" : ""}" data-action="open-room" data-room-id="${room.id}">
         <div class="room-topline">
-          <strong>${escapeHtml(room.title)}</strong>
+          <strong>${escapeHtml(normalizeDisplayText(room.title))}</strong>
           ${room.isProtected ? `<span class="room-lock" aria-label="${escapeHtml(t("roomProtected"))}">🔒</span>` : ""}
         </div>
         <span class="room-owner mobile-room-owner">👑 ${escapeHtml(creator?.name || "—")}</span>
@@ -1973,6 +2258,7 @@
   function renderFriendsScreenMobile(currentUser) {
     const friends = appState.users
       .slice()
+      .filter((user) => user.id !== currentUser.id)
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.name.localeCompare(b.name));
 
     return `
@@ -1982,22 +2268,23 @@
         </div>
         <div class="screen-body mobile-list-body">
           ${friends.length
-            ? friends.map((friend) => renderFriendRowMobile(friend)).join("")
+            ? friends.map((friend) => renderFriendRowMobile(friend, currentUser)).join("")
             : `<div class="empty-card compact-empty"><h3>${escapeHtml(t("friendsEmptyTitle"))}</h3><p>${escapeHtml(t("friendsEmptyCopy"))}</p></div>`}
         </div>
       </section>
     `;
   }
 
-  function renderFriendRowMobile(friend) {
+  function renderFriendRowMobile(friend, currentUser) {
     const presence = getPresence(friend, friend.currentRoomId || null);
     return `
       <article class="friend-card mobile-friend-card">
         ${renderProfileImage(friend, "list-profile-image", friend.name)}
         <div class="friend-card-meta">
           <strong>${escapeHtml(friend.name)}</strong>
+          <span class="helper">${escapeHtml(presence.label)}</span>
         </div>
-        <span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>
+        ${currentUser ? renderConnectionAction(friend, currentUser) : `<span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>`}
       </article>
     `;
   }
@@ -2091,7 +2378,7 @@
       <section class="chat-panel mobile-chat-room">
         <header class="chat-header mobile-chat-header">
           <button class="icon-button back-button" data-action="back-to-chat-list" aria-label="Back">←</button>
-          <h2>${escapeHtml(room.title)}</h2>
+          <h2>${escapeHtml(normalizeDisplayText(room.title))}</h2>
           <button
             class="menu-icon-button"
             data-action="toggle-chat-details"
@@ -2156,6 +2443,86 @@
               ${renderIconSvg("file")}
             </button>
           </div>
+        </div>
+      </div>
+      <input class="hidden-input" type="file" accept="image/*" data-input="image-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" accept="video/*" data-input="video-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" data-input="generic-file" data-room-id="${room.id}" />
+    `;
+  }
+
+  // Added: keep the room layout but stabilize the chat header and single-line composer for mobile input/touch handling.
+  function renderChatRoomMobileEnhanced(currentUser, room) {
+    const participants = deriveRoomParticipantIds(room)
+      .map((participantId) => appState.users.find((user) => user.id === participantId))
+      .filter(Boolean);
+
+    return `
+      <section class="chat-panel mobile-chat-room">
+        <header class="chat-header mobile-chat-header">
+          <button class="icon-button back-button" type="button" data-action="back-to-chat-list" aria-label="${escapeHtml(t("backToRooms"))}">&larr;</button>
+          <h2>${escapeHtml(normalizeDisplayText(room.title))}</h2>
+          <button
+            class="menu-icon-button"
+            type="button"
+            data-action="toggle-chat-details"
+            aria-label="${escapeHtml(t("participantsButton"))}"
+            title="${escapeHtml(t("participantsButton"))}"
+          >
+            &#9776;
+          </button>
+        </header>
+        <div class="participant-strip">
+          ${participants.map((participant) => `<span class="participant-chip">${escapeHtml(participant.name)}</span>`).join("")}
+        </div>
+        <section class="chat-scroll" id="chat-scroll">
+          ${renderMessageList(room, currentUser)}
+        </section>
+        <footer class="composer mobile-composer">${renderComposerMobileEnhanced(room)}</footer>
+        ${uiState.chatDetailsOpen ? renderChatDetailsMenuMobile(room) : ""}
+      </section>
+    `;
+  }
+
+  function renderComposerMobileEnhanced(room) {
+    const draft = getDraft(room.id);
+    return `
+      ${draft.attachment ? renderAttachmentPreview(draft.attachment) : ""}
+      <div class="composer-wrap composer-inline mobile-composer-wrap">
+        <div class="composer-line mobile-composer-line">
+          <div class="composer-input-shell">
+            <input
+              class="composer-input"
+              type="text"
+              data-input="composer"
+              data-room-id="${room.id}"
+              value="${escapeHtml(draft.text)}"
+              placeholder="${escapeHtml(t("composerPlaceholder"))}"
+              autocomplete="off"
+            />
+            <button
+              class="icon-button plus-trigger composer-inline-action"
+              type="button"
+              data-action="toggle-attachment-menu"
+              data-room-id="${room.id}"
+              aria-label="${escapeHtml(t("addFile"))}"
+              title="${escapeHtml(t("addFile"))}"
+            >
+              +
+            </button>
+            <div class="attachment-menu ${uiState.attachmentMenuOpen ? "open" : ""}">
+              <button class="attach-option" type="button" data-action="trigger-image" data-room-id="${room.id}" aria-label="${escapeHtml(t("addPhoto"))}" title="${escapeHtml(t("addPhoto"))}">
+                ${renderIconSvg("photo")}
+              </button>
+              <button class="attach-option" type="button" data-action="trigger-video" data-room-id="${room.id}" aria-label="${escapeHtml(t("addVideo"))}" title="${escapeHtml(t("addVideo"))}">
+                ${renderIconSvg("video")}
+              </button>
+              <button class="attach-option" type="button" data-action="trigger-file" data-room-id="${room.id}" aria-label="${escapeHtml(t("addFile"))}" title="${escapeHtml(t("addFile"))}">
+                ${renderIconSvg("file")}
+              </button>
+            </div>
+          </div>
+          <button class="button button-primary send-button" type="button" data-action="send-message" data-room-id="${room.id}" ${draft.processing ? "disabled" : ""}>${escapeHtml(t("sendButton"))}</button>
         </div>
       </div>
       <input class="hidden-input" type="file" accept="image/*" data-input="image-file" data-room-id="${room.id}" />
@@ -2286,7 +2653,7 @@
     return `
       <button class="room-card room-card-compact ${uiState.activeRoomId === room.id ? "active" : ""} ${room.status === "expired" ? "expired" : ""}" data-action="open-room" data-room-id="${room.id}">
         <div class="room-topline">
-          <strong>${escapeHtml(room.title)}</strong>
+          <strong>${escapeHtml(normalizeDisplayText(room.title))}</strong>
           <div class="room-icons">
             ${room.isProtected ? `<span aria-label="${escapeHtml(t("roomProtected"))}">🔒</span>` : ""}
             ${room.status === "expired" ? `<span class="tiny-pill pill-danger">${escapeHtml(t("roomExpired"))}</span>` : ""}
@@ -2350,7 +2717,7 @@
               activeRooms.length
                 ? `<div class="active-room-row">${activeRooms
                     .map(
-                      (room) => `<button class="active-room-chip ${uiState.activeRoomId === room.id ? "active" : ""}" data-action="open-room" data-room-id="${room.id}">${escapeHtml(room.title)}</button>`
+                      (room) => `<button class="active-room-chip ${uiState.activeRoomId === room.id ? "active" : ""}" data-action="open-room" data-room-id="${room.id}">${escapeHtml(normalizeDisplayText(room.title))}</button>`
                     )
                     .join("")}</div>`
                 : `<div class="helper">${escapeHtml(t("activeRoomsEmptyCopy"))}</div>`
@@ -2568,7 +2935,7 @@
             ? recent.map((invite) => {
                 const invitee = appState.users.find((user) => user.id === invite.inviteeId);
                 const room = appState.rooms.find((item) => item.id === invite.roomId);
-                return `<span>${escapeHtml(invitee?.name || "—")} · ${escapeHtml(room?.title || "—")} · ${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`;
+                return `<span>${escapeHtml(invitee?.name || "—")} · ${escapeHtml(normalizeDisplayText(room?.title || "—"))} · ${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`;
               }).join("")
             : `<span>${escapeHtml(t("inviteResultEmpty"))}</span>`}
         </div>
@@ -2605,7 +2972,7 @@
         <header class="chat-header">
           <div class="chat-headline">
             <div class="stack-row">
-              <h2>${escapeHtml(room.title)}</h2>
+              <h2>${escapeHtml(normalizeDisplayText(room.title))}</h2>
               ${room.status === "expired"
                 ? `<span class="pill pill-danger">${escapeHtml(t("roomExpired"))}</span>`
                 : room.isProtected
@@ -2941,7 +3308,7 @@
                   .map((invite) => {
                     const invitee = appState.users.find((user) => user.id === invite.inviteeId);
                     const room = appState.rooms.find((item) => item.id === invite.roomId);
-                    return `<span>${escapeHtml(invitee?.name || "—")} · ${escapeHtml(room?.title || "—")} · ${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`;
+                    return `<span>${escapeHtml(invitee?.name || "—")} · ${escapeHtml(normalizeDisplayText(room?.title || "—"))} · ${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`;
                   })
                   .join("")
               : `<span>${escapeHtml(t("inviteResultEmpty"))}</span>`}
@@ -2956,7 +3323,7 @@
     const room = appState.rooms.find((item) => item.id === invite.roomId);
     return `
       <article class="invite-card">
-        <strong>${escapeHtml(room?.title || "—")}</strong>
+        <strong>${escapeHtml(normalizeDisplayText(room?.title || "—"))}</strong>
         <span>${escapeHtml(inviter?.name || "—")} · ${escapeHtml(formatRelativeTime(invite.createdAt))}</span>
         <div class="invite-row" style="margin-top: 12px;">
           ${invite.status === "pending"
@@ -3539,6 +3906,10 @@
       saveProfileName();
       return;
     }
+    if (action === "send-connection-invite") {
+      sendConnectionInvite(actionTarget.dataset.userId);
+      return;
+    }
     if (action === "respond-invite") {
       respondInvite(actionTarget.dataset.inviteId, actionTarget.dataset.response);
       return;
@@ -3607,6 +3978,7 @@
     }
     if (target.dataset.input === "composer") {
       const roomId = target.dataset.roomId;
+      runtime.lastComposerInputAt = Date.now();
       setDraft(roomId, { text: target.value });
       if (target instanceof HTMLTextAreaElement) {
         autoResizeTextarea(target);
@@ -3762,6 +4134,26 @@
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
       runtime.compositionActive = true;
       runtime.compositionTarget = target.dataset.input || target.name || target.id || null;
+      if (target.dataset.input === "composer") {
+        runtime.lastComposerInputAt = Date.now();
+      }
+    }
+  }
+
+  function onRootCompositionUpdate(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+      return;
+    }
+
+    runtime.compositionActive = true;
+    runtime.compositionTarget = target.dataset.input || target.name || target.id || null;
+    if (target.dataset.input === "composer") {
+      runtime.lastComposerInputAt = Date.now();
+      setDraft(target.dataset.roomId, { text: target.value });
+    }
+    if (target.dataset.input === "room-search") {
+      uiState.roomSearch = target.value;
     }
   }
 
@@ -3842,7 +4234,7 @@
     const currentUser = getCurrentUser();
     if (!currentUser) return;
 
-    const nextName = String(uiState.profileEditor.name || "").trim();
+    const nextName = normalizeDisplayText(uiState.profileEditor.name).trim();
     if (!nextName) {
       pushToast("toastProfileNameTaken", "toastProfileNameTakenCopy");
       render();
@@ -3866,7 +4258,7 @@
   }
 
   function enterLandingUser() {
-    const baseName = uiState.landing.name.trim();
+    const baseName = normalizeDisplayText(uiState.landing.name).trim();
     if (!baseName) return;
     const existingUser = appState.users.find((user) => String(user.name || "").trim().toLowerCase() === baseName.toLowerCase());
     const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
@@ -3986,7 +4378,7 @@
   function handleCreateRoom() {
     const titleInput = document.querySelector('form[data-form="create-room"] input[name="title"]');
     const passwordInput = document.querySelector('form[data-form="create-room"] input[name="password"]');
-    const title = String(titleInput?.value || "").trim();
+    const title = normalizeDisplayText(titleInput?.value).trim();
     const password = String(passwordInput?.value || "").trim();
     if (!title || !password) return;
     const currentUser = getCurrentUser();
@@ -4681,7 +5073,7 @@
           checkedAt: Date.now(),
         })
       ) {
-        render();
+        renderSafelyDuringInput();
       }
       return;
     }
@@ -4703,7 +5095,7 @@
           checkedAt: Date.now(),
         })
       ) {
-        render();
+        renderSafelyDuringInput();
       }
       initServerEvents();
     } catch (error) {
@@ -4718,7 +5110,7 @@
           checkedAt: Date.now(),
         })
       ) {
-        render();
+        renderSafelyDuringInput();
       }
     }
   }
@@ -4886,8 +5278,8 @@
     const currentUser = getCurrentUser();
     const room = appState.rooms.find((item) => item.id === uiState.activeRoomId);
     if (!currentUser || !room) return;
-    const name = uiState.modal.data.name.trim();
-    const invitee = appState.users.find((user) => user.name.toLowerCase() === name.toLowerCase());
+    const name = normalizeDisplayText(uiState.modal.data.name).trim();
+    const invitee = appState.users.find((user) => normalizeDisplayText(user.name).toLowerCase() === name.toLowerCase());
 
     if (room.status === "expired") {
       uiState.modal.data.error = t("inviteExpiredError");
@@ -5013,6 +5405,7 @@
     APP_ROOT.addEventListener("input", onRootInput);
     APP_ROOT.addEventListener("keydown", onRootKeyDown);
     APP_ROOT.addEventListener("compositionstart", onRootCompositionStart);
+    APP_ROOT.addEventListener("compositionupdate", onRootCompositionUpdate);
     APP_ROOT.addEventListener("compositionend", onRootCompositionEnd);
     APP_ROOT.addEventListener("change", onRootChange);
     APP_ROOT.addEventListener("submit", onRootSubmit);
@@ -5069,7 +5462,7 @@
     runtime.eventSource = new EventSource(CONFIG.eventsApiPath);
     runtime.eventSource.addEventListener("open", () => {
       runtime.serverEventsConnected = true;
-      render();
+      renderSafelyDuringInput();
     });
     runtime.eventSource.addEventListener("state-updated", async (event) => {
       let payload = null;
@@ -5102,7 +5495,7 @@
         return;
       }
       if (updateTypingSignal(payload)) {
-        render();
+        renderSafelyDuringInput();
       }
     });
     runtime.eventSource.addEventListener("presence-updated", (event) => {
@@ -5123,12 +5516,12 @@
         currentRoomId: payload.currentRoomId || null,
         lastSeenAt: Number(payload.lastSeenAt || Date.now()),
       };
-      render();
+      renderSafelyDuringInput();
     });
     runtime.eventSource.addEventListener("error", () => {
       runtime.serverEventsConnected = false;
       closeServerEvents();
-      render();
+      renderSafelyDuringInput();
     });
   }
 
@@ -5147,15 +5540,15 @@
     clearInterval(runtime.healthTimer);
     runtime.countdownInterval = setInterval(() => {
       if (pruneTypingSignals()) {
-        render();
+        renderSafelyDuringInput();
       }
       if (uiState.modal?.type === "password") {
-        render();
+        renderSafelyDuringInput();
       }
     }, 1000);
     runtime.relativeTimer = setInterval(() => {
       checkRoomExpirations();
-      render();
+      renderSafelyDuringInput();
     }, 30000);
     runtime.heartbeatTimer = setInterval(() => {
       markUserPresence(uiState.activeRoomId);

@@ -39,6 +39,27 @@ const translationCache = new Map();
 let lastTranslationError = null;
 let lastTranslationErrorDetail = null;
 
+function normalizeDisplayText(value) {
+  const normalized = String(value ?? "").normalize("NFC");
+  if (!normalized) return "";
+
+  const characters = Array.from(normalized);
+  const isSingleByteOnly = characters.every((character) => character.charCodeAt(0) <= 255);
+  const looksSuspicious = /[ÃÂÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ]/.test(normalized);
+
+  if (!isSingleByteOnly || !looksSuspicious) {
+    return normalized;
+  }
+
+  try {
+    const bytes = Uint8Array.from(characters.map((character) => character.charCodeAt(0)));
+    const repaired = new TextDecoder("utf-8", { fatal: true }).decode(bytes).normalize("NFC");
+    return /[^\u0000-\u007f]/.test(repaired) ? repaired : normalized;
+  } catch (error) {
+    return normalized;
+  }
+}
+
 const server = createServer(async (req, res) => {
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
@@ -607,7 +628,12 @@ function sanitizeSharedState(state) {
   const deletedRooms = sanitizeDeletedRooms(state.deletedRooms);
   const deletedRoomIds = new Set(Object.keys(deletedRooms));
 
-  const users = (state.users || []).filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user));
+  const users = (state.users || [])
+    .filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user))
+    .map((user) => ({
+      ...user,
+      name: normalizeDisplayText(user.name),
+    }));
   const userIds = new Set(users.map((user) => user.id));
 
   const rooms = (state.rooms || [])
@@ -617,6 +643,7 @@ function sanitizeSharedState(state) {
       const participants = deriveRoomParticipantIds(room, users);
       return {
         ...room,
+        title: normalizeDisplayText(room.title),
         disableExpiration: persistent,
         status: persistent && room.status === "expired" ? "active" : room.status,
         expiredAt: persistent ? null : room.expiredAt || null,
@@ -665,7 +692,7 @@ function isPersistentRoomTitle(title) {
 }
 
 function normalizeRoomTitle(title) {
-  return String(title || "")
+  return normalizeDisplayText(title)
     .toLowerCase()
     .replace(/\s+/g, "")
     .replace(/[^\p{L}\p{N}]/gu, "");
