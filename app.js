@@ -55,7 +55,7 @@
     activeRoomId: null,
     modal: null,
     drawer: null,
-    directoryTab: "all-rooms",
+    directoryTab: "chat",
     directoryOpen: true,
     chatDetailsOpen: false,
     attachmentMenuOpen: false,
@@ -65,10 +65,16 @@
     originalVisibility: {},
     toasts: [],
     previewMedia: null,
+    profileEditor: {
+      userId: null,
+      name: "",
+    },
     landing: {
       name: "",
       nativeLanguage: "ko",
       uiLanguage: localStorage.getItem(LANDING_UI_KEY) || "ko",
+      nativeAccordionOpen: false,
+      profileImage: null,
     },
   };
 
@@ -94,6 +100,16 @@
     ko: "한국어",
     vi: "Tiếng Việt",
   };
+
+  // Added: shared profile/native-language metadata for the lightweight mobile profile flow.
+  const LANGUAGE_META = {
+    ko: { flag: "🇰🇷", nativeLabel: "한국어" },
+    en: { flag: "🇺🇸", nativeLabel: "English" },
+    vi: { flag: "🇻🇳", nativeLabel: "Tiếng Việt" },
+  };
+
+  const DEFAULT_PROFILE_IMAGE =
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' rx='28' fill='%23eef3fb'/%3E%3Ccircle cx='48' cy='35' r='18' fill='%2398a8c0'/%3E%3Cpath d='M20 82c4-16 16-24 28-24s24 8 28 24' fill='%2398a8c0'/%3E%3C/svg%3E";
 
   const LOCALES = {
     ko: "ko-KR",
@@ -768,6 +784,79 @@
     remainingSeconds: "{count} giay",
   };
 
+  // Added: profile and connection UI copy without rebuilding the overall layout structure.
+  Object.assign(DICTIONARY.ko, {
+    tabFriends: "연결",
+    landingNamePlaceholderSimple: "이름을 작성하세요",
+    landingNativeLanguageLabel: "모국어",
+    landingPhotoLabel: "프로필 사진",
+    landingPhotoHelper: "사진이 없으면 기본 이미지가 적용됩니다.",
+    profilePhotoChange: "사진 변경",
+    profilePhotoRemove: "사진 삭제",
+    profileNameLabel: "아이디",
+    profileSaveButton: "저장",
+    profileCardTitle: "내 프로필",
+    profileListTitle: "등록된 사용자",
+    toastProfileSaved: "프로필이 저장되었습니다",
+    toastProfileSavedCopy: "아이디 변경이 반영되었습니다.",
+    toastProfileNameTaken: "이미 사용 중인 이름입니다",
+    toastProfileNameTakenCopy: "다른 아이디를 입력해 주세요.",
+    toastProfileImageUpdated: "프로필 사진이 변경되었습니다",
+    toastProfileImageUpdatedCopy: "새 프로필 이미지가 저장되었습니다.",
+    toastProfileImageRemoved: "기본 프로필로 변경되었습니다",
+    toastProfileImageRemovedCopy: "기본 실루엣 이미지가 적용되었습니다.",
+    toastProfileImageInvalid: "이미지 파일만 사용할 수 있습니다",
+    toastProfileImageInvalidCopy: "프로필에는 사진 파일만 업로드할 수 있습니다.",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    tabFriends: "Connections",
+    landingNamePlaceholderSimple: "Enter your name",
+    landingNativeLanguageLabel: "Native language",
+    landingPhotoLabel: "Profile photo",
+    landingPhotoHelper: "If you skip this, the default silhouette is used.",
+    profilePhotoChange: "Change photo",
+    profilePhotoRemove: "Remove photo",
+    profileNameLabel: "User ID",
+    profileSaveButton: "Save",
+    profileCardTitle: "My profile",
+    profileListTitle: "Registered users",
+    toastProfileSaved: "Profile saved",
+    toastProfileSavedCopy: "Your user ID has been updated.",
+    toastProfileNameTaken: "That name is already in use",
+    toastProfileNameTakenCopy: "Choose a different user ID.",
+    toastProfileImageUpdated: "Profile image updated",
+    toastProfileImageUpdatedCopy: "Your new profile image has been saved.",
+    toastProfileImageRemoved: "Default profile restored",
+    toastProfileImageRemovedCopy: "The default silhouette is active again.",
+    toastProfileImageInvalid: "Image files only",
+    toastProfileImageInvalidCopy: "Only image uploads are supported for profile photos.",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    tabFriends: "Ket noi",
+    landingNamePlaceholderSimple: "Nhap ten cua ban",
+    landingNativeLanguageLabel: "Ngon ngu me de",
+    landingPhotoLabel: "Anh dai dien",
+    landingPhotoHelper: "Neu bo trong, anh mac dinh se duoc dung.",
+    profilePhotoChange: "Doi anh",
+    profilePhotoRemove: "Xoa anh",
+    profileNameLabel: "ID nguoi dung",
+    profileSaveButton: "Luu",
+    profileCardTitle: "Ho so cua toi",
+    profileListTitle: "Danh sach nguoi dung",
+    toastProfileSaved: "Da luu ho so",
+    toastProfileSavedCopy: "ID nguoi dung da duoc cap nhat.",
+    toastProfileNameTaken: "Ten nay da duoc su dung",
+    toastProfileNameTakenCopy: "Hay nhap mot ID khac.",
+    toastProfileImageUpdated: "Da doi anh dai dien",
+    toastProfileImageUpdatedCopy: "Anh dai dien moi da duoc luu.",
+    toastProfileImageRemoved: "Da quay ve anh mac dinh",
+    toastProfileImageRemovedCopy: "Anh bong nguoi mac dinh da duoc ap dung.",
+    toastProfileImageInvalid: "Chi ho tro tep anh",
+    toastProfileImageInvalidCopy: "Anh dai dien chi nhan tep hinh anh.",
+  });
+
   const TRANSLATION_MEMORY = {
     hello: { ko: "안녕하세요", en: "hello", vi: "xin chao" },
     everyone: { ko: "모두", en: "everyone", vi: "moi nguoi" },
@@ -990,10 +1079,11 @@
     };
   }
 
-  function createUser(name, nativeLanguage, uiLanguage, lastSeenAt, currentRoomId) {
+  function createUser(name, nativeLanguage, uiLanguage, lastSeenAt, currentRoomId, profileImage = null) {
     return {
       id: uid("user"),
       name,
+      profileImage,
       nativeLanguage,
       preferredChatLanguage: nativeLanguage,
       uiLanguage,
@@ -1205,7 +1295,7 @@
 
     if (uiState.activeRoomId && !appState.rooms.some((room) => room.id === uiState.activeRoomId)) {
       uiState.activeRoomId = null;
-      uiState.directoryTab = "all-rooms";
+      uiState.directoryTab = "chat";
       uiState.chatDetailsOpen = false;
       uiState.attachmentMenuOpen = false;
     }
@@ -1365,6 +1455,80 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function getLanguageMeta(languageCode) {
+    return LANGUAGE_META[languageCode] || { flag: "🏳️", nativeLabel: languageCode || "Unknown" };
+  }
+
+  function getUserProfileImage(user) {
+    return user?.profileImage || DEFAULT_PROFILE_IMAGE;
+  }
+
+  function syncProfileEditor(currentUser) {
+    if (!currentUser) return "";
+    if (uiState.profileEditor.userId !== currentUser.id) {
+      uiState.profileEditor = {
+        userId: currentUser.id,
+        name: currentUser.name || "",
+      };
+    }
+    return uiState.profileEditor.name;
+  }
+
+  async function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("file_read_failed"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function prepareProfileImage(file) {
+    if (!file || !String(file.type || "").startsWith("image/")) {
+      throw new Error("profile_image_invalid");
+    }
+
+    if (typeof createImageBitmap !== "function") {
+      return fileToDataUrl(file);
+    }
+
+    const bitmap = await createImageBitmap(file);
+    const ratio = Math.min(1, 480 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
+    canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+    const context = canvas.getContext("2d");
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.84);
+    bitmap.close();
+    return dataUrl;
+  }
+
+  function renderProfileImage(imageOrUser, className, altText = "profile") {
+    const source =
+      typeof imageOrUser === "string" ? imageOrUser || DEFAULT_PROFILE_IMAGE : getUserProfileImage(imageOrUser);
+    return `<img class="${className}" src="${escapeHtml(source)}" alt="${escapeHtml(altText)}">`;
+  }
+
+  function renderLanguageAccordionOptions(selectedCode) {
+    return Object.keys(CHAT_LANGUAGES)
+      .map((languageCode) => {
+        const meta = getLanguageMeta(languageCode);
+        return `
+          <button
+            class="landing-language-option ${selectedCode === languageCode ? "active" : ""}"
+            type="button"
+            data-action="select-landing-native-language"
+            data-language="${languageCode}"
+          >
+            <span class="landing-language-option-flag" aria-hidden="true">${meta.flag}</span>
+            <span>${escapeHtml(meta.nativeLabel)}</span>
+          </button>
+        `;
+      })
+      .join("");
   }
 
   function getDraft(roomId) {
@@ -1551,13 +1715,15 @@
         data-action="set-landing-ui-language"
         data-language="${languageCode}"
       >
-        ${escapeHtml(LANDING_UI_LANGUAGE_LABELS[languageCode] || languageCode)}
+        <span aria-hidden="true">${languageCode === "ko" ? "🇰🇷" : "🇻🇳"}</span>
       </button>
     `).join("");
   }
 
   function getFilteredRooms() {
-    const rooms = [...appState.rooms].sort((a, b) => (b.lastMessageAt || b.createdAt) - (a.lastMessageAt || a.createdAt));
+    const rooms = [...appState.rooms]
+      .filter((room) => room.status === "active")
+      .sort((a, b) => (b.lastMessageAt || b.createdAt) - (a.lastMessageAt || a.createdAt));
     return filterRoomsByQuery(rooms);
   }
 
@@ -1607,71 +1773,426 @@
     applyTheme();
     const currentUser = getCurrentUser();
     document.documentElement.lang = getUiLanguage();
-    APP_ROOT.innerHTML = currentUser ? renderShell(currentUser) : renderLanding();
+    APP_ROOT.innerHTML = currentUser ? renderShellMobile(currentUser) : renderLanding();
     bindPostRender(focusState, chatScrollState);
   }
 
   function renderLanding() {
+    const selectedNative = getLanguageMeta(uiState.landing.nativeLanguage || "ko");
+    const landingProfileImage = uiState.landing.profileImage || DEFAULT_PROFILE_IMAGE;
     return `
       <main class="shell landing">
-        <div class="landing-card">
-          <div class="landing-language-toggle" aria-label="${escapeHtml(t("labelUiLanguage"))}">
+        <div class="landing-card landing-card-minimal">
+          <div class="landing-language-toggle landing-flag-toggle" aria-label="${escapeHtml(t("labelUiLanguage"))}">
             ${renderLandingLanguageButtons()}
           </div>
-          <section class="hero-panel">
-            <div class="eyebrow">${escapeHtml(t("landingEyebrow"))}</div>
-            <h1 class="brand">${escapeHtml(t("landingTitle"))}</h1>
-            <p class="hero-copy">${escapeHtml(t("landingDescription"))}</p>
-            <div class="hero-points">
-              <article class="metric">
-                <strong>${escapeHtml(t("landingPointRealtime"))}</strong>
-                <span>${escapeHtml(t("landingPointRealtimeCopy"))}</span>
-              </article>
-              <article class="metric">
-                <strong>${escapeHtml(t("landingPointInvite"))}</strong>
-                <span>${escapeHtml(t("landingPointInviteCopy"))}</span>
-              </article>
-              <article class="metric">
-                <strong>${escapeHtml(t("landingPointEphemeral"))}</strong>
-                <span>${escapeHtml(t("landingPointEphemeralCopy"))}</span>
-              </article>
-              <article class="metric">
-                <strong>${escapeHtml(t("landingPointMobile"))}</strong>
-                <span>${escapeHtml(t("landingPointMobileCopy"))}</span>
-              </article>
-            </div>
-          </section>
-          <section class="entry-panel">
-            <div>
-              <h2 class="section-title">${escapeHtml(t("landingPanelTitle"))}</h2>
-              <p class="section-copy">${escapeHtml(t("landingPanelCopy"))}</p>
-            </div>
-            <form class="form-grid" data-form="landing">
-              <div class="field">
-                <label for="entry-name">${escapeHtml(t("labelUsername"))}</label>
-                <input id="entry-name" name="name" type="text" maxlength="24" value="${escapeHtml(uiState.landing.name)}" placeholder="${escapeHtml(t("placeholderUsername"))}" />
-                <span class="field-hint">${escapeHtml(t("helperUsername"))}</span>
+          <section class="landing-minimal-panel">
+            <h1 class="brand landing-brand-minimal">TRANSCHAT</h1>
+            <form class="landing-minimal-form" data-form="landing">
+              <div class="landing-profile-picker-block">
+                <button
+                  class="landing-profile-picker"
+                  type="button"
+                  data-action="trigger-landing-profile"
+                  aria-label="${escapeHtml(t("landingPhotoLabel"))}"
+                >
+                  ${renderProfileImage(landingProfileImage, "landing-profile-image", t("landingPhotoLabel"))}
+                </button>
+                <div class="landing-profile-copy">
+                  <strong>${escapeHtml(t("landingPhotoLabel"))}</strong>
+                  <span>${escapeHtml(t("landingPhotoHelper"))}</span>
+                </div>
+                <input data-input="landing-profile-image" type="file" accept="image/*" hidden>
               </div>
-              <div class="field">
-                <label for="entry-native">${escapeHtml(t("labelNativeLanguage"))}</label>
-                <select id="entry-native" name="nativeLanguage">
-                  ${renderLanguageOptions(uiState.landing.nativeLanguage, CHAT_LANGUAGES)}
-                </select>
+              <div class="landing-input-row">
+                <input
+                  id="entry-name"
+                  name="name"
+                  type="text"
+                  maxlength="24"
+                  value="${escapeHtml(uiState.landing.name)}"
+                  placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+                  autocapitalize="off"
+                  autocomplete="off"
+                />
+                <button class="landing-submit-button" type="submit" aria-label="${escapeHtml(t("enterButton"))}">
+                  →
+                </button>
               </div>
-              <div class="field">
-                <label for="entry-ui">${escapeHtml(t("labelUiLanguage"))}</label>
-                <select id="entry-ui" name="uiLanguage">
-                  ${renderLanguageOptions(uiState.landing.uiLanguage, UI_LANGUAGES)}
-                </select>
-              </div>
-              <div class="button-row">
-                <button class="button button-primary" type="submit">${escapeHtml(t("enterButton"))}</button>
+              <div class="landing-language-accordion">
+                <button
+                  class="landing-language-accordion-trigger"
+                  type="button"
+                  data-action="toggle-landing-native-accordion"
+                  aria-expanded="${uiState.landing.nativeAccordionOpen ? "true" : "false"}"
+                >
+                  <span class="landing-language-trigger-main">
+                    <span aria-hidden="true">${selectedNative.flag}</span>
+                    <span>${escapeHtml(selectedNative.nativeLabel)}</span>
+                  </span>
+                  <span class="landing-language-trigger-caret" aria-hidden="true">${uiState.landing.nativeAccordionOpen ? "−" : "+"}</span>
+                </button>
+                ${uiState.landing.nativeAccordionOpen
+                  ? `<div class="landing-language-accordion-panel">${renderLanguageAccordionOptions(uiState.landing.nativeLanguage)}</div>`
+                  : ""}
               </div>
             </form>
           </section>
         </div>
       </main>
       ${renderToastStack()}
+    `;
+  }
+
+  function renderShellMobile(currentUser) {
+    const activeRoom = uiState.directoryTab === "chat"
+      ? appState.rooms.find((room) => room.id === uiState.activeRoomId && room.status === "active") || null
+      : null;
+    const inRoom = Boolean(activeRoom);
+
+    return `
+      <main class="shell app-shell mobile-shell ${inRoom ? "in-room" : ""}">
+        ${inRoom ? "" : renderMobileTopbar(currentUser)}
+        <section class="workspace workspace-single mobile-workspace">
+          ${renderMobileWorkspace(currentUser, activeRoom)}
+        </section>
+        ${inRoom ? "" : renderBottomDirectoryMobile()}
+      </main>
+      ${renderModal()}
+      ${uiState.modal?.type === "search" ? renderSearchModalMobile(currentUser) : ""}
+      ${renderToastStack()}
+    `;
+  }
+
+  function renderMobileTopbar(currentUser) {
+    return `
+      <header class="topbar mobile-topbar">
+        <div class="brand-chip compact">
+          <div class="brand-mark">T</div>
+          <div class="brand-meta">
+            <strong>TRANSCHAT</strong>
+          </div>
+        </div>
+        <button class="profile-chip compact profile-chip-button" type="button" data-action="go-my-info">
+          ${renderProfileImage(currentUser, "avatar avatar-image", currentUser.name)}
+          <div class="profile-text">
+            <strong>${escapeHtml(currentUser.name)}</strong>
+          </div>
+        </button>
+      </header>
+    `;
+  }
+
+  function renderMobileWorkspace(currentUser, activeRoom) {
+    if (uiState.directoryTab === "friends") {
+      return renderFriendsScreenMobile(currentUser);
+    }
+    if (uiState.directoryTab === "me") {
+      return renderMyInfoScreenMobile(currentUser);
+    }
+    return activeRoom ? renderChatRoomMobile(currentUser, activeRoom) : renderChatListScreenMobile(currentUser);
+  }
+
+  function renderBottomDirectoryMobile() {
+    return `
+      <section class="directory-dock nav-only mobile-nav-dock">
+        <div class="directory-shell nav-shell">
+          <nav class="directory-tabs tabs-only mobile-tabs">
+            ${renderDirectoryTabButtonMobile("friends", "tabFriends", "👥")}
+            ${renderDirectoryTabButtonMobile("chat", "tabActiveRooms", "💬")}
+            ${renderDirectoryTabButtonMobile("me", "tabMyInfo", "🙂")}
+          </nav>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderDirectoryTabButtonMobile(tabId, labelKey, icon) {
+    const active = uiState.directoryTab === tabId || (tabId === "chat" && uiState.directoryTab === "all-rooms");
+    return `
+      <button
+        class="directory-tab mobile-tab ${active ? "active" : ""}"
+        data-action="switch-directory-tab"
+        data-tab-id="${tabId}"
+      >
+        <span class="mobile-tab-icon" aria-hidden="true">${icon}</span>
+        <span>${escapeHtml(t(labelKey))}</span>
+      </button>
+    `;
+  }
+
+  function renderChatListScreenMobile(currentUser) {
+    const joinedRooms = appState.rooms
+      .filter((room) => room.status === "active" && deriveRoomParticipantIds(room).includes(currentUser.id))
+      .sort((a, b) => (b.lastMessageAt || b.createdAt) - (a.lastMessageAt || a.createdAt));
+
+    return `
+      <section class="panel screen-panel mobile-screen">
+        <div class="screen-header mobile-screen-header">
+          <h2>${escapeHtml(t("tabActiveRooms"))}</h2>
+          <div class="mobile-header-actions">
+            <button class="icon-button mobile-icon-button" data-action="open-search" aria-label="${escapeHtml(t("roomSearchPlaceholder"))}" title="${escapeHtml(t("roomSearchPlaceholder"))}">
+              🔍
+            </button>
+            <button class="icon-button mobile-icon-button accent" data-action="open-modal" data-modal="create-room" aria-label="${escapeHtml(t("createRoomButton"))}" title="${escapeHtml(t("createRoomButton"))}">
+              +
+            </button>
+          </div>
+        </div>
+        <div class="screen-body mobile-list-body">
+          ${joinedRooms.length
+            ? joinedRooms.map((room) => renderRoomCardMobile(room)).join("")
+            : `<div class="empty-card compact-empty"><h3>${escapeHtml(t("activeRoomsEmptyTitle"))}</h3><p>${escapeHtml(t("activeRoomsEmptyCopy"))}</p></div>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderRoomCardMobile(room) {
+    const creator = appState.users.find((user) => user.id === room.creatorId);
+    return `
+      <button class="room-card mobile-room-card ${uiState.activeRoomId === room.id ? "active" : ""}" data-action="open-room" data-room-id="${room.id}">
+        <div class="room-topline">
+          <strong>${escapeHtml(room.title)}</strong>
+          ${room.isProtected ? `<span class="room-lock" aria-label="${escapeHtml(t("roomProtected"))}">🔒</span>` : ""}
+        </div>
+        <span class="room-owner mobile-room-owner">👑 ${escapeHtml(creator?.name || "—")}</span>
+        <span class="room-preview">${escapeHtml(getRoomPreviewText(room))}</span>
+      </button>
+    `;
+  }
+
+  function getRoomPreviewText(room) {
+    const latestUserMessage = (room.messages || []).slice().reverse().find((message) => message.kind === "user");
+    if (latestUserMessage?.originalText) {
+      return latestUserMessage.originalText.slice(0, 42);
+    }
+    return formatRelativeTime(room.lastMessageAt || room.createdAt);
+  }
+
+  function renderFriendsScreenMobile(currentUser) {
+    const friends = appState.users
+      .slice()
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.name.localeCompare(b.name));
+
+    return `
+      <section class="panel screen-panel mobile-screen">
+        <div class="screen-header mobile-screen-header">
+          <h2>${escapeHtml(t("tabFriends"))}</h2>
+        </div>
+        <div class="screen-body mobile-list-body">
+          ${friends.length
+            ? friends.map((friend) => renderFriendRowMobile(friend)).join("")
+            : `<div class="empty-card compact-empty"><h3>${escapeHtml(t("friendsEmptyTitle"))}</h3><p>${escapeHtml(t("friendsEmptyCopy"))}</p></div>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderFriendRowMobile(friend) {
+    const presence = getPresence(friend, friend.currentRoomId || null);
+    return `
+      <article class="friend-card mobile-friend-card">
+        ${renderProfileImage(friend, "list-profile-image", friend.name)}
+        <div class="friend-card-meta">
+          <strong>${escapeHtml(friend.name)}</strong>
+        </div>
+        <span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>
+      </article>
+    `;
+  }
+
+  function renderMyInfoScreenMobile(currentUser) {
+    const profileName = syncProfileEditor(currentUser);
+    const incoming = appState.invites
+      .filter((invite) => invite.inviteeId === currentUser.id)
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+    return `
+      <section class="panel screen-panel mobile-screen">
+        <div class="screen-header mobile-screen-header">
+          <h2>${escapeHtml(t("tabMyInfo"))}</h2>
+        </div>
+        <div class="screen-body mobile-list-body my-info-mobile">
+          <div class="setting-card compact profile-edit-card">
+            <div class="profile-edit-head">
+              ${renderProfileImage(currentUser, "profile-edit-image", currentUser.name)}
+              <div class="profile-edit-copy">
+                <strong>${escapeHtml(t("profileCardTitle"))}</strong>
+                <span class="helper">${escapeHtml(currentUser.name)}</span>
+              </div>
+            </div>
+            <div class="profile-edit-actions">
+              <button class="button button-secondary" type="button" data-action="trigger-profile-image">${escapeHtml(t("profilePhotoChange"))}</button>
+              <button class="button button-ghost" type="button" data-action="remove-profile-image">${escapeHtml(t("profilePhotoRemove"))}</button>
+            </div>
+            <input data-input="my-profile-image" type="file" accept="image/*" hidden>
+            <div class="field compact-field">
+              <label for="my-profile-name">${escapeHtml(t("profileNameLabel"))}</label>
+              <input
+                id="my-profile-name"
+                data-input="my-profile-name"
+                type="text"
+                maxlength="24"
+                value="${escapeHtml(profileName)}"
+                placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+                autocapitalize="off"
+                autocomplete="off"
+              />
+            </div>
+            <button class="button" type="button" data-action="save-profile-name">${escapeHtml(t("profileSaveButton"))}</button>
+          </div>
+          <div class="setting-card compact">
+            <strong>${escapeHtml(t("settingsUiLanguage"))}</strong>
+            <div class="field compact-field">
+              <select data-input="settings-ui-language">
+                ${renderLanguageOptions(currentUser.uiLanguage, UI_LANGUAGES)}
+              </select>
+            </div>
+          </div>
+          <div class="setting-card compact">
+            <strong>${escapeHtml(t("settingsNativeLanguage"))}</strong>
+            <div class="field compact-field">
+              <select data-input="settings-native-language">
+                ${renderLanguageOptions(currentUser.nativeLanguage, CHAT_LANGUAGES)}
+              </select>
+            </div>
+          </div>
+          <div class="setting-card compact">
+            <strong>${escapeHtml(t("settingsPreferredLanguage"))}</strong>
+            <div class="field compact-field">
+              <select data-input="settings-preferred-language">
+                ${renderLanguageOptions(currentUser.preferredChatLanguage || currentUser.nativeLanguage, CHAT_LANGUAGES)}
+              </select>
+            </div>
+          </div>
+          <div class="setting-card compact">
+            <strong>${escapeHtml(t("sideInvitesTitle"))}</strong>
+            ${incoming.length
+              ? incoming.map((invite) => renderInviteCard(invite)).join("")
+              : `<span class="helper">${escapeHtml(t("noInvitesCopy"))}</span>`}
+          </div>
+          <div class="setting-card compact">
+            <strong>${escapeHtml(t("logoutButton"))}</strong>
+            <span class="helper">${escapeHtml(t("logoutCopy"))}</span>
+            <button class="button button-danger" data-action="logout-current-user">${escapeHtml(t("logoutButton"))}</button>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderChatRoomMobile(currentUser, room) {
+    const participants = deriveRoomParticipantIds(room)
+      .map((participantId) => appState.users.find((user) => user.id === participantId))
+      .filter(Boolean);
+
+    return `
+      <section class="chat-panel mobile-chat-room">
+        <header class="chat-header mobile-chat-header">
+          <button class="icon-button back-button" data-action="back-to-chat-list" aria-label="Back">←</button>
+          <h2>${escapeHtml(room.title)}</h2>
+          <button
+            class="menu-icon-button"
+            data-action="toggle-chat-details"
+            aria-label="${escapeHtml(t("participantsButton"))}"
+            title="${escapeHtml(t("participantsButton"))}"
+          >
+            ☰
+          </button>
+        </header>
+        <div class="participant-strip">
+          ${participants.map((participant) => `<span class="participant-chip">${escapeHtml(participant.name)}</span>`).join("")}
+        </div>
+        <section class="chat-scroll" id="chat-scroll">
+          ${renderMessageList(room, currentUser)}
+        </section>
+        <footer class="composer mobile-composer">${renderComposerMobile(room)}</footer>
+        ${uiState.chatDetailsOpen ? renderChatDetailsMenuMobile(room) : ""}
+      </section>
+    `;
+  }
+
+  function renderChatDetailsMenuMobile(room) {
+    return `
+      <div class="chat-details-backdrop" data-action="close-chat-details"></div>
+      <aside class="chat-details-panel mobile-chat-menu">
+        <button class="chat-menu-item" data-action="open-modal" data-modal="invite">
+          <span aria-hidden="true">👥+</span>
+          <span>${escapeHtml(t("inviteButton"))}</span>
+        </button>
+        <button class="chat-menu-item danger" data-action="leave-room" data-room-id="${room.id}">
+          <span aria-hidden="true">🚪</span>
+          <span>${escapeHtml(t("leaveButton"))}</span>
+        </button>
+      </aside>
+    `;
+  }
+
+  function renderComposerMobile(room) {
+    const draft = getDraft(room.id);
+    return `
+      ${draft.attachment ? renderAttachmentPreview(draft.attachment) : ""}
+      <div class="composer-wrap composer-inline mobile-composer-wrap">
+        <div class="composer-line">
+          <input
+            class="composer-input"
+            type="text"
+            data-input="composer"
+            data-room-id="${room.id}"
+            value="${escapeHtml(draft.text)}"
+            placeholder="${escapeHtml(t("composerPlaceholder"))}"
+          />
+          <button class="icon-button plus-trigger" data-action="toggle-attachment-menu" aria-label="${escapeHtml(t("addFile"))}" title="${escapeHtml(t("addFile"))}">+</button>
+          <button class="button button-primary send-button" data-action="send-message" data-room-id="${room.id}" ${draft.processing ? "disabled" : ""}>${escapeHtml(t("sendButton"))}</button>
+          <div class="attachment-menu ${uiState.attachmentMenuOpen ? "open" : ""}">
+            <button class="attach-option" data-action="trigger-image" data-room-id="${room.id}" aria-label="${escapeHtml(t("addPhoto"))}" title="${escapeHtml(t("addPhoto"))}">
+              ${renderIconSvg("photo")}
+            </button>
+            <button class="attach-option" data-action="trigger-video" data-room-id="${room.id}" aria-label="${escapeHtml(t("addVideo"))}" title="${escapeHtml(t("addVideo"))}">
+              ${renderIconSvg("video")}
+            </button>
+            <button class="attach-option" data-action="trigger-file" data-room-id="${room.id}" aria-label="${escapeHtml(t("addFile"))}" title="${escapeHtml(t("addFile"))}">
+              ${renderIconSvg("file")}
+            </button>
+          </div>
+        </div>
+      </div>
+      <input class="hidden-input" type="file" accept="image/*" data-input="image-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" accept="video/*" data-input="video-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" data-input="generic-file" data-room-id="${room.id}" />
+    `;
+  }
+
+  function renderSearchModalMobile(currentUser) {
+    const rooms = filterRoomsByQuery(getFilteredRooms());
+    return `
+      <div class="modal-layer">
+        <section class="modal search-modal">
+          <div class="modal-header">
+            <h3>${escapeHtml(t("roomSearchPlaceholder"))}</h3>
+          </div>
+          <div class="modal-body">
+            <div class="field compact-field">
+              <input
+                type="search"
+                data-input="room-search"
+                value="${escapeHtml(uiState.roomSearch)}"
+                placeholder="${escapeHtml(t("roomSearchPlaceholder"))}"
+                autocomplete="off"
+              />
+            </div>
+            <div class="compact-room-list search-results-list">
+              ${rooms.length
+                ? rooms.map((room) => renderRoomCardMobile(room, currentUser)).join("")
+                : `<div class="empty-card compact-empty"><h3>${escapeHtml(t("noRoomsTitle"))}</h3><p>${escapeHtml(t("noRoomsCopy"))}</p></div>`}
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="button button-secondary" data-action="close-modal">${escapeHtml(t("settingsClose"))}</button>
+          </div>
+        </section>
+      </div>
     `;
   }
 
@@ -2823,12 +3344,56 @@
       }
       return;
     }
+    if (action === "toggle-landing-native-accordion") {
+      uiState.landing.nativeAccordionOpen = !uiState.landing.nativeAccordionOpen;
+      render();
+      return;
+    }
+    if (action === "select-landing-native-language") {
+      const nextLanguage = actionTarget.dataset.language;
+      if (nextLanguage) {
+        uiState.landing.nativeLanguage = nextLanguage;
+        uiState.landing.nativeAccordionOpen = false;
+        render();
+      }
+      return;
+    }
+    if (action === "trigger-landing-profile") {
+      document.querySelector('[data-input="landing-profile-image"]')?.click();
+      return;
+    }
+    if (action === "go-my-info") {
+      uiState.directoryTab = "me";
+      uiState.activeRoomId = null;
+      uiState.chatDetailsOpen = false;
+      uiState.attachmentMenuOpen = false;
+      render();
+      return;
+    }
     if (action === "switch-directory-tab") {
       const nextTab = actionTarget.dataset.tabId;
       uiState.directoryTab = nextTab;
       if (nextTab !== "chat") {
+        uiState.activeRoomId = null;
+      }
+      if (nextTab !== "chat") {
         uiState.chatDetailsOpen = false;
       }
+      uiState.attachmentMenuOpen = false;
+      render();
+      return;
+    }
+    if (action === "open-search") {
+      uiState.modal = { type: "search" };
+      uiState.chatDetailsOpen = false;
+      render();
+      return;
+    }
+    if (action === "back-to-chat-list") {
+      stopTypingForRoom(uiState.activeRoomId);
+      uiState.activeRoomId = null;
+      uiState.directoryTab = "chat";
+      uiState.chatDetailsOpen = false;
       uiState.attachmentMenuOpen = false;
       render();
       return;
@@ -2849,6 +3414,8 @@
       return;
     }
     if (action === "open-modal") {
+      uiState.chatDetailsOpen = false;
+      uiState.attachmentMenuOpen = false;
       openModal(actionTarget.dataset.modal);
       return;
     }
@@ -2878,6 +3445,9 @@
       return;
     }
     if (action === "open-room") {
+      if (uiState.modal?.type === "search") {
+        uiState.modal = null;
+      }
       handleOpenRoom(actionTarget.dataset.roomId);
       return;
     }
@@ -2951,6 +3521,24 @@
       handleInviteSubmit();
       return;
     }
+    if (action === "trigger-profile-image") {
+      document.querySelector('[data-input="my-profile-image"]')?.click();
+      return;
+    }
+    if (action === "remove-profile-image") {
+      const currentUser = getCurrentUser();
+      if (currentUser) {
+        currentUser.profileImage = null;
+        persistState();
+        pushToast("toastProfileImageRemoved", "toastProfileImageRemovedCopy");
+        render();
+      }
+      return;
+    }
+    if (action === "save-profile-name") {
+      saveProfileName();
+      return;
+    }
     if (action === "respond-invite") {
       respondInvite(actionTarget.dataset.inviteId, actionTarget.dataset.response);
       return;
@@ -3011,6 +3599,10 @@
         return;
       }
       render();
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "my-profile-name") {
+      uiState.profileEditor.name = target.value;
       return;
     }
     if (target.dataset.input === "composer") {
@@ -3084,6 +3676,37 @@
       }
       return;
     }
+    if (target.dataset.input === "landing-profile-image") {
+      const [file] = target.files || [];
+      if (file) {
+        try {
+          uiState.landing.profileImage = await prepareProfileImage(file);
+          render();
+        } catch (error) {
+          pushToast("toastProfileImageInvalid", "toastProfileImageInvalidCopy");
+          render();
+        }
+      }
+      target.value = "";
+      return;
+    }
+    if (target.dataset.input === "my-profile-image") {
+      const currentUser = getCurrentUser();
+      const [file] = target.files || [];
+      if (currentUser && file) {
+        try {
+          currentUser.profileImage = await prepareProfileImage(file);
+          persistState();
+          pushToast("toastProfileImageUpdated", "toastProfileImageUpdatedCopy");
+          render();
+        } catch (error) {
+          pushToast("toastProfileImageInvalid", "toastProfileImageInvalidCopy");
+          render();
+        }
+      }
+      target.value = "";
+      return;
+    }
     if (target.dataset.input === "image-file") {
       const [file] = target.files || [];
       if (file) {
@@ -3113,6 +3736,17 @@
     const target = event.target;
     if (
       target instanceof HTMLInputElement &&
+      target.dataset.input === "my-profile-name" &&
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.isComposing
+    ) {
+      event.preventDefault();
+      saveProfileName();
+      return;
+    }
+    if (
+      target instanceof HTMLInputElement &&
       target.dataset.input === "composer" &&
       event.key === "Enter" &&
       !event.shiftKey &&
@@ -3138,6 +3772,8 @@
       runtime.compositionTarget = null;
       if (target.dataset.input === "room-search") {
         uiState.roomSearch = target.value;
+      } else if (target.dataset.input === "my-profile-name") {
+        uiState.profileEditor.name = target.value;
       }
     }
     if (target instanceof HTMLInputElement && target.dataset.input === "composer") {
@@ -3155,8 +3791,6 @@
     if (form.dataset.form === "landing") {
       const formData = new FormData(form);
       uiState.landing.name = String(formData.get("name") || "").trim();
-      uiState.landing.nativeLanguage = String(formData.get("nativeLanguage") || "ko");
-      uiState.landing.uiLanguage = String(formData.get("uiLanguage") || "ko");
       enterLandingUser();
     }
   }
@@ -3204,31 +3838,84 @@
     return `${baseName}${suffix}`;
   }
 
+  function saveProfileName() {
+    const currentUser = getCurrentUser();
+    if (!currentUser) return;
+
+    const nextName = String(uiState.profileEditor.name || "").trim();
+    if (!nextName) {
+      pushToast("toastProfileNameTaken", "toastProfileNameTakenCopy");
+      render();
+      return;
+    }
+
+    const duplicate = appState.users.find(
+      (user) => user.id !== currentUser.id && String(user.name || "").trim().toLowerCase() === nextName.toLowerCase()
+    );
+    if (duplicate) {
+      pushToast("toastProfileNameTaken", "toastProfileNameTakenCopy");
+      render();
+      return;
+    }
+
+    currentUser.name = nextName;
+    uiState.profileEditor.name = nextName;
+    persistState();
+    pushToast("toastProfileSaved", "toastProfileSavedCopy");
+    render();
+  }
+
   function enterLandingUser() {
     const baseName = uiState.landing.name.trim();
     if (!baseName) return;
-    const uniqueName = generateUniqueUserName(baseName);
-    const user = createUser(
-      uniqueName,
-      uiState.landing.nativeLanguage,
-      uiState.landing.uiLanguage,
-      Date.now(),
-      null
-    );
-    appState.users.push(user);
+    const existingUser = appState.users.find((user) => String(user.name || "").trim().toLowerCase() === baseName.toLowerCase());
+    const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
+    const user = existingUser
+      ? {
+          ...existingUser,
+          uiLanguage: uiState.landing.uiLanguage,
+        }
+      : createUser(
+          baseName,
+          uiState.landing.nativeLanguage || defaultLanguage,
+          uiState.landing.uiLanguage,
+          Date.now(),
+          null,
+          uiState.landing.profileImage || null
+        );
+
+    if (existingUser) {
+      const shouldSyncPreferred =
+        !existingUser.preferredChatLanguage || existingUser.preferredChatLanguage === existingUser.nativeLanguage;
+      existingUser.uiLanguage = uiState.landing.uiLanguage;
+      existingUser.nativeLanguage = uiState.landing.nativeLanguage || existingUser.nativeLanguage || defaultLanguage;
+      if (shouldSyncPreferred) {
+        existingUser.preferredChatLanguage = existingUser.nativeLanguage;
+      }
+      if (uiState.landing.profileImage) {
+        existingUser.profileImage = uiState.landing.profileImage;
+      }
+      existingUser.lastSeenAt = Date.now();
+    } else {
+      appState.users.push(user);
+    }
+
     setActiveUserId(user.id);
     localStorage.setItem(LANDING_UI_KEY, user.uiLanguage);
-    uiState.activeRoomId = null;
-    uiState.directoryTab = "all-rooms";
+    uiState.activeRoomId = user.currentRoomId || null;
+    uiState.directoryTab = "chat";
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     uiState.mobileRoomsOpen = false;
+    uiState.landing.nativeAccordionOpen = false;
+    uiState.landing.profileImage = null;
+    uiState.profileEditor = {
+      userId: user.id,
+      name: user.name,
+    };
     persistState();
-    if (uniqueName !== baseName) {
-      pushToast("toastDuplicateName", "toastDuplicateNameCopy", { name: uniqueName });
-    } else {
-      pushToast("toastEnter", "toastEnterCopy", { name: uniqueName });
-    }
+    markUserPresence(user.currentRoomId || null);
+    pushToast("toastEnter", "toastEnterCopy", { name: user.name });
     render();
   }
 
@@ -3263,7 +3950,11 @@
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     uiState.activeRoomId = user.currentRoomId || null;
-    uiState.directoryTab = user.currentRoomId ? "chat" : "all-rooms";
+    uiState.directoryTab = "chat";
+    uiState.profileEditor = {
+      userId: user.id,
+      name: user.name,
+    };
     markUserPresence(user.currentRoomId || null);
     pushToast("toastUserSwitched", "toastUserSwitchedCopy", { name: user.name });
     render();
@@ -3277,11 +3968,17 @@
     uiState.activeRoomId = null;
     uiState.modal = null;
     uiState.drawer = null;
-    uiState.directoryTab = "all-rooms";
+    uiState.directoryTab = "chat";
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     uiState.mobileRoomsOpen = false;
     uiState.drafts = {};
+    uiState.profileEditor = {
+      userId: null,
+      name: "",
+    };
+    uiState.landing.nativeAccordionOpen = false;
+    uiState.landing.profileImage = null;
     persistState();
     render();
   }
@@ -3446,7 +4143,7 @@
     if (uiState.activeRoomId === room.id) {
       uiState.activeRoomId = null;
     }
-    uiState.directoryTab = "all-rooms";
+    uiState.directoryTab = "chat";
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     persistState();
@@ -3485,7 +4182,7 @@
     if (uiState.modal?.data?.roomId === roomId) {
       uiState.modal = null;
     }
-    uiState.directoryTab = "all-rooms";
+    uiState.directoryTab = "chat";
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
   }
@@ -3536,13 +4233,19 @@
     uiState.landing.name = "";
     uiState.landing.nativeLanguage = currentUser.nativeLanguage || "ko";
     uiState.landing.uiLanguage = currentUser.uiLanguage || uiState.landing.uiLanguage || "ko";
+    uiState.landing.nativeAccordionOpen = false;
+    uiState.landing.profileImage = null;
+    uiState.profileEditor = {
+      userId: null,
+      name: "",
+    };
 
     deleteUserAccount(currentUser.id);
     setActiveUserId(null);
     uiState.activeRoomId = null;
     uiState.modal = null;
     uiState.drawer = null;
-    uiState.directoryTab = "all-rooms";
+    uiState.directoryTab = "chat";
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     uiState.mobileRoomsOpen = false;
@@ -4277,16 +4980,14 @@
   }
 
   function checkRoomExpirations() {
-    let changed = false;
-    appState.rooms.forEach((room) => {
-      if (room.status === "expired" || room.disableExpiration) return;
+    const expiredRooms = appState.rooms.filter((room) => {
+      if (room.status === "expired" || room.disableExpiration) return false;
       const lastActivity = room.lastMessageAt || room.createdAt;
-      if (Date.now() - lastActivity >= CONFIG.roomExpireMs) {
-        expireRoom(room);
-        changed = true;
-      }
+      return Date.now() - lastActivity >= CONFIG.roomExpireMs;
     });
-    if (changed) {
+
+    if (expiredRooms.length) {
+      expiredRooms.forEach((room) => expireRoom(room));
       persistState();
       render();
     }
@@ -4294,31 +4995,11 @@
 
   function expireRoom(room) {
     // Later this cleanup belongs in authoritative backend expiration logic tied to database rows and media storage deletion.
-    const currentUser = getCurrentUser();
-    room.messages.forEach((message) => {
-      if (message.media?.kind === "video" && message.media.runtimeId) {
-        revokeRuntimeVideo(message.media.runtimeId);
-      }
-    });
-    room.status = "expired";
-    room.expiredAt = Date.now();
-    room.participants = [];
-    room.messages = [];
-    room.unreadByUser = {};
-    room.accessByUser = {};
-
-    appState.invites.forEach((invite) => {
-      if (invite.roomId === room.id && invite.status === "pending") {
-        invite.status = "rejected";
-        invite.respondedAt = room.expiredAt;
-      }
-    });
-
-    if (currentUser && currentUser.currentRoomId === room.id) {
-      currentUser.currentRoomId = null;
-      uiState.activeRoomId = room.id;
-      pushToast("toastRoomExpired", "toastRoomExpiredCopy", { title: room.title });
-    }
+    const title = room.title;
+    deleteRoom(room.id);
+    uiState.activeRoomId = null;
+    uiState.directoryTab = "chat";
+    pushToast("toastRoomExpired", "toastRoomExpiredCopy", { title });
   }
 
   function syncViewport() {
@@ -4487,7 +5168,7 @@
   const currentUser = getCurrentUser();
   if (currentUser) {
     uiState.activeRoomId = currentUser.currentRoomId || null;
-    uiState.directoryTab = currentUser.currentRoomId ? "chat" : "all-rooms";
+    uiState.directoryTab = "chat";
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     markUserPresence(uiState.activeRoomId);
