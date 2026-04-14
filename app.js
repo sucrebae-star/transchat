@@ -32,6 +32,16 @@
   // Edit this allowlist during private testing; later move the same rule to authenticated server-side identities.
   const PRIVATE_TEST_ALLOWLIST = new Set(["현태", "배현태", "호아", "hoa"].map((value) => value.trim().toLowerCase()));
 
+  const PRIVATE_TEST_GATE_NAMES = new Set(["hoa", "현태", "admin"].map((value) => String(value || "").trim().toLowerCase()));
+  const UNLIMITED_TESTER_NAMES = new Set(["hoa", "현태"].map((value) => String(value || "").trim().toLowerCase()));
+  const BUILT_IN_ADMIN_ACCOUNT = Object.freeze({
+    loginId: "admin",
+    password: "0694",
+    name: "Admin",
+    nativeLanguage: "ko",
+    uiLanguage: "ko",
+  });
+
   const APP_ROOT = document.getElementById("app");
   const runtime = {
     clientId: `client-${Math.random().toString(36).slice(2, 10)}`,
@@ -968,6 +978,7 @@
   };
 
   let appState = loadState();
+  ensureSystemAccounts();
   syncUsageWindows();
   syncUserAlertState();
 
@@ -1330,6 +1341,66 @@
     planUpdatedCopy: "Thong tin goi hien tai da duoc cap nhat o che do thu.",
   });
 
+  Object.assign(DICTIONARY.ko, {
+    adminDeleteUserButton: "계정 삭제",
+    adminDeleteRoomButton: "방 삭제",
+    adminAccountDeleteConfirm: "이 계정을 삭제하면 관련 정보도 함께 삭제됩니다.",
+    adminRoomDeleteConfirm: "이 대화방과 모든 메시지를 삭제합니다. 계속할까요?",
+    toastAccountDeleted: "계정이 삭제되었습니다",
+    toastAccountDeletedCopy: "{name} 계정과 관련 데이터가 삭제되었습니다.",
+    toastAdminSelfDeleteBlocked: "관리자 본인은 삭제할 수 없습니다",
+    toastAdminSelfDeleteBlockedCopy: "admin 계정은 직접 삭제할 수 없습니다.",
+    planUnlimitedTesterCopy: "테스트용 무제한 예외 계정",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    adminDeleteUserButton: "Delete account",
+    adminDeleteRoomButton: "Delete room",
+    adminAccountDeleteConfirm: "Deleting this account also removes related data.",
+    adminRoomDeleteConfirm: "Delete this room and all of its messages?",
+    toastAccountDeleted: "Account deleted",
+    toastAccountDeletedCopy: "{name} and related data were deleted.",
+    toastAdminSelfDeleteBlocked: "You cannot delete the admin account",
+    toastAdminSelfDeleteBlockedCopy: "The admin account cannot delete itself.",
+    planUnlimitedTesterCopy: "Unlimited tester bypass account",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    adminDeleteUserButton: "Xoa tai khoan",
+    adminDeleteRoomButton: "Xoa phong",
+    adminAccountDeleteConfirm: "Neu xoa tai khoan nay, du lieu lien quan cung se bi xoa.",
+    adminRoomDeleteConfirm: "Xoa phong chat nay va toan bo tin nhan?",
+    toastAccountDeleted: "Da xoa tai khoan",
+    toastAccountDeletedCopy: "Tai khoan {name} va du lieu lien quan da bi xoa.",
+    toastAdminSelfDeleteBlocked: "Khong the xoa tai khoan admin",
+    toastAdminSelfDeleteBlockedCopy: "Tai khoan admin khong the tu xoa chinh no.",
+    planUnlimitedTesterCopy: "Tai khoan test khong gioi han",
+  });
+
+  Object.assign(DICTIONARY.ko, {
+    planRemainingMessages: "오늘 무료 체험 잔여 메시지: {count}개",
+    planFreeTrialHint: "무료로 충분히 체험해보고 필요할 때 플랜 변경 가능",
+    planMonthlyCopySecondary: "안정적인 서비스 운영을 위해 과도한 자동화/남용은 제한될 수 있음",
+    planYearlyCopySecondary: "안정적인 서비스 운영을 위해 과도한 자동화/남용은 제한될 수 있음",
+    planPremiumGuardCopy: "안정적인 서비스 운영을 위해 과도한 자동화/남용은 제한될 수 있음",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    planRemainingMessages: "Free trial messages left today: {count}",
+    planFreeTrialHint: "Try the service comfortably for free and change your plan only if needed.",
+    planMonthlyCopySecondary: "Heavy automation or abusive usage may still be limited for service stability.",
+    planYearlyCopySecondary: "Heavy automation or abusive usage may still be limited for service stability.",
+    planPremiumGuardCopy: "Heavy automation or abusive usage may still be limited for service stability.",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    planRemainingMessages: "So tin nhan trai nghiem mien phi con lai hom nay: {count}",
+    planFreeTrialHint: "Ban co the trai nghiem thoai mai mien phi va chi doi goi khi that su can.",
+    planMonthlyCopySecondary: "De van hanh on dinh, tu dong hoa qua muc hoac lam dung co the bi gioi han.",
+    planYearlyCopySecondary: "De van hanh on dinh, tu dong hoa qua muc hoac lam dung co the bi gioi han.",
+    planPremiumGuardCopy: "De van hanh on dinh, tu dong hoa qua muc hoac lam dung co the bi gioi han.",
+  });
+
   function loadState() {
     const parsed = readPersistedState();
     if (parsed) return parsed;
@@ -1523,6 +1594,8 @@
     const normalizedName = normalizeDisplayText(name).trim();
     const joinedAt = Number(accountOptions.joinedAt || Date.now());
     const normalizedLoginId = normalizeAccountId(accountOptions.loginId || normalizedName);
+    const isAdmin = Boolean(accountOptions.isAdmin) || isAdminLoginId(normalizedLoginId);
+    const isUnlimitedTester = isUnlimitedTesterName(normalizedName);
     return {
       id: uid("user"),
       loginId: normalizedLoginId,
@@ -1531,6 +1604,9 @@
       gender: accountOptions.gender === "female" ? "female" : accountOptions.gender === "male" ? "male" : "",
       age: Number(accountOptions.age || 0) || "",
       profileImage,
+      isAdmin,
+      isUnlimitedTester,
+      canBypassUsageLimit: isAdmin || isUnlimitedTester,
       // Future auth expansion point: replace test-name identity with Google, magic-link, or phone-backed identities.
       auth: {
         provider: "test-name",
@@ -1652,40 +1728,49 @@
 
     const users = (parsed.users || [])
       .filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user))
-      .map((user) => ({
-        ...user,
-        loginId: normalizeAccountId(user?.loginId || user?.name),
-        name: normalizeDisplayText(user.name),
-        nickname: normalizeDisplayText(user?.nickname || "").trim(),
-        gender: user?.gender === "female" ? "female" : user?.gender === "male" ? "male" : "",
-        age: Number(user?.age || 0) || "",
-        auth: {
-          provider: user?.auth?.provider || "test-name",
-          subject: user?.auth?.subject || normalizeAccountId(user?.loginId || user?.name),
-          email: user?.auth?.email || null,
-          phoneNumber: user?.auth?.phoneNumber || null,
-          phoneVerified: Boolean(user?.auth?.phoneVerified),
-        },
-        blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
-        preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
-        password: typeof user?.password === "string" ? user.password : "",
-        planTier: ["monthly", "yearly"].includes(user?.planTier) ? user.planTier : "free",
-        usage: sanitizeUsageState(user?.usage, Number(parsed.updatedAt || Date.now())),
-        planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
-        planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
-        recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
-          ? user.recoveryQuestionKey
-          : getDeterministicRecoveryQuestionKey(user?.name),
-        recoveryAnswer:
-          typeof user?.recoveryAnswer === "string"
-            ? normalizeRecoveryAnswer(user.recoveryAnswer)
-            : normalizeRecoveryAnswer(user?.name),
-        joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
-        lastLoginAt: Number(user?.lastLoginAt || 0) || null,
-        loginState: user?.loginState === "online" ? "online" : "offline",
-        hasUnreadInvites: Boolean(user?.hasUnreadInvites),
-        hasUnreadMessages: Boolean(user?.hasUnreadMessages),
-      }));
+      .map((user) => {
+        const normalizedLoginId = normalizeAccountId(user?.loginId || user?.name);
+        const normalizedName = normalizeDisplayText(user.name);
+        const isAdmin = Boolean(user?.isAdmin) || isAdminLoginId(normalizedLoginId);
+        const isUnlimitedTester = isUnlimitedTesterName(normalizedName);
+        return {
+          ...user,
+          loginId: normalizedLoginId,
+          name: normalizedName,
+          nickname: normalizeDisplayText(user?.nickname || "").trim(),
+          gender: user?.gender === "female" ? "female" : user?.gender === "male" ? "male" : "",
+          age: Number(user?.age || 0) || "",
+          isAdmin,
+          isUnlimitedTester,
+          canBypassUsageLimit: isAdmin || isUnlimitedTester,
+          auth: {
+            provider: user?.auth?.provider || "test-name",
+            subject: user?.auth?.subject || normalizedLoginId,
+            email: user?.auth?.email || null,
+            phoneNumber: user?.auth?.phoneNumber || null,
+            phoneVerified: Boolean(user?.auth?.phoneVerified),
+          },
+          blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
+          preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
+          password: typeof user?.password === "string" ? user.password : "",
+          planTier: ["monthly", "yearly"].includes(user?.planTier) ? user.planTier : "free",
+          usage: sanitizeUsageState(user?.usage, Number(parsed.updatedAt || Date.now())),
+          planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
+          planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
+          recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+            ? user.recoveryQuestionKey
+            : getDeterministicRecoveryQuestionKey(user?.name),
+          recoveryAnswer:
+            typeof user?.recoveryAnswer === "string"
+              ? normalizeRecoveryAnswer(user.recoveryAnswer)
+              : normalizeRecoveryAnswer(user?.name),
+          joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
+          lastLoginAt: Number(user?.lastLoginAt || 0) || null,
+          loginState: user?.loginState === "online" ? "online" : "offline",
+          hasUnreadInvites: Boolean(user?.hasUnreadInvites),
+          hasUnreadMessages: Boolean(user?.hasUnreadMessages),
+        };
+      });
     const userIds = new Set(users.map((user) => user.id));
 
     const rooms = (parsed.rooms || [])
@@ -1789,6 +1874,7 @@
 
   function persistState() {
     // Prototype policy note: chats and inline image previews live in local/browser state until a room is deleted or expires.
+    syncSpecialUserFlags();
     syncUsageWindows();
     syncUserAlertState();
     appState.updatedAt = Date.now();
@@ -2017,6 +2103,61 @@
     return normalizeDisplayText(value).trim().toLowerCase();
   }
 
+  function normalizePolicyIdentity(value) {
+    return normalizeDisplayText(value).replace(/\s+/g, "").trim().toLowerCase();
+  }
+
+  function isAdminLoginId(value) {
+    return normalizeAccountId(value) === BUILT_IN_ADMIN_ACCOUNT.loginId;
+  }
+
+  function isUnlimitedTesterName(value) {
+    return UNLIMITED_TESTER_NAMES.has(normalizePolicyIdentity(value));
+  }
+
+  function isAdminUser(user) {
+    return Boolean(user?.isAdmin) || isAdminLoginId(user?.loginId);
+  }
+
+  function canBypassUsageLimit(user) {
+    return Boolean(user) && (isAdminUser(user) || Boolean(user?.isUnlimitedTester) || isUnlimitedTesterName(user?.name));
+  }
+
+  function applySpecialUserFlags(user) {
+    if (!user) return user;
+    user.isAdmin = Boolean(user.isAdmin) || isAdminLoginId(user.loginId);
+    user.isUnlimitedTester = isUnlimitedTesterName(user.name);
+    user.canBypassUsageLimit = user.isAdmin || user.isUnlimitedTester;
+    return user;
+  }
+
+  function syncSpecialUserFlags() {
+    (appState.users || []).forEach((user) => applySpecialUserFlags(user));
+  }
+
+  function ensureSystemAccounts() {
+    syncSpecialUserFlags();
+    let adminUser = (appState.users || []).find((user) => isAdminLoginId(user?.loginId));
+    if (!adminUser) {
+      adminUser = createUser(
+        BUILT_IN_ADMIN_ACCOUNT.name,
+        BUILT_IN_ADMIN_ACCOUNT.nativeLanguage,
+        BUILT_IN_ADMIN_ACCOUNT.uiLanguage,
+        Date.now(),
+        null,
+        null,
+        {
+          loginId: BUILT_IN_ADMIN_ACCOUNT.loginId,
+          password: BUILT_IN_ADMIN_ACCOUNT.password,
+          isAdmin: true,
+          planTier: "yearly",
+        }
+      );
+      appState.users.unshift(adminUser);
+    }
+    applySpecialUserFlags(adminUser);
+  }
+
   function isValidSignupLoginId(value) {
     return /^(?=.*[a-z])(?=.*\d)[a-z\d]{5,}$/i.test(String(value || "").trim());
   }
@@ -2132,6 +2273,9 @@
 
   function getMessageLimitState(user) {
     const summary = getPlanUsageSummary(user);
+    if (canBypassUsageLimit(user)) {
+      return { blocked: false, kind: "ok", summary };
+    }
     if (!isPremiumPlan(user) && summary.used >= CONFIG.freeDailyMessageLimit) {
       return { blocked: true, kind: "free", summary };
     }
@@ -2142,6 +2286,7 @@
   }
 
   function maybeFlagPremiumSoftLimit(user) {
+    if (canBypassUsageLimit(user)) return false;
     if (!isPremiumPlan(user)) return false;
     ensureUserUsageState(user);
     if (Number(user.usage.totalMessages || 0) < CONFIG.premiumSoftLimit) return false;
@@ -2157,6 +2302,7 @@
     affectedUserIds.forEach((userId) => {
       const user = appState.users.find((item) => item.id === userId);
       if (!user) return;
+      if (canBypassUsageLimit(user)) return;
       ensureUserUsageState(user, createdAt);
       user.usage.totalMessages = Math.max(0, Number(user.usage.totalMessages || 0)) + 1;
       user.usage.lastUpdatedAt = createdAt;
@@ -2255,7 +2401,7 @@
     if (CONFIG.accessGateMode !== "whitelist") {
       return true;
     }
-    return PRIVATE_TEST_ALLOWLIST.has(normalizeLoginIdentity(name));
+    return PRIVATE_TEST_GATE_NAMES.has(normalizePolicyIdentity(name)) || isAdminLoginId(name);
   }
 
   // Added: web standard file-picker validation so only user-selected images are processed in memory.
@@ -2793,6 +2939,166 @@
     return `<button class="button button-secondary connection-invite-button" type="button" data-action="send-connection-invite" data-user-id="${friend.id}">${escapeHtml(t("connectionInvite"))}</button>`;
   }
 
+  function normalizeRenderableNodes(nodes) {
+    return (nodes || []).filter((node) => !(node.nodeType === Node.TEXT_NODE && !String(node.textContent || "").trim()));
+  }
+
+  function getNodeDiffKey(node) {
+    if (!(node instanceof Element)) return null;
+    if (node.dataset.diffKey) return `diff:${node.dataset.diffKey}`;
+    if (node.id) return `id:${node.id}`;
+    if (node.dataset.scrollKey) return `scroll:${node.dataset.scrollKey}`;
+    if (node.dataset.roomId && node.dataset.action) return `room:${node.dataset.roomId}:${node.dataset.action}`;
+    if (node.dataset.userId && node.dataset.action) return `user:${node.dataset.userId}:${node.dataset.action}`;
+    if (node.dataset.messageId && node.dataset.action) return `message:${node.dataset.messageId}:${node.dataset.action}`;
+    if (node.dataset.inviteId) return `invite:${node.dataset.inviteId}:${node.dataset.response || node.dataset.action || node.tagName}`;
+    if (node.dataset.tabId) return `tab:${node.dataset.tabId}`;
+    if (node.dataset.input && node.dataset.roomId) return `input:${node.dataset.input}:${node.dataset.roomId}`;
+    if (node.dataset.input) return `input:${node.dataset.input}`;
+    return null;
+  }
+
+  function shouldPreserveLiveInput(element) {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)) {
+      return false;
+    }
+    if (document.activeElement !== element) return false;
+    if (runtime.compositionActive) return true;
+    if (element.dataset.input === "composer" || element.dataset.input === "room-search") return true;
+    return false;
+  }
+
+  function syncElementAttributes(currentNode, nextNode) {
+    const currentAttrs = new Set(currentNode.getAttributeNames());
+    const nextAttrs = new Set(nextNode.getAttributeNames());
+
+    currentAttrs.forEach((name) => {
+      if (!nextAttrs.has(name)) {
+        currentNode.removeAttribute(name);
+      }
+    });
+
+    nextAttrs.forEach((name) => {
+      const nextValue = nextNode.getAttribute(name);
+      if (currentNode.getAttribute(name) !== nextValue) {
+        currentNode.setAttribute(name, nextValue);
+      }
+    });
+  }
+
+  function syncFormControlValue(currentNode, nextNode) {
+    if (currentNode instanceof HTMLInputElement && nextNode instanceof HTMLInputElement) {
+      if (!shouldPreserveLiveInput(currentNode) && currentNode.value !== nextNode.value) {
+        currentNode.value = nextNode.value;
+      }
+      if (currentNode.checked !== nextNode.checked) {
+        currentNode.checked = nextNode.checked;
+      }
+      return;
+    }
+
+    if (currentNode instanceof HTMLTextAreaElement && nextNode instanceof HTMLTextAreaElement) {
+      if (!shouldPreserveLiveInput(currentNode) && currentNode.value !== nextNode.value) {
+        currentNode.value = nextNode.value;
+      }
+      return;
+    }
+
+    if (currentNode instanceof HTMLSelectElement && nextNode instanceof HTMLSelectElement) {
+      if (!shouldPreserveLiveInput(currentNode) && currentNode.value !== nextNode.value) {
+        currentNode.value = nextNode.value;
+      }
+    }
+  }
+
+  function findReusableChild(existingChildren, nextChild, usedChildren) {
+    const keyedNext = getNodeDiffKey(nextChild);
+    if (keyedNext) {
+      return (
+        existingChildren.find((child) => !usedChildren.has(child) && getNodeDiffKey(child) === keyedNext) || null
+      );
+    }
+
+    return (
+      existingChildren.find((child) => {
+        if (usedChildren.has(child)) return false;
+        if (getNodeDiffKey(child)) return false;
+        if (child.nodeType !== nextChild.nodeType) return false;
+        if (child.nodeType === Node.ELEMENT_NODE) {
+          return child.nodeName === nextChild.nodeName;
+        }
+        return true;
+      }) || null
+    );
+  }
+
+  function patchDomNode(currentNode, nextNode) {
+    if (!currentNode || !nextNode) return;
+
+    if (
+      currentNode.nodeType !== nextNode.nodeType ||
+      currentNode.nodeName !== nextNode.nodeName ||
+      getNodeDiffKey(currentNode) !== getNodeDiffKey(nextNode)
+    ) {
+      currentNode.replaceWith(nextNode.cloneNode(true));
+      return;
+    }
+
+    if (currentNode.nodeType === Node.TEXT_NODE) {
+      if (currentNode.textContent !== nextNode.textContent) {
+        currentNode.textContent = nextNode.textContent;
+      }
+      return;
+    }
+
+    if (!(currentNode instanceof Element) || !(nextNode instanceof Element)) {
+      return;
+    }
+
+    syncElementAttributes(currentNode, nextNode);
+    syncFormControlValue(currentNode, nextNode);
+    patchChildList(currentNode, normalizeRenderableNodes(Array.from(nextNode.childNodes)));
+  }
+
+  function patchChildList(parentNode, nextChildren) {
+    Array.from(parentNode.childNodes).forEach((child) => {
+      if (child.nodeType === Node.TEXT_NODE && !String(child.textContent || "").trim()) {
+        child.remove();
+      }
+    });
+    const existingChildren = normalizeRenderableNodes(Array.from(parentNode.childNodes));
+    const usedChildren = new Set();
+    let referenceNode = parentNode.firstChild;
+
+    nextChildren.forEach((nextChild) => {
+      const reusableChild = findReusableChild(existingChildren, nextChild, usedChildren);
+      if (reusableChild) {
+        usedChildren.add(reusableChild);
+        patchDomNode(reusableChild, nextChild);
+        if (reusableChild !== referenceNode) {
+          parentNode.insertBefore(reusableChild, referenceNode);
+        }
+        referenceNode = reusableChild.nextSibling;
+        return;
+      }
+
+      const clone = nextChild.cloneNode(true);
+      parentNode.insertBefore(clone, referenceNode);
+    });
+
+    existingChildren.forEach((child) => {
+      if (!usedChildren.has(child)) {
+        child.remove();
+      }
+    });
+  }
+
+  function patchRootHtml(nextHtml) {
+    const template = document.createElement("template");
+    template.innerHTML = nextHtml.trim();
+    patchChildList(APP_ROOT, normalizeRenderableNodes(Array.from(template.content.childNodes)));
+  }
+
   function render() {
     if (runtime.compositionActive) {
       runtime.pendingRenderWhileComposing = true;
@@ -2804,7 +3110,7 @@
     applyTheme();
     const currentUser = getCurrentUser();
     document.documentElement.lang = getUiLanguage();
-    APP_ROOT.innerHTML = currentUser ? renderShellMobile(currentUser) : renderLandingEnhancedV2();
+    patchRootHtml(currentUser ? renderShellMobile(currentUser) : renderLandingEnhancedV2());
     bindPostRender(focusState, chatScrollState, surfaceScrollState);
   }
 
@@ -3417,7 +3723,7 @@
         </div>
         <div class="screen-body mobile-list-body" data-scroll-key="chat-list">
           ${joinedRooms.length
-            ? joinedRooms.map((room) => renderRoomCardMobile(room)).join("")
+            ? joinedRooms.map((room) => renderRoomCardMobile(room, currentUser)).join("")
             : `<div class="empty-card compact-empty"><h3>${escapeHtml(t("activeRoomsEmptyTitle"))}</h3><p>${escapeHtml(t("activeRoomsEmptyCopy"))}</p></div>`}
         </div>
       </section>
@@ -3427,7 +3733,7 @@
   function renderRoomCardMobile(room) {
     const creator = appState.users.find((user) => user.id === room.creatorId);
     return `
-      <button class="room-card mobile-room-card ${uiState.activeRoomId === room.id ? "active" : ""}" data-action="open-room" data-room-id="${room.id}">
+      <button class="room-card mobile-room-card ${uiState.activeRoomId === room.id ? "active" : ""}" data-action="open-room" data-room-id="${room.id}" data-diff-key="room:${room.id}">
         <div class="room-topline">
           <strong>${escapeHtml(normalizeDisplayText(room.title))}</strong>
           ${room.isProtected ? `<span class="room-lock" aria-label="${escapeHtml(t("roomProtected"))}">🔒</span>` : ""}
@@ -3470,7 +3776,7 @@
     const presence = getPresence(friend, friend.currentRoomId || null);
     const displayName = getUserDisplayName(friend) || friend.loginId || friend.name;
     return `
-      <article class="friend-card mobile-friend-card">
+      <article class="friend-card mobile-friend-card" data-diff-key="friend:${friend.id}">
         ${renderProfileImage(friend, "list-profile-image", friend.name)}
         <button class="friend-name-button" type="button" data-action="open-profile-preview" data-user-id="${friend.id}">
           <strong>${escapeHtml(displayName)}</strong>
@@ -3512,19 +3818,6 @@
             <div class="field compact-field">
               <label>${escapeHtml(t("profileNameReadonlyLabel"))}</label>
               <div class="profile-static-value">${escapeHtml(currentUser.name || "")}</div>
-            </div>
-            <div class="field compact-field">
-              <label for="my-profile-nickname">${escapeHtml(t("profileNicknameLabel"))}</label>
-              <input
-                id="my-profile-nickname"
-                data-input="my-profile-nickname"
-                type="text"
-                maxlength="24"
-                value="${escapeHtml(profileEditor?.nickname || "")}"
-                placeholder="${escapeHtml(t("authNicknamePlaceholder"))}"
-                autocapitalize="off"
-                autocomplete="off"
-              />
             </div>
             <div class="field compact-field">
               <label for="my-profile-gender">${escapeHtml(t("profileGenderLabel"))}</label>
@@ -3575,6 +3868,7 @@
   function renderPlanSummaryCard(currentUser, summary) {
     const currentPlanLabel = getPlanLabel(currentUser.planTier);
     const premiumPlan = isPremiumPlan(currentUser);
+    const unlimitedTester = canBypassUsageLimit(currentUser);
     return `
       <div class="setting-card compact plan-summary-card">
         <div class="plan-summary-head">
@@ -3584,7 +3878,14 @@
           </div>
           <button class="button button-secondary compact-action-button" type="button" data-action="open-modal" data-modal="plan">${escapeHtml(t("planChangeButton"))}</button>
         </div>
-        ${premiumPlan
+        ${unlimitedTester
+          ? `
+            <div class="plan-usage-copy">
+              <span>${escapeHtml(t("planUnlimitedTesterCopy"))}</span>
+              <span>${escapeHtml(t("planResetAt", { time: formatPlanResetTime(summary.nextResetAt) }))}</span>
+            </div>
+          `
+          : premiumPlan
           ? `
             <div class="plan-usage-copy">
               <span>${escapeHtml(t("planPremiumUsageCopy"))}</span>
@@ -3594,6 +3895,7 @@
           : `
             <div class="plan-usage-copy">
               <span>${escapeHtml(t("planRemainingMessages", { count: summary.remaining }))}</span>
+              <span>${escapeHtml(t("planFreeTrialHint"))}</span>
               <span>${escapeHtml(t("planResetAt", { time: formatPlanResetTime(summary.nextResetAt) }))}</span>
             </div>
           `}
@@ -4328,7 +4630,7 @@
         }
 
         if (message.kind === "system") {
-          parts.push(`<div class="message-row system"><div class="system-bubble">${escapeHtml(t(message.systemKey, message.systemParams))}</div></div>`);
+          parts.push(`<div class="message-row system" data-diff-key="system:${message.id}"><div class="system-bubble">${escapeHtml(t(message.systemKey, message.systemParams))}</div></div>`);
           return;
         }
 
@@ -4342,7 +4644,7 @@
         const visibleText = stripLinks(translated.text || message.originalText);
         const visibleOriginal = stripLinks(message.originalText);
         parts.push(`
-          <div class="message-row ${isMine ? "mine" : ""}">
+          <div class="message-row ${isMine ? "mine" : ""}" data-diff-key="message:${message.id}">
             ${!isMine ? `<div class="message-avatar"><div class="avatar">${escapeHtml(initials(sender?.name || "?"))}</div></div>` : ""}
             <div class="message-stack">
               ${!isMine ? `<div class="message-sender">${escapeHtml(sender?.name || "")}</div>` : ""}
@@ -5154,18 +5456,15 @@
   }
 
   function captureSurfaceScrollState() {
-    const surface = APP_ROOT.querySelector("[data-scroll-key]");
-    if (!(surface instanceof HTMLElement)) {
-      return null;
-    }
-
-    const key = String(surface.dataset.scrollKey || "").trim();
-    if (!key) return null;
-    runtime.preservedScrollPositions[key] = surface.scrollTop;
-    return {
-      key,
-      scrollTop: surface.scrollTop,
-    };
+    const nextState = {};
+    APP_ROOT.querySelectorAll("[data-scroll-key]").forEach((surface) => {
+      if (!(surface instanceof HTMLElement)) return;
+      const key = String(surface.dataset.scrollKey || "").trim();
+      if (!key) return;
+      runtime.preservedScrollPositions[key] = surface.scrollTop;
+      nextState[key] = surface.scrollTop;
+    });
+    return nextState;
   }
 
   function restoreChatScrollState(chatScrollState) {
@@ -5185,19 +5484,17 @@
   }
 
   function restoreSurfaceScrollState(surfaceScrollState) {
-    const surface = APP_ROOT.querySelector("[data-scroll-key]");
-    if (!(surface instanceof HTMLElement)) {
-      return;
-    }
-
-    const key = String(surface.dataset.scrollKey || "").trim();
-    if (!key) return;
-    const nextScrollTop =
-      surfaceScrollState?.key === key
-        ? surfaceScrollState.scrollTop
-        : runtime.preservedScrollPositions[key];
-    if (typeof nextScrollTop !== "number") return;
-    surface.scrollTop = nextScrollTop;
+    APP_ROOT.querySelectorAll("[data-scroll-key]").forEach((surface) => {
+      if (!(surface instanceof HTMLElement)) return;
+      const key = String(surface.dataset.scrollKey || "").trim();
+      if (!key) return;
+      const nextScrollTop =
+        surfaceScrollState && typeof surfaceScrollState[key] === "number"
+          ? surfaceScrollState[key]
+          : runtime.preservedScrollPositions[key];
+      if (typeof nextScrollTop !== "number") return;
+      surface.scrollTop = nextScrollTop;
+    });
   }
 
   function captureFocusState() {
@@ -5757,10 +6054,6 @@
       render();
       return;
     }
-    if (target instanceof HTMLInputElement && target.dataset.input === "my-profile-nickname") {
-      uiState.profileEditor.nickname = target.value;
-      return;
-    }
     if (target instanceof HTMLInputElement && target.dataset.input === "my-profile-age") {
       uiState.profileEditor.age = target.value;
       return;
@@ -5922,7 +6215,7 @@
     }
     if (
       target instanceof HTMLInputElement &&
-      ["my-profile-nickname", "my-profile-age"].includes(target.dataset.input) &&
+      target.dataset.input === "my-profile-age" &&
       event.key === "Enter" &&
       !event.shiftKey &&
       !event.isComposing
@@ -5978,8 +6271,6 @@
       runtime.compositionTarget = null;
       if (target.dataset.input === "room-search") {
         uiState.roomSearch = target.value;
-      } else if (target.dataset.input === "my-profile-nickname") {
-        uiState.profileEditor.nickname = target.value;
       } else if (target.dataset.input === "my-profile-age") {
         uiState.profileEditor.age = target.value;
       }
@@ -6074,13 +6365,11 @@
     const currentUser = getCurrentUser();
     if (!currentUser) return;
 
-    currentUser.nickname = normalizeDisplayText(uiState.profileEditor.nickname).trim();
     currentUser.gender =
       uiState.profileEditor.gender === "male" || uiState.profileEditor.gender === "female"
         ? uiState.profileEditor.gender
         : "";
     currentUser.age = Math.max(0, Math.min(120, Number(uiState.profileEditor.age || 0) || 0)) || "";
-    uiState.profileEditor.nickname = currentUser.nickname;
     uiState.profileEditor.gender = currentUser.gender;
     uiState.profileEditor.age = currentUser.age;
     persistState();
@@ -6114,6 +6403,7 @@
     const now = Date.now();
     const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
 
+    applySpecialUserFlags(user);
     user.name = normalizeDisplayText(user.name).trim();
     user.loginId = normalizeAccountId(user.loginId || user.name);
     user.uiLanguage = uiState.landing.uiLanguage;
@@ -6166,7 +6456,7 @@
     const password = String(uiState.landing.password || "");
     if (!baseId) return;
     const existingUser = findUserByLoginName(baseId);
-    if (!isAllowedPrivateTester(baseId) && !(existingUser && isAllowedPrivateTester(existingUser.name))) {
+    if (!isAllowedPrivateTester(baseId) && !(existingUser && (isAllowedPrivateTester(existingUser.name) || isAdminUser(existingUser)))) {
       uiState.landing.error = t("toastAccessDeniedCopy");
       pushToast("toastAccessDenied", "toastAccessDeniedCopy");
       render();
