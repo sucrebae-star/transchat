@@ -17,6 +17,14 @@ const DEMO_USER_NAMES = new Set(["Hana", "Alex", "Linh", "Yuna"]);
 const DEMO_ROOM_IDS = new Set(["room-lounge", "room-travel", "room-brainstorm"]);
 const DEMO_ROOM_TITLES = new Set(["Global Lounge", "Weekend Passport", "Night Shift Ideas"]);
 const PERSISTENT_ROOM_TITLE_KEYS = new Set(["호아와현태", "호아와현태의방"]);
+const RECOVERY_QUESTION_KEYS = [
+  "recoveryFavoriteColor",
+  "recoveryChildhoodNickname",
+  "recoveryFavoriteAnimal",
+  "recoveryMemorableFood",
+  "recoveryFavoriteSeason",
+];
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -58,6 +66,22 @@ function normalizeDisplayText(value) {
   } catch (error) {
     return normalized;
   }
+}
+
+function normalizeRecoveryAnswer(value) {
+  return normalizeDisplayText(value)
+    .replace(/\s+/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function getDeterministicRecoveryQuestionKey(seedValue) {
+  const seed = normalizeDisplayText(seedValue || "transchat").trim().toLowerCase();
+  let hash = 0;
+  for (const character of Array.from(seed)) {
+    hash = (hash + character.codePointAt(0)) % RECOVERY_QUESTION_KEYS.length;
+  }
+  return RECOVERY_QUESTION_KEYS[hash] || RECOVERY_QUESTION_KEYS[0];
 }
 
 const server = createServer(async (req, res) => {
@@ -253,7 +277,9 @@ function mergeUsers(previousUsers, nextUsers) {
     return {
       ...previous,
       ...next,
+      joinedAt: Math.min(Number(previous.joinedAt || previous.createdAt || Date.now()), Number(next.joinedAt || next.createdAt || Date.now())),
       lastSeenAt: Math.max(Number(previous.lastSeenAt || 0), Number(next.lastSeenAt || 0)),
+      lastLoginAt: Math.max(Number(previous.lastLoginAt || 0), Number(next.lastLoginAt || 0)) || null,
     };
   });
 }
@@ -324,6 +350,14 @@ function mergeMessages(previousMessages, nextMessages) {
       byId.set(message.id, {
         ...existing,
         ...message,
+        deliveredTo: {
+          ...(existing.deliveredTo || {}),
+          ...(message.deliveredTo || {}),
+        },
+        readBy: {
+          ...(existing.readBy || {}),
+          ...(message.readBy || {}),
+        },
         translations: {
           ...(existing.translations || {}),
           ...(message.translations || {}),
@@ -619,6 +653,19 @@ function summarizeTranslationError(error) {
   return raw.slice(0, 320);
 }
 
+function sanitizeMessageState(message, allowedUserIds) {
+  if (!message || message.kind !== "user") {
+    return message;
+  }
+
+  return {
+    ...message,
+    status: ["composing", "sent", "delivered", "read"].includes(message.status) ? message.status : "sent",
+    deliveredTo: filterRecordByAllowedKeys(message.deliveredTo, allowedUserIds),
+    readBy: filterRecordByAllowedKeys(message.readBy, allowedUserIds),
+  };
+}
+
 function sanitizeSharedState(state) {
   if (!(state && state.version === 1)) {
     return null;
@@ -642,6 +689,17 @@ function sanitizeSharedState(state) {
         phoneVerified: Boolean(user?.auth?.phoneVerified),
       },
       blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
+      password: typeof user?.password === "string" ? user.password : "",
+      recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+        ? user.recoveryQuestionKey
+        : getDeterministicRecoveryQuestionKey(user?.name),
+      recoveryAnswer:
+        typeof user?.recoveryAnswer === "string"
+          ? normalizeRecoveryAnswer(user.recoveryAnswer)
+          : normalizeRecoveryAnswer(user?.name),
+      joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
+      lastLoginAt: Number(user?.lastLoginAt || 0) || null,
+      loginState: user?.loginState === "online" ? "online" : "offline",
     }));
   const userIds = new Set(users.map((user) => user.id));
 
@@ -659,6 +717,7 @@ function sanitizeSharedState(state) {
         participants,
         accessByUser: filterRecordByAllowedKeys(room.accessByUser, userIds),
         unreadByUser: filterRecordByAllowedKeys(room.unreadByUser, userIds),
+        messages: (room.messages || []).map((message) => sanitizeMessageState(message, userIds)),
       };
     });
   const roomIds = new Set(rooms.map((room) => room.id));

@@ -44,6 +44,11 @@
     compositionTarget: null,
     pendingRenderWhileComposing: false,
     lastComposerInputAt: 0,
+    chatPinnedToBottom: true,
+    composerHeight: 0,
+    viewportBaseHeight: 0,
+    keyboardOffset: 0,
+    receiptTimer: null,
     typingSignals: {},
     presenceSignals: {},
     lastTypingSignalAt: {},
@@ -79,11 +84,24 @@
     },
     landing: {
       name: "",
+      password: "",
       nativeLanguage: "ko",
       uiLanguage: localStorage.getItem(LANDING_UI_KEY) || "ko",
       nativeAccordionOpen: false,
       profileImage: null,
       error: "",
+      mode: "login",
+      signupName: "",
+      signupPassword: "",
+      signupPasswordConfirm: "",
+      signupQuestionKey: null,
+      signupAnswer: "",
+      resetName: "",
+      resetQuestionKey: null,
+      resetAnswer: "",
+      resetPassword: "",
+      resetPasswordConfirm: "",
+      resetVerified: false,
     },
   };
 
@@ -109,6 +127,14 @@
     ko: "한국어",
     vi: "Tiếng Việt",
   };
+
+  const RECOVERY_QUESTION_KEYS = [
+    "recoveryFavoriteColor",
+    "recoveryChildhoodNickname",
+    "recoveryFavoriteAnimal",
+    "recoveryMemorableFood",
+    "recoveryFavoriteSeason",
+  ];
 
   // Added: shared profile/native-language metadata for the lightweight mobile profile flow.
   const LANGUAGE_META = {
@@ -929,6 +955,150 @@
 
   let appState = loadState();
 
+  Object.assign(DICTIONARY.ko, {
+    tabFriends: "연결",
+    statusDelivered: "전달됨",
+    loginButton: "로그인",
+    signupButton: "회원가입",
+    passwordChangeButton: "비밀번호 변경",
+    authIdLabel: "아이디",
+    authPasswordLabel: "비밀번호",
+    authPasswordPlaceholder: "비밀번호를 입력하세요",
+    authPasswordConfirmLabel: "비밀번호 확인",
+    authPasswordConfirmPlaceholder: "비밀번호를 다시 입력하세요",
+    authRecoveryQuestionLabel: "확인 질문",
+    authRecoveryAnswerLabel: "정답",
+    authRecoveryAnswerPlaceholder: "정답을 입력하세요",
+    authRecoveryAnswerHelper: "띄어쓰기 없이 작성",
+    authNewPasswordLabel: "새 비밀번호",
+    authNewPasswordPlaceholder: "새 비밀번호를 입력하세요",
+    signupCompleteButton: "가입 완료",
+    nextButton: "다음",
+    passwordUpdateButton: "변경 완료",
+    authLoginNotFound: "등록된 아이디를 찾을 수 없습니다.",
+    authLoginPasswordMismatch: "비밀번호가 일치하지 않습니다.",
+    authNeedId: "아이디를 입력하세요.",
+    authNeedPassword: "비밀번호를 입력하세요.",
+    authPasswordMismatch: "비밀번호와 확인 값이 다릅니다.",
+    authNeedRecoveryAnswer: "질문 정답을 입력하세요.",
+    authRecoveryMismatch: "질문 정답이 일치하지 않습니다.",
+    authSignupDuplicate: "이미 존재하는 아이디입니다.",
+    toastSignupSuccess: "회원가입이 완료되었습니다",
+    toastSignupSuccessCopy: "새 계정으로 바로 로그인되었습니다.",
+    toastPasswordUpdated: "비밀번호가 변경되었습니다",
+    toastPasswordUpdatedCopy: "새 비밀번호로 다시 로그인할 수 있습니다.",
+    passwordResetFindIdHint: "아이디를 입력하면 등록된 질문이 표시됩니다.",
+    recoveryFavoriteColor: "가장 좋아하는 색깔은?",
+    recoveryChildhoodNickname: "어릴 때 별명은?",
+    recoveryFavoriteAnimal: "가장 좋아하는 동물은?",
+    recoveryMemorableFood: "기억에 남는 음식은?",
+    recoveryFavoriteSeason: "좋아하는 계절은?",
+    roomSettingsButton: "방 설정",
+    roomSettingsCopy: "방 제목과 비밀번호를 수정할 수 있습니다.",
+    roomPasswordLabel: "방 비밀번호",
+    roomPasswordPlaceholder: "비밀번호를 입력하면 잠금이 설정됩니다.",
+    applyButton: "적용",
+    toastRoomSettingsSaved: "방 설정이 저장되었습니다",
+    toastRoomSettingsSavedCopy: "{title} 설정이 반영되었습니다.",
+    roomDeleteConfirm: "방장이 나가면 대화방과 내용이 모두 삭제됩니다. 계속할까요?",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    tabFriends: "Connections",
+    statusDelivered: "Delivered",
+    loginButton: "Log in",
+    signupButton: "Sign up",
+    passwordChangeButton: "Change password",
+    authIdLabel: "User ID",
+    authPasswordLabel: "Password",
+    authPasswordPlaceholder: "Enter your password",
+    authPasswordConfirmLabel: "Confirm password",
+    authPasswordConfirmPlaceholder: "Re-enter your password",
+    authRecoveryQuestionLabel: "Verification question",
+    authRecoveryAnswerLabel: "Answer",
+    authRecoveryAnswerPlaceholder: "Enter your answer",
+    authRecoveryAnswerHelper: "Write without spaces",
+    authNewPasswordLabel: "New password",
+    authNewPasswordPlaceholder: "Enter a new password",
+    signupCompleteButton: "Create account",
+    nextButton: "Next",
+    passwordUpdateButton: "Update password",
+    authLoginNotFound: "No account matches that ID.",
+    authLoginPasswordMismatch: "The password does not match.",
+    authNeedId: "Enter your user ID.",
+    authNeedPassword: "Enter your password.",
+    authPasswordMismatch: "Password and confirmation do not match.",
+    authNeedRecoveryAnswer: "Enter the answer to your verification question.",
+    authRecoveryMismatch: "The verification answer does not match.",
+    authSignupDuplicate: "That user ID already exists.",
+    toastSignupSuccess: "Account created",
+    toastSignupSuccessCopy: "You are now logged in with the new account.",
+    toastPasswordUpdated: "Password updated",
+    toastPasswordUpdatedCopy: "You can now log in with the new password.",
+    passwordResetFindIdHint: "Enter an ID to reveal its saved verification question.",
+    recoveryFavoriteColor: "What is your favorite color?",
+    recoveryChildhoodNickname: "What was your childhood nickname?",
+    recoveryFavoriteAnimal: "What is your favorite animal?",
+    recoveryMemorableFood: "Which food do you remember most?",
+    recoveryFavoriteSeason: "What is your favorite season?",
+    roomSettingsButton: "Room settings",
+    roomSettingsCopy: "Update the room title and password.",
+    roomPasswordLabel: "Room password",
+    roomPasswordPlaceholder: "Leave blank to remove the password.",
+    applyButton: "Apply",
+    toastRoomSettingsSaved: "Room settings saved",
+    toastRoomSettingsSavedCopy: "{title} has been updated.",
+    roomDeleteConfirm: "If the creator leaves, this room and all of its contents are deleted. Continue?",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    tabFriends: "Ket noi",
+    statusDelivered: "Da chuyen",
+    loginButton: "Dang nhap",
+    signupButton: "Dang ky",
+    passwordChangeButton: "Doi mat khau",
+    authIdLabel: "ID",
+    authPasswordLabel: "Mat khau",
+    authPasswordPlaceholder: "Nhap mat khau",
+    authPasswordConfirmLabel: "Xac nhan mat khau",
+    authPasswordConfirmPlaceholder: "Nhap lai mat khau",
+    authRecoveryQuestionLabel: "Cau hoi xac minh",
+    authRecoveryAnswerLabel: "Cau tra loi",
+    authRecoveryAnswerPlaceholder: "Nhap cau tra loi",
+    authRecoveryAnswerHelper: "Viet lien, khong co khoang trang",
+    authNewPasswordLabel: "Mat khau moi",
+    authNewPasswordPlaceholder: "Nhap mat khau moi",
+    signupCompleteButton: "Hoan tat dang ky",
+    nextButton: "Tiep theo",
+    passwordUpdateButton: "Cap nhat mat khau",
+    authLoginNotFound: "Khong tim thay tai khoan phu hop.",
+    authLoginPasswordMismatch: "Mat khau khong dung.",
+    authNeedId: "Hay nhap ID.",
+    authNeedPassword: "Hay nhap mat khau.",
+    authPasswordMismatch: "Mat khau va phan xac nhan khong khop.",
+    authNeedRecoveryAnswer: "Hay nhap cau tra loi xac minh.",
+    authRecoveryMismatch: "Cau tra loi xac minh khong khop.",
+    authSignupDuplicate: "ID nay da ton tai.",
+    toastSignupSuccess: "Da tao tai khoan",
+    toastSignupSuccessCopy: "Ban da dang nhap bang tai khoan moi.",
+    toastPasswordUpdated: "Da doi mat khau",
+    toastPasswordUpdatedCopy: "Bay gio ban co the dang nhap bang mat khau moi.",
+    passwordResetFindIdHint: "Nhap ID de hien cau hoi xac minh da luu.",
+    recoveryFavoriteColor: "Mau sac ban thich nhat la gi?",
+    recoveryChildhoodNickname: "Biet danh luc nho cua ban la gi?",
+    recoveryFavoriteAnimal: "Con vat ban thich nhat la gi?",
+    recoveryMemorableFood: "Mon an ban nho nhat la gi?",
+    recoveryFavoriteSeason: "Mua ban thich nhat la mua nao?",
+    roomSettingsButton: "Cai dat phong",
+    roomSettingsCopy: "Ban co the sua ten phong va mat khau.",
+    roomPasswordLabel: "Mat khau phong",
+    roomPasswordPlaceholder: "De trong neu muon bo mat khau.",
+    applyButton: "Ap dung",
+    toastRoomSettingsSaved: "Da luu cai dat phong",
+    toastRoomSettingsSavedCopy: "{title} da duoc cap nhat.",
+    roomDeleteConfirm: "Neu chu phong roi di, phong va toan bo noi dung se bi xoa. Tiep tuc?",
+  });
+
   function loadState() {
     const parsed = readPersistedState();
     if (parsed) return parsed;
@@ -1118,8 +1288,9 @@
     };
   }
 
-  function createUser(name, nativeLanguage, uiLanguage, lastSeenAt, currentRoomId, profileImage = null) {
+  function createUser(name, nativeLanguage, uiLanguage, lastSeenAt, currentRoomId, profileImage = null, accountOptions = {}) {
     const normalizedName = normalizeDisplayText(name).trim();
+    const joinedAt = Number(accountOptions.joinedAt || Date.now());
     return {
       id: uid("user"),
       name: normalizedName,
@@ -1136,9 +1307,17 @@
       nativeLanguage,
       preferredChatLanguage: nativeLanguage,
       uiLanguage,
+      password: String(accountOptions.password || ""),
+      recoveryQuestionKey: accountOptions.recoveryQuestionKey || getDeterministicRecoveryQuestionKey(normalizedName),
+      recoveryAnswer: normalizeRecoveryAnswer(
+        accountOptions.recoveryAnswer != null ? accountOptions.recoveryAnswer : normalizedName
+      ),
+      joinedAt,
       lastSeenAt,
       currentRoomId,
-      createdAt: Date.now(),
+      createdAt: joinedAt,
+      lastLoginAt: Number(accountOptions.lastLoginAt || 0) || null,
+      loginState: accountOptions.loginState === "online" ? "online" : "offline",
     };
   }
 
@@ -1172,6 +1351,21 @@
       translations,
       status,
       media,
+      deliveredTo: {},
+      readBy: {},
+    };
+  }
+
+  function sanitizeMessageState(message, allowedUserIds) {
+    if (!message || message.kind !== "user") {
+      return message;
+    }
+
+    return {
+      ...message,
+      status: ["composing", "sent", "delivered", "read"].includes(message.status) ? message.status : "sent",
+      deliveredTo: filterRecordByAllowedKeys(message.deliveredTo, allowedUserIds),
+      readBy: filterRecordByAllowedKeys(message.readBy, allowedUserIds),
     };
   }
 
@@ -1228,6 +1422,17 @@
         },
         blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
         preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
+        password: typeof user?.password === "string" ? user.password : "",
+        recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+          ? user.recoveryQuestionKey
+          : getDeterministicRecoveryQuestionKey(user?.name),
+        recoveryAnswer:
+          typeof user?.recoveryAnswer === "string"
+            ? normalizeRecoveryAnswer(user.recoveryAnswer)
+            : normalizeRecoveryAnswer(user?.name),
+        joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
+        lastLoginAt: Number(user?.lastLoginAt || 0) || null,
+        loginState: user?.loginState === "online" ? "online" : "offline",
       }));
     const userIds = new Set(users.map((user) => user.id));
 
@@ -1245,6 +1450,7 @@
           participants,
           accessByUser: filterRecordByAllowedKeys(room.accessByUser, userIds),
           unreadByUser: filterRecordByAllowedKeys(room.unreadByUser, userIds),
+          messages: (room.messages || []).map((message) => sanitizeMessageState(message, userIds)),
         };
       });
     const roomIds = new Set(rooms.map((room) => room.id));
@@ -1546,6 +1752,30 @@
 
   function normalizeLoginIdentity(value) {
     return normalizeDisplayText(value).trim().toLowerCase();
+  }
+
+  function normalizeRecoveryAnswer(value) {
+    return normalizeDisplayText(value)
+      .replace(/\s+/g, "")
+      .trim()
+      .toLowerCase();
+  }
+
+  function getDeterministicRecoveryQuestionKey(seedValue) {
+    const seed = normalizeLoginIdentity(seedValue || "transchat");
+    if (!RECOVERY_QUESTION_KEYS.length) {
+      return "recoveryFavoriteColor";
+    }
+
+    let hash = 0;
+    for (const character of Array.from(seed)) {
+      hash = (hash + character.codePointAt(0)) % RECOVERY_QUESTION_KEYS.length;
+    }
+    return RECOVERY_QUESTION_KEYS[hash] || RECOVERY_QUESTION_KEYS[0];
+  }
+
+  function getRandomRecoveryQuestionKey() {
+    return RECOVERY_QUESTION_KEYS[Math.floor(Math.random() * RECOVERY_QUESTION_KEYS.length)] || RECOVERY_QUESTION_KEYS[0];
   }
 
   function isAllowedPrivateTester(name) {
@@ -2231,6 +2461,150 @@
     `;
   }
 
+  function renderLandingSignupPanel() {
+    if (uiState.landing.mode !== "signup") return "";
+    const questionKey = uiState.landing.signupQuestionKey || getRandomRecoveryQuestionKey();
+    return `
+      <div class="landing-inline-panel" data-panel="signup">
+        <h3>${escapeHtml(t("signupButton"))}</h3>
+        <div class="field compact-field">
+          <label for="signup-name">${escapeHtml(t("authIdLabel"))}</label>
+          <input
+            id="signup-name"
+            type="text"
+            data-input="signup-name"
+            maxlength="24"
+            value="${escapeHtml(uiState.landing.signupName)}"
+            placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+            autocapitalize="off"
+            autocomplete="off"
+          />
+        </div>
+        <div class="field compact-field">
+          <label for="signup-password">${escapeHtml(t("authPasswordLabel"))}</label>
+          <input
+            id="signup-password"
+            type="password"
+            data-input="signup-password"
+            value="${escapeHtml(uiState.landing.signupPassword)}"
+            placeholder="${escapeHtml(t("authPasswordPlaceholder"))}"
+            autocomplete="new-password"
+          />
+        </div>
+        <div class="field compact-field">
+          <label for="signup-password-confirm">${escapeHtml(t("authPasswordConfirmLabel"))}</label>
+          <input
+            id="signup-password-confirm"
+            type="password"
+            data-input="signup-password-confirm"
+            value="${escapeHtml(uiState.landing.signupPasswordConfirm)}"
+            placeholder="${escapeHtml(t("authPasswordConfirmPlaceholder"))}"
+            autocomplete="new-password"
+          />
+        </div>
+        <div class="field compact-field">
+          <label>${escapeHtml(t("authRecoveryQuestionLabel"))}</label>
+          <div class="landing-question-pill">${escapeHtml(t(questionKey))}</div>
+        </div>
+        <div class="field compact-field">
+          <label for="signup-answer">${escapeHtml(t("authRecoveryAnswerLabel"))}</label>
+          <input
+            id="signup-answer"
+            type="text"
+            data-input="signup-answer"
+            value="${escapeHtml(uiState.landing.signupAnswer)}"
+            placeholder="${escapeHtml(t("authRecoveryAnswerPlaceholder"))}"
+            autocapitalize="off"
+            autocomplete="off"
+          />
+          <span class="helper">${escapeHtml(t("authRecoveryAnswerHelper"))}</span>
+        </div>
+        <div class="landing-panel-actions">
+          <button class="button button-primary" type="button" data-action="submit-landing-signup">${escapeHtml(t("signupCompleteButton"))}</button>
+          <button class="button button-secondary" type="button" data-action="close-landing-panel">${escapeHtml(t("cancel"))}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderLandingPasswordResetPanel() {
+    if (uiState.landing.mode !== "reset") return "";
+    const resetUser = appState.users.find(
+      (user) => normalizeLoginIdentity(user.name) === normalizeLoginIdentity(uiState.landing.resetName)
+    );
+    const questionKey = resetUser?.recoveryQuestionKey || uiState.landing.resetQuestionKey;
+    return `
+      <div class="landing-inline-panel" data-panel="reset">
+        <h3>${escapeHtml(t("passwordChangeButton"))}</h3>
+        <div class="field compact-field">
+          <label for="reset-name">${escapeHtml(t("authIdLabel"))}</label>
+          <input
+            id="reset-name"
+            type="text"
+            data-input="reset-name"
+            maxlength="24"
+            value="${escapeHtml(uiState.landing.resetName)}"
+            placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+            autocapitalize="off"
+            autocomplete="off"
+          />
+        </div>
+        ${uiState.landing.resetVerified
+          ? `
+            <div class="field compact-field">
+              <label for="reset-password">${escapeHtml(t("authNewPasswordLabel"))}</label>
+              <input
+                id="reset-password"
+                type="password"
+                data-input="reset-password"
+                value="${escapeHtml(uiState.landing.resetPassword)}"
+                placeholder="${escapeHtml(t("authNewPasswordPlaceholder"))}"
+                autocomplete="new-password"
+              />
+            </div>
+            <div class="field compact-field">
+              <label for="reset-password-confirm">${escapeHtml(t("authPasswordConfirmLabel"))}</label>
+              <input
+                id="reset-password-confirm"
+                type="password"
+                data-input="reset-password-confirm"
+                value="${escapeHtml(uiState.landing.resetPasswordConfirm)}"
+                placeholder="${escapeHtml(t("authPasswordConfirmPlaceholder"))}"
+                autocomplete="new-password"
+              />
+            </div>
+            <div class="landing-panel-actions">
+              <button class="button button-primary" type="button" data-action="submit-landing-password-update">${escapeHtml(t("passwordUpdateButton"))}</button>
+              <button class="button button-secondary" type="button" data-action="close-landing-panel">${escapeHtml(t("cancel"))}</button>
+            </div>
+          `
+          : `
+            <div class="field compact-field">
+              <label>${escapeHtml(t("authRecoveryQuestionLabel"))}</label>
+              <div class="landing-question-pill">${escapeHtml(questionKey ? t(questionKey) : t("passwordResetFindIdHint"))}</div>
+            </div>
+            <div class="field compact-field">
+              <label for="reset-answer">${escapeHtml(t("authRecoveryAnswerLabel"))}</label>
+              <input
+                id="reset-answer"
+                type="text"
+                data-input="reset-answer"
+                value="${escapeHtml(uiState.landing.resetAnswer)}"
+                placeholder="${escapeHtml(t("authRecoveryAnswerPlaceholder"))}"
+                autocapitalize="off"
+                autocomplete="off"
+              />
+              <span class="helper">${escapeHtml(t("authRecoveryAnswerHelper"))}</span>
+            </div>
+            <div class="landing-panel-actions">
+              <button class="button button-primary" type="button" data-action="submit-landing-password-verify">${escapeHtml(t("nextButton"))}</button>
+              <button class="button button-secondary" type="button" data-action="close-landing-panel">${escapeHtml(t("cancel"))}</button>
+            </div>
+          `}
+      </div>
+    `;
+  }
+
   function renderLandingEnhancedV2() {
     const selectedNative = getLanguageMeta(uiState.landing.nativeLanguage || "ko");
     const landingProfileImage = uiState.landing.profileImage || DEFAULT_PROFILE_IMAGE;
@@ -2255,7 +2629,7 @@
                 </div>
                 <input data-input="landing-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
               </div>
-              <div class="landing-input-row">
+              <div class="landing-input-stack">
                 <input
                   id="entry-name"
                   name="name"
@@ -2264,9 +2638,21 @@
                   value="${escapeHtml(uiState.landing.name)}"
                   placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
                   autocapitalize="off"
-                  autocomplete="off"
+                  autocomplete="username"
                 />
-                <button class="landing-submit-button" type="submit" aria-label="${escapeHtml(t("enterButton"))}">&rarr;</button>
+                <input
+                  id="entry-password"
+                  name="password"
+                  type="password"
+                  value="${escapeHtml(uiState.landing.password)}"
+                  placeholder="${escapeHtml(t("authPasswordPlaceholder"))}"
+                  autocomplete="current-password"
+                />
+              </div>
+              <div class="landing-auth-actions">
+                <button class="button button-primary landing-auth-button" type="submit">${escapeHtml(t("loginButton"))}</button>
+                <button class="button button-secondary landing-auth-button" type="button" data-action="open-landing-signup">${escapeHtml(t("signupButton"))}</button>
+                <button class="button button-ghost landing-auth-button" type="button" data-action="open-landing-reset">${escapeHtml(t("passwordChangeButton"))}</button>
               </div>
               <div class="landing-language-accordion">
                 <button
@@ -2289,6 +2675,8 @@
                 <span class="landing-ui-language-icon" aria-hidden="true">&#128421;&#65039;</span>
                 <div class="landing-ui-language-buttons">${renderLandingLanguageButtons()}</div>
               </div>
+              ${renderLandingSignupPanel()}
+              ${renderLandingPasswordResetPanel()}
               <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
                 ${escapeHtml(uiState.landing.error || t("landingAccessHint"))}
               </p>
@@ -2453,7 +2841,7 @@
         ${renderProfileImage(friend, "list-profile-image", friend.name)}
         <div class="friend-card-meta">
           <strong>${escapeHtml(friend.name)}</strong>
-          <span class="helper">${escapeHtml(presence.label)}</span>
+          <span class="friend-inline-presence ${presence.kind}">${escapeHtml(presence.label)}</span>
         </div>
         ${currentUser ? renderConnectionActionV2(friend, currentUser) : `<span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>`}
       </article>
@@ -2572,9 +2960,20 @@
   }
 
   function renderChatDetailsMenuMobile(room) {
+    const currentUser = getCurrentUser();
+    const canManageRoom = currentUser?.id === room.creatorId;
     return `
       <div class="chat-details-backdrop" data-action="close-chat-details"></div>
       <aside class="chat-details-panel mobile-chat-menu">
+        ${room.password ? `<div class="chat-menu-password">${escapeHtml(t("roomPasswordLabel"))}: <strong>${escapeHtml(room.password)}</strong></div>` : ""}
+        ${canManageRoom
+          ? `
+            <button class="chat-menu-item" type="button" data-action="open-modal" data-modal="room-settings">
+              <span aria-hidden="true">&#9881;</span>
+              <span>${escapeHtml(t("roomSettingsButton"))}</span>
+            </button>
+          `
+          : ""}
         <button class="chat-menu-item" data-action="open-modal" data-modal="invite">
           <span aria-hidden="true">👥+</span>
           <span>${escapeHtml(t("inviteButton"))}</span>
@@ -3265,6 +3664,7 @@
         const translated = getDisplayTranslation(message, currentUser);
         const showOriginal = Boolean(uiState.originalVisibility[message.id]);
         const shouldShowToggle = message.originalText && message.originalText !== translated.text && !translated.failed && !translated.pending;
+        const messageStatus = isMine ? getOutgoingMessageStatus(room, message, currentUser) : "";
         const links = detectLinks(translated.text || message.originalText);
         const visibleText = stripLinks(translated.text || message.originalText);
         const visibleOriginal = stripLinks(message.originalText);
@@ -3281,7 +3681,7 @@
               </div>
               <div class="message-footer">
                 <span>${escapeHtml(formatClock(message.createdAt))}</span>
-                ${message.status ? `<span>${escapeHtml(t(`status${capitalize(message.status)}`))}</span>` : ""}
+                ${messageStatus ? `<span>${escapeHtml(t(`status${capitalize(messageStatus)}`))}</span>` : ""}
                 ${translated.pending ? `<span class="tiny-pill pill-warning">${escapeHtml(t("translationPendingBadge"))}</span>` : ""}
                 ${translated.failed ? `<span class="tiny-pill pill-danger">${escapeHtml(t("translationFailedBadge"))}</span>` : ""}
                 ${message.originalText && !translated.failed && !isMine && translated.text !== message.originalText ? `<span class="tiny-pill pill-accent">${escapeHtml(t("translatedBadge"))}</span>` : ""}
@@ -3348,6 +3748,109 @@
       failed: translation.failed,
       pending: false,
     };
+  }
+
+  function isScrollNearBottom(scrollElement, threshold = 88) {
+    if (!(scrollElement instanceof HTMLElement)) {
+      return true;
+    }
+    return scrollElement.scrollHeight - scrollElement.clientHeight - scrollElement.scrollTop <= threshold;
+  }
+
+  function isComposerFocused() {
+    const active = document.activeElement;
+    return active instanceof HTMLInputElement && active.dataset.input === "composer";
+  }
+
+  function getRecipientIdsForMessage(room, message) {
+    if (!room || !message?.senderId) return [];
+    return deriveRoomParticipantIds(room).filter((participantId) => participantId !== message.senderId);
+  }
+
+  function getOutgoingMessageStatus(room, message, currentUser) {
+    if (!room || !message || message.kind !== "user" || message.senderId !== currentUser.id) {
+      return message?.status || "";
+    }
+
+    const recipientIds = getRecipientIdsForMessage(room, message);
+    if (!recipientIds.length) {
+      return message.status === "composing" ? "composing" : "sent";
+    }
+
+    const deliveredTo = message.deliveredTo || {};
+    const readBy = message.readBy || {};
+    const allRead = recipientIds.every((participantId) => Boolean(readBy[participantId]));
+    if (allRead) return "read";
+
+    const allDelivered = recipientIds.every((participantId) => Boolean(deliveredTo[participantId] || readBy[participantId]));
+    if (allDelivered) return "delivered";
+
+    return message.status === "composing" ? "composing" : "sent";
+  }
+
+  function canAcknowledgeReadForCurrentRoom(roomId, options = {}) {
+    const currentUser = getCurrentUser();
+    if (!currentUser || !roomId) return false;
+    if (document.hidden) return false;
+    if (uiState.activeRoomId !== roomId || currentUser.currentRoomId !== roomId) return false;
+
+    const scroll = document.getElementById("chat-scroll");
+    if (options.force) return true;
+    if (runtime.chatPinnedToBottom) return true;
+    if (isComposerFocused()) return true;
+    return isScrollNearBottom(scroll, 120);
+  }
+
+  function refreshMessageReceipts(options = {}) {
+    const currentUser = getCurrentUser();
+    if (!currentUser) return false;
+
+    const now = Date.now();
+    let changed = false;
+
+    appState.rooms.forEach((room) => {
+      if (room.status !== "active") return;
+      if (!deriveRoomParticipantIds(room).includes(currentUser.id)) return;
+
+      (room.messages || []).forEach((message) => {
+        if (message.kind !== "user" || message.senderId === currentUser.id) return;
+
+        if (!message.deliveredTo) message.deliveredTo = {};
+        if (!message.readBy) message.readBy = {};
+
+        if (!message.deliveredTo[currentUser.id]) {
+          message.deliveredTo[currentUser.id] = now;
+          changed = true;
+        }
+
+        if (canAcknowledgeReadForCurrentRoom(room.id, options) && !message.readBy[currentUser.id]) {
+          message.readBy[currentUser.id] = now;
+          message.deliveredTo[currentUser.id] = message.deliveredTo[currentUser.id] || now;
+          if (!room.unreadByUser) room.unreadByUser = {};
+          room.unreadByUser[currentUser.id] = 0;
+          changed = true;
+        }
+      });
+    });
+
+    return changed;
+  }
+
+  function scheduleReceiptRefresh(options = {}) {
+    clearTimeout(runtime.receiptTimer);
+    runtime.receiptTimer = setTimeout(() => {
+      runtime.receiptTimer = null;
+      if (!getCurrentUser()) return;
+      const changed = refreshMessageReceipts(options);
+      if (changed) {
+        persistState();
+        if (shouldDeferNonCriticalRender()) {
+          renderSafelyDuringInput();
+        } else {
+          render();
+        }
+      }
+    }, options.delay ?? 60);
   }
 
   function renderMedia(media, messageId) {
@@ -3626,6 +4129,8 @@
     const body =
       modalType === "create-room"
         ? renderCreateRoomModal()
+        : modalType === "room-settings"
+          ? renderRoomSettingsModal()
         : modalType === "password"
           ? renderPasswordModal()
           : modalType === "invite"
@@ -3659,6 +4164,34 @@
         <div class="modal-footer">
           <button class="button button-secondary" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
           <button class="button button-primary" data-action="submit-create-room">${escapeHtml(t("createConfirm"))}</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderRoomSettingsModal() {
+    const currentRoom = appState.rooms.find((item) => item.id === uiState.activeRoomId);
+    const data = uiState.modal?.data || {};
+    if (!currentRoom) return "";
+    return `
+      <section class="modal">
+        <div class="modal-header">
+          <h3>${escapeHtml(t("roomSettingsButton"))}</h3>
+          <p>${escapeHtml(t("roomSettingsCopy"))}</p>
+        </div>
+        <form class="modal-body" data-form="room-settings">
+          <div class="field">
+            <label>${escapeHtml(t("modalRoomTitle"))}</label>
+            <input name="title" value="${escapeHtml(data.title ?? currentRoom.title)}" placeholder="${escapeHtml(t("placeholderRoomTitle"))}" />
+          </div>
+          <div class="field">
+            <label>${escapeHtml(t("roomPasswordLabel"))}</label>
+            <input name="password" value="${escapeHtml((data.password ?? currentRoom.password) || "")}" placeholder="${escapeHtml(t("roomPasswordPlaceholder"))}" />
+          </div>
+        </form>
+        <div class="modal-footer">
+          <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
+          <button class="button button-primary" type="button" data-action="submit-room-settings">${escapeHtml(t("applyButton"))}</button>
         </div>
       </section>
     `;
@@ -3783,8 +4316,9 @@
   function bindPostRender(focusState, chatScrollState) {
     syncViewport();
     restoreChatScrollState(chatScrollState);
-    document.querySelectorAll('textarea[data-input="composer"]').forEach(autoResizeTextarea);
+    updateChatLayoutMetrics();
     restoreFocusState(focusState);
+    scheduleReceiptRefresh({ delay: 70 });
   }
 
   function captureChatScrollState() {
@@ -3809,10 +4343,12 @@
 
     if (!chatScrollState || chatScrollState.roomId !== (uiState.activeRoomId || null) || chatScrollState.anchoredToBottom) {
       scroll.scrollTop = scroll.scrollHeight;
+      runtime.chatPinnedToBottom = true;
       return;
     }
 
     scroll.scrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight - chatScrollState.distanceFromBottom);
+    runtime.chatPinnedToBottom = isScrollNearBottom(scroll);
   }
 
   function captureFocusState() {
@@ -3861,6 +4397,51 @@
     }
   }
 
+  function updateChatLayoutMetrics() {
+    const composer = APP_ROOT.querySelector(".mobile-composer");
+    const composerHeight = composer instanceof HTMLElement ? composer.offsetHeight : 0;
+    runtime.composerHeight = composerHeight;
+    document.documentElement.style.setProperty("--composer-height", `${composerHeight}px`);
+    keepChatBottomVisible();
+  }
+
+  function keepChatBottomVisible(force = false) {
+    const scroll = document.getElementById("chat-scroll");
+    if (!(scroll instanceof HTMLElement)) {
+      return;
+    }
+
+    if (!(force || runtime.chatPinnedToBottom || isComposerFocused())) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      scroll.scrollTop = scroll.scrollHeight;
+      runtime.chatPinnedToBottom = true;
+    });
+  }
+
+  function onRootScroll(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || target.id !== "chat-scroll") {
+      return;
+    }
+    runtime.chatPinnedToBottom = isScrollNearBottom(target);
+    if (runtime.chatPinnedToBottom) {
+      scheduleReceiptRefresh({ delay: 30 });
+    }
+  }
+
+  function onRootFocusIn(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.dataset.input !== "composer") {
+      return;
+    }
+    runtime.chatPinnedToBottom = true;
+    keepChatBottomVisible(true);
+    scheduleReceiptRefresh({ force: true, delay: 40 });
+  }
+
   function escapeSelector(value) {
     if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
       return CSS.escape(String(value));
@@ -3900,11 +4481,51 @@
       document.querySelector('[data-input="landing-profile-image"]')?.click();
       return;
     }
+    if (action === "open-landing-signup") {
+      uiState.landing.mode = "signup";
+      uiState.landing.signupName = uiState.landing.signupName || uiState.landing.name;
+      uiState.landing.signupQuestionKey = uiState.landing.signupQuestionKey || getRandomRecoveryQuestionKey();
+      uiState.landing.error = "";
+      render();
+      return;
+    }
+    if (action === "open-landing-reset") {
+      uiState.landing.mode = "reset";
+      uiState.landing.resetName = uiState.landing.resetName || uiState.landing.name;
+      uiState.landing.resetQuestionKey = findUserByLoginName(uiState.landing.resetName)?.recoveryQuestionKey || null;
+      uiState.landing.resetAnswer = "";
+      uiState.landing.resetPassword = "";
+      uiState.landing.resetPasswordConfirm = "";
+      uiState.landing.resetVerified = false;
+      uiState.landing.error = "";
+      render();
+      return;
+    }
+    if (action === "close-landing-panel") {
+      resetLandingPanelState();
+      uiState.landing.error = "";
+      render();
+      return;
+    }
+    if (action === "submit-landing-signup") {
+      submitLandingSignup();
+      return;
+    }
+    if (action === "submit-landing-password-verify") {
+      verifyLandingPasswordReset();
+      return;
+    }
+    if (action === "submit-landing-password-update") {
+      submitLandingPasswordUpdate();
+      return;
+    }
     if (action === "go-my-info") {
+      stopTypingForRoom(uiState.activeRoomId);
       uiState.directoryTab = "me";
       uiState.activeRoomId = null;
       uiState.chatDetailsOpen = false;
       uiState.attachmentMenuOpen = false;
+      markUserPresence(null);
       render();
       return;
     }
@@ -3912,7 +4533,9 @@
       const nextTab = actionTarget.dataset.tabId;
       uiState.directoryTab = nextTab;
       if (nextTab !== "chat") {
+        stopTypingForRoom(uiState.activeRoomId);
         uiState.activeRoomId = null;
+        markUserPresence(null);
       }
       if (nextTab !== "chat") {
         uiState.chatDetailsOpen = false;
@@ -3933,6 +4556,7 @@
       uiState.directoryTab = "chat";
       uiState.chatDetailsOpen = false;
       uiState.attachmentMenuOpen = false;
+      markUserPresence(null);
       render();
       return;
     }
@@ -3982,6 +4606,10 @@
       handleCreateRoom();
       return;
     }
+    if (action === "submit-room-settings") {
+      handleRoomSettingsSubmit();
+      return;
+    }
     if (action === "open-room") {
       if (uiState.modal?.type === "search") {
         uiState.modal = null;
@@ -3994,7 +4622,14 @@
       return;
     }
     if (action === "leave-room") {
-      leaveRoom(actionTarget.dataset.roomId);
+      const roomId = actionTarget.dataset.roomId;
+      const room = appState.rooms.find((item) => item.id === roomId);
+      const currentUser = getCurrentUser();
+      if (room && currentUser && room.creatorId === currentUser.id) {
+        const confirmed = window.confirm(t("roomDeleteConfirm", { title: room.title }));
+        if (!confirmed) return;
+      }
+      leaveRoom(roomId);
       return;
     }
     if (action === "toggle-original") {
@@ -4129,8 +4764,56 @@
       uiState.landing.error = "";
       return;
     }
-    if (target instanceof HTMLInputElement && target.closest('form[data-form="create-room"]')) {
-      if (uiState.modal?.type === "create-room") {
+    if (target instanceof HTMLInputElement && target.name === "password" && target.closest('[data-form="landing"]')) {
+      uiState.landing.password = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "signup-name") {
+      uiState.landing.signupName = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "signup-password") {
+      uiState.landing.signupPassword = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "signup-password-confirm") {
+      uiState.landing.signupPasswordConfirm = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "signup-answer") {
+      uiState.landing.signupAnswer = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "reset-name") {
+      uiState.landing.resetName = target.value;
+      uiState.landing.resetQuestionKey = findUserByLoginName(target.value)?.recoveryQuestionKey || null;
+      uiState.landing.resetVerified = false;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "reset-answer") {
+      uiState.landing.resetAnswer = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "reset-password") {
+      uiState.landing.resetPassword = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "reset-password-confirm") {
+      uiState.landing.resetPasswordConfirm = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && (target.closest('form[data-form="create-room"]') || target.closest('form[data-form="room-settings"]'))) {
+      if (uiState.modal?.type === "create-room" || uiState.modal?.type === "room-settings") {
+        if (!uiState.modal.data) uiState.modal.data = {};
         uiState.modal.data[target.name] = target.value;
       }
       return;
@@ -4281,6 +4964,41 @@
     const target = event.target;
     if (
       target instanceof HTMLInputElement &&
+      ["signup-name", "signup-password", "signup-password-confirm", "signup-answer"].includes(target.dataset.input) &&
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.isComposing
+    ) {
+      event.preventDefault();
+      submitLandingSignup();
+      return;
+    }
+    if (
+      target instanceof HTMLInputElement &&
+      ["reset-name", "reset-answer"].includes(target.dataset.input) &&
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.isComposing &&
+      !uiState.landing.resetVerified
+    ) {
+      event.preventDefault();
+      verifyLandingPasswordReset();
+      return;
+    }
+    if (
+      target instanceof HTMLInputElement &&
+      ["reset-password", "reset-password-confirm"].includes(target.dataset.input) &&
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.isComposing &&
+      uiState.landing.resetVerified
+    ) {
+      event.preventDefault();
+      submitLandingPasswordUpdate();
+      return;
+    }
+    if (
+      target instanceof HTMLInputElement &&
       target.dataset.input === "my-profile-name" &&
       event.key === "Enter" &&
       !event.shiftKey &&
@@ -4356,6 +5074,7 @@
     if (form.dataset.form === "landing") {
       const formData = new FormData(form);
       uiState.landing.name = String(formData.get("name") || "").trim();
+      uiState.landing.password = String(formData.get("password") || "");
       enterLandingUser();
     }
   }
@@ -4363,6 +5082,15 @@
   function openModal(type) {
     if (type === "create-room") {
       uiState.modal = { type, data: { title: "", password: "" } };
+    } else if (type === "room-settings") {
+      const currentRoom = appState.rooms.find((item) => item.id === uiState.activeRoomId);
+      uiState.modal = {
+        type,
+        data: {
+          title: currentRoom?.title || "",
+          password: currentRoom?.password || "",
+        },
+      };
     } else if (type === "invite") {
       uiState.modal = { type, data: { name: "", error: "" } };
     } else if (type === "participants") {
@@ -4443,54 +5171,50 @@
     render();
   }
 
-  function enterLandingUser() {
-    const baseName = normalizeDisplayText(uiState.landing.name).trim();
-    if (!baseName) return;
-    if (!isAllowedPrivateTester(baseName)) {
-      uiState.landing.error = t("toastAccessDeniedCopy");
-      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
-      render();
-      return;
-    }
-    const existingUser = appState.users.find((user) => normalizeLoginIdentity(user.name) === normalizeLoginIdentity(baseName));
-    const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
-    const user = existingUser
-      ? {
-          ...existingUser,
-          uiLanguage: uiState.landing.uiLanguage,
-        }
-      : createUser(
-          baseName,
-          uiState.landing.nativeLanguage || defaultLanguage,
-          uiState.landing.uiLanguage,
-          Date.now(),
-          null,
-          uiState.landing.profileImage || null
-        );
+  function findUserByLoginName(name) {
+    return appState.users.find((user) => normalizeLoginIdentity(user.name) === normalizeLoginIdentity(name)) || null;
+  }
 
-    if (existingUser) {
-      const shouldSyncPreferred =
-        !existingUser.preferredChatLanguage || existingUser.preferredChatLanguage === existingUser.nativeLanguage;
-      existingUser.name = baseName;
-      existingUser.uiLanguage = uiState.landing.uiLanguage;
-      existingUser.nativeLanguage = uiState.landing.nativeLanguage || existingUser.nativeLanguage || defaultLanguage;
-      existingUser.auth = {
-        provider: existingUser?.auth?.provider || "test-name",
-        subject: normalizeLoginIdentity(baseName),
-        email: existingUser?.auth?.email || null,
-        phoneNumber: existingUser?.auth?.phoneNumber || null,
-        phoneVerified: Boolean(existingUser?.auth?.phoneVerified),
-      };
-      if (shouldSyncPreferred) {
-        existingUser.preferredChatLanguage = existingUser.nativeLanguage;
-      }
-      if (uiState.landing.profileImage) {
-        existingUser.profileImage = uiState.landing.profileImage;
-      }
-      existingUser.lastSeenAt = Date.now();
-    } else {
-      appState.users.push(user);
+  function resetLandingPanelState() {
+    uiState.landing.mode = "login";
+    uiState.landing.signupName = "";
+    uiState.landing.signupPassword = "";
+    uiState.landing.signupPasswordConfirm = "";
+    uiState.landing.signupQuestionKey = null;
+    uiState.landing.signupAnswer = "";
+    uiState.landing.resetName = "";
+    uiState.landing.resetQuestionKey = null;
+    uiState.landing.resetAnswer = "";
+    uiState.landing.resetPassword = "";
+    uiState.landing.resetPasswordConfirm = "";
+    uiState.landing.resetVerified = false;
+  }
+
+  function completeLandingLogin(user, options = {}) {
+    if (!user) return;
+    const now = Date.now();
+    const shouldSyncPreferred = !user.preferredChatLanguage || user.preferredChatLanguage === user.nativeLanguage;
+    const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
+
+    user.name = normalizeDisplayText(user.name).trim();
+    user.uiLanguage = uiState.landing.uiLanguage;
+    user.nativeLanguage = uiState.landing.nativeLanguage || user.nativeLanguage || defaultLanguage;
+    if (shouldSyncPreferred) {
+      user.preferredChatLanguage = user.nativeLanguage;
     }
+    if (uiState.landing.profileImage) {
+      user.profileImage = uiState.landing.profileImage;
+    }
+    user.auth = {
+      provider: user?.auth?.provider || "test-name",
+      subject: normalizeLoginIdentity(user.name),
+      email: user?.auth?.email || null,
+      phoneNumber: user?.auth?.phoneNumber || null,
+      phoneVerified: Boolean(user?.auth?.phoneVerified),
+    };
+    user.lastSeenAt = now;
+    user.lastLoginAt = now;
+    user.loginState = "online";
 
     setActiveUserId(user.id);
     localStorage.setItem(LANDING_UI_KEY, user.uiLanguage);
@@ -4499,16 +5223,183 @@
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     uiState.mobileRoomsOpen = false;
+    uiState.landing.name = user.name;
+    uiState.landing.password = "";
     uiState.landing.nativeAccordionOpen = false;
     uiState.landing.profileImage = null;
     uiState.landing.error = "";
+    resetLandingPanelState();
     uiState.profileEditor = {
       userId: user.id,
       name: user.name,
     };
     persistState();
     markUserPresence(user.currentRoomId || null);
-    pushToast("toastEnter", "toastEnterCopy", { name: user.name });
+    if (options.toastKey !== false) {
+      pushToast(options.toastKey || "toastEnter", options.toastCopyKey || "toastEnterCopy", { name: user.name });
+    }
+    render();
+  }
+
+  function enterLandingUser() {
+    const baseName = normalizeDisplayText(uiState.landing.name).trim();
+    const password = String(uiState.landing.password || "");
+    if (!baseName) return;
+    if (!isAllowedPrivateTester(baseName)) {
+      uiState.landing.error = t("toastAccessDeniedCopy");
+      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
+      render();
+      return;
+    }
+
+    const existingUser = findUserByLoginName(baseName);
+    if (!existingUser) {
+      uiState.landing.error = t("authLoginNotFound");
+      render();
+      return;
+    }
+
+    if (String(existingUser.password || "") !== password) {
+      uiState.landing.error = t("authLoginPasswordMismatch");
+      render();
+      return;
+    }
+
+    completeLandingLogin(existingUser);
+  }
+
+  function submitLandingSignup() {
+    const baseName = normalizeDisplayText(uiState.landing.signupName || uiState.landing.name).trim();
+    const password = String(uiState.landing.signupPassword || "");
+    const passwordConfirm = String(uiState.landing.signupPasswordConfirm || "");
+    const answer = normalizeRecoveryAnswer(uiState.landing.signupAnswer);
+    const questionKey = uiState.landing.signupQuestionKey || getRandomRecoveryQuestionKey();
+    const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
+
+    if (!baseName) {
+      uiState.landing.error = t("authNeedId");
+      render();
+      return;
+    }
+    if (!isAllowedPrivateTester(baseName)) {
+      uiState.landing.error = t("toastAccessDeniedCopy");
+      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
+      render();
+      return;
+    }
+    if (findUserByLoginName(baseName)) {
+      uiState.landing.error = t("authSignupDuplicate");
+      render();
+      return;
+    }
+    if (!password) {
+      uiState.landing.error = t("authNeedPassword");
+      render();
+      return;
+    }
+    if (password !== passwordConfirm) {
+      uiState.landing.error = t("authPasswordMismatch");
+      render();
+      return;
+    }
+    if (!answer) {
+      uiState.landing.error = t("authNeedRecoveryAnswer");
+      render();
+      return;
+    }
+
+    const user = createUser(
+      baseName,
+      uiState.landing.nativeLanguage || defaultLanguage,
+      uiState.landing.uiLanguage,
+      Date.now(),
+      null,
+      uiState.landing.profileImage || null,
+      {
+        password,
+        recoveryQuestionKey: questionKey,
+        recoveryAnswer: answer,
+        loginState: "online",
+        lastLoginAt: Date.now(),
+      }
+    );
+    appState.users.push(user);
+    uiState.landing.name = user.name;
+    uiState.landing.password = "";
+    completeLandingLogin(user, {
+      toastKey: "toastSignupSuccess",
+      toastCopyKey: "toastSignupSuccessCopy",
+    });
+  }
+
+  function verifyLandingPasswordReset() {
+    const baseName = normalizeDisplayText(uiState.landing.resetName).trim();
+    const answer = normalizeRecoveryAnswer(uiState.landing.resetAnswer);
+    const user = findUserByLoginName(baseName);
+
+    if (!baseName) {
+      uiState.landing.error = t("authNeedId");
+      render();
+      return;
+    }
+    if (!user) {
+      uiState.landing.error = t("authLoginNotFound");
+      render();
+      return;
+    }
+    if (!answer) {
+      uiState.landing.error = t("authNeedRecoveryAnswer");
+      render();
+      return;
+    }
+    if (answer !== normalizeRecoveryAnswer(user.recoveryAnswer)) {
+      uiState.landing.error = t("authRecoveryMismatch");
+      render();
+      return;
+    }
+
+    uiState.landing.resetName = user.name;
+    uiState.landing.resetQuestionKey = user.recoveryQuestionKey;
+    uiState.landing.resetVerified = true;
+    uiState.landing.error = "";
+    render();
+  }
+
+  function submitLandingPasswordUpdate() {
+    const baseName = normalizeDisplayText(uiState.landing.resetName).trim();
+    const nextPassword = String(uiState.landing.resetPassword || "");
+    const nextPasswordConfirm = String(uiState.landing.resetPasswordConfirm || "");
+    const user = findUserByLoginName(baseName);
+
+    if (!user) {
+      uiState.landing.error = t("authLoginNotFound");
+      render();
+      return;
+    }
+    if (!uiState.landing.resetVerified) {
+      uiState.landing.error = t("authRecoveryMismatch");
+      render();
+      return;
+    }
+    if (!nextPassword) {
+      uiState.landing.error = t("authNeedPassword");
+      render();
+      return;
+    }
+    if (nextPassword !== nextPasswordConfirm) {
+      uiState.landing.error = t("authPasswordMismatch");
+      render();
+      return;
+    }
+
+    user.password = nextPassword;
+    user.lastLoginAt = user.lastLoginAt || Date.now();
+    uiState.landing.name = user.name;
+    uiState.landing.password = "";
+    uiState.landing.error = "";
+    resetLandingPanelState();
+    persistState();
+    pushToast("toastPasswordUpdated", "toastPasswordUpdatedCopy");
     render();
   }
 
@@ -4516,11 +5407,12 @@
     const currentUser = getCurrentUser();
     if (!currentUser) return;
     const now = Date.now();
-    const effectiveRoomId = roomId || currentUser.currentRoomId || null;
-    currentUser.lastSeenAt = now;
-    if (roomId) {
-      currentUser.currentRoomId = roomId;
+    if (arguments.length >= 1) {
+      currentUser.currentRoomId = roomId || null;
     }
+    const effectiveRoomId = currentUser.currentRoomId || null;
+    currentUser.lastSeenAt = now;
+    currentUser.loginState = "online";
     runtime.presenceSignals[currentUser.id] = {
       userId: currentUser.id,
       currentRoomId: effectiveRoomId,
@@ -4613,6 +5505,27 @@
     render();
   }
 
+  function handleRoomSettingsSubmit() {
+    const currentUser = getCurrentUser();
+    const room = appState.rooms.find((item) => item.id === uiState.activeRoomId);
+    const titleInput = document.querySelector('form[data-form="room-settings"] input[name="title"]');
+    const passwordInput = document.querySelector('form[data-form="room-settings"] input[name="password"]');
+    if (!currentUser || !room || room.creatorId !== currentUser.id) return;
+
+    const nextTitle = normalizeDisplayText(titleInput?.value || room.title).trim() || room.title;
+    const nextPassword = String(passwordInput?.value || "").trim();
+
+    room.title = nextTitle;
+    room.password = nextPassword;
+    room.isProtected = Boolean(nextPassword);
+    room.disableExpiration = Boolean(room.disableExpiration) || isPersistentRoomTitle(nextTitle);
+    uiState.modal = null;
+    uiState.chatDetailsOpen = false;
+    persistState();
+    pushToast("toastRoomSettingsSaved", "toastRoomSettingsSavedCopy", { title: nextTitle });
+    render();
+  }
+
   function ensureParticipant(room, userId, addSystemMessage = true) {
     if (room.participants.includes(userId)) return;
     room.participants.push(userId);
@@ -4639,7 +5552,6 @@
 
     if (room.status === "expired") {
       uiState.activeRoomId = room.id;
-      markRoomRead(room.id, currentUser.id);
       currentUser.currentRoomId = null;
       persistState();
       render();
@@ -4665,6 +5577,8 @@
     markRoomRead(room.id, currentUser.id);
     persistState();
     render();
+    markUserPresence(room.id);
+    scheduleReceiptRefresh({ force: true, delay: 0 });
   }
 
   function accessRecord(room, userId) {
@@ -4712,10 +5626,11 @@
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     uiState.modal = null;
-    markRoomRead(room.id, currentUser.id);
     persistState();
     pushToast("toastPasswordSuccess", "toastPasswordSuccessCopy", { title: room.title });
     render();
+    markUserPresence(room.id);
+    scheduleReceiptRefresh({ force: true, delay: 0 });
   }
 
   function leaveRoom(roomId) {
@@ -4823,18 +5738,24 @@
     if (!currentUser) return;
 
     stopTypingForRoom(uiState.activeRoomId);
+    currentUser.loginState = "offline";
+    currentUser.currentRoomId = null;
+    currentUser.lastSeenAt = Date.now();
+    delete runtime.presenceSignals[currentUser.id];
     localStorage.setItem(LANDING_UI_KEY, currentUser.uiLanguage || uiState.landing.uiLanguage || "ko");
     uiState.landing.name = "";
+    uiState.landing.password = "";
     uiState.landing.nativeLanguage = currentUser.nativeLanguage || "ko";
     uiState.landing.uiLanguage = currentUser.uiLanguage || uiState.landing.uiLanguage || "ko";
     uiState.landing.nativeAccordionOpen = false;
     uiState.landing.profileImage = null;
+    uiState.landing.error = "";
+    resetLandingPanelState();
     uiState.profileEditor = {
       userId: null,
       name: "",
     };
 
-    deleteUserAccount(currentUser.id);
     setActiveUserId(null);
     uiState.activeRoomId = null;
     uiState.modal = null;
@@ -4945,11 +5866,12 @@
       ...translationBundle.meta,
       pending: false,
     };
+    message.status = "sent";
 
     setDraft(roomId, { text: "", attachment: null, failTranslation: false, processing: false });
     uiState.attachmentMenuOpen = false;
     persistState();
-    scheduleStatusProgression(room.id, message.id);
+    scheduleReceiptRefresh({ delay: 90 });
     pushToast("toastMessageSent", "toastMessageSentCopy");
     render();
   }
@@ -5368,16 +6290,7 @@
   }
 
   function scheduleStatusProgression(roomId, messageId) {
-    const existing = runtime.statusTimers.get(messageId);
-    if (existing) clearTimeout(existing);
-    const sentTimer = setTimeout(() => {
-      updateMessageStatus(roomId, messageId, "sent");
-      const readTimer = setTimeout(() => {
-        updateMessageStatus(roomId, messageId, "read");
-      }, 1200);
-      runtime.statusTimers.set(messageId, readTimer);
-    }, 600);
-    runtime.statusTimers.set(messageId, sentTimer);
+    updateMessageStatus(roomId, messageId, "sent");
   }
 
   function updateMessageStatus(roomId, messageId, status) {
@@ -5546,7 +6459,6 @@
       uiState.directoryTab = "chat";
       uiState.chatDetailsOpen = false;
       uiState.attachmentMenuOpen = false;
-      markRoomRead(room.id, currentUser.id);
       pushToast("toastInviteAccepted", "toastInviteAcceptedCopy", { name: currentUser.name });
     } else {
       room.messages.push(systemMessage(uid("sys"), "systemInviteRejected", { name: currentUser.name }, Date.now()));
@@ -5554,6 +6466,10 @@
     }
     persistState();
     render();
+    if (response === "accept") {
+      markUserPresence(room.id);
+      scheduleReceiptRefresh({ force: true, delay: 0 });
+    }
   }
 
   function openMessageMedia(messageId) {
@@ -5603,13 +6519,20 @@
 
   function syncViewport() {
     const visual = window.visualViewport;
-    const height = visual ? visual.height : window.innerHeight;
-    document.documentElement.style.setProperty("--app-height", `${height}px`);
+    const viewportHeight = visual ? visual.height : window.innerHeight;
+    const viewportBottom = visual ? visual.height + visual.offsetTop : window.innerHeight;
+    runtime.viewportBaseHeight = Math.max(runtime.viewportBaseHeight || 0, viewportBottom, window.innerHeight || 0);
+    runtime.keyboardOffset = Math.max(0, runtime.viewportBaseHeight - viewportBottom);
+    document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
+    document.documentElement.style.setProperty("--keyboard-offset", `${runtime.keyboardOffset}px`);
+    keepChatBottomVisible(Boolean(runtime.keyboardOffset));
   }
 
   function bindGlobalListeners() {
     APP_ROOT.addEventListener("click", onRootClick);
     APP_ROOT.addEventListener("input", onRootInput);
+    APP_ROOT.addEventListener("focusin", onRootFocusIn);
+    APP_ROOT.addEventListener("scroll", onRootScroll, true);
     APP_ROOT.addEventListener("keydown", onRootKeyDown);
     APP_ROOT.addEventListener("compositionstart", onRootCompositionStart);
     APP_ROOT.addEventListener("compositionupdate", onRootCompositionUpdate);
@@ -5617,6 +6540,10 @@
     APP_ROOT.addEventListener("change", onRootChange);
     APP_ROOT.addEventListener("submit", onRootSubmit);
     window.addEventListener("resize", syncViewport);
+    window.addEventListener("orientationchange", () => {
+      syncViewport();
+      keepChatBottomVisible(true);
+    });
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncViewport);
       window.visualViewport.addEventListener("scroll", syncViewport);
@@ -5628,7 +6555,11 @@
           if (parsed) {
             appState = parsed;
             syncUiWithCurrentUserState();
-            render();
+            if (shouldDeferNonCriticalRender()) {
+              renderSafelyDuringInput();
+            } else {
+              render();
+            }
           }
         } catch (error) {
           console.warn("Failed to sync storage state", error);
@@ -5639,6 +6570,7 @@
       if (!document.hidden) {
         markUserPresence(uiState.activeRoomId);
         checkRoomExpirations();
+        scheduleReceiptRefresh({ force: true, delay: 0 });
         render();
       }
     });
