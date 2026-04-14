@@ -2238,6 +2238,17 @@ body[data-theme="dark"] .mobile-nav-dock {
   padding: 0;
 }
 
+.landing-inline-helper {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+
+.landing-inline-helper.error {
+  color: #d45a64;
+}
+
 .landing-language-accordion-trigger {
   appearance: none;
   width: 100%;

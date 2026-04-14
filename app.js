@@ -7,7 +7,9 @@
     passwordAttemptLimit: 5,
     passwordLockMs: 90 * 1000,
     imageMaxBytes: 10 * 1024 * 1024,
+    profileImageMaxBytes: 5 * 1024 * 1024,
     videoMaxBytes: 50 * 1024 * 1024,
+    allowedImageMimeTypes: ["image/jpeg", "image/png", "image/webp"],
     heartbeatMs: 30 * 1000,
     typingIdleMs: 1600,
     typingSignalThrottleMs: 700,
@@ -16,7 +18,11 @@
     stateApiPath: "/api/state",
     eventsApiPath: "/api/events",
     typingApiPath: "/api/typing",
+    // Private test gate for now; replace with provider-backed auth when Google or magic-link login is added.
+    accessGateMode: "whitelist",
   };
+  // Edit this allowlist during private testing; later move the same rule to authenticated server-side identities.
+  const PRIVATE_TEST_ALLOWLIST = new Set(["현태", "배현태", "호아", "hoa"].map((value) => value.trim().toLowerCase()));
 
   const APP_ROOT = document.getElementById("app");
   const runtime = {
@@ -77,6 +83,7 @@
       uiLanguage: localStorage.getItem(LANDING_UI_KEY) || "ko",
       nativeAccordionOpen: false,
       profileImage: null,
+      error: "",
     },
   };
 
@@ -809,6 +816,13 @@
     toastProfileImageRemovedCopy: "기본 실루엣 이미지가 적용되었습니다.",
     toastProfileImageInvalid: "이미지 파일만 사용할 수 있습니다",
     toastProfileImageInvalidCopy: "프로필에는 사진 파일만 업로드할 수 있습니다.",
+    toastImageFormatInvalid: "지원되는 이미지 형식만 업로드할 수 있습니다",
+    toastImageFormatInvalidCopy: "JPEG, PNG, WEBP 파일만 선택해 주세요.",
+    toastProfileImageTooLarge: "프로필 사진 용량이 너무 큽니다",
+    toastProfileImageTooLargeCopy: "프로필 사진은 5MB 이하로 선택해 주세요.",
+    toastAccessDenied: "테스트 허용 사용자만 입장할 수 있습니다",
+    toastAccessDeniedCopy: "화이트리스트에 등록된 이름으로만 테스트 입장이 가능합니다.",
+    landingAccessHint: "현재 테스트 단계이므로 허용된 사용자만 입장할 수 있습니다.",
     connectionInvite: "초대하기",
     connectionInvited: "초대 보냄",
     connectionActive: "대화중",
@@ -836,6 +850,13 @@
     toastProfileImageRemovedCopy: "The default silhouette is active again.",
     toastProfileImageInvalid: "Image files only",
     toastProfileImageInvalidCopy: "Only image uploads are supported for profile photos.",
+    toastImageFormatInvalid: "Unsupported image format",
+    toastImageFormatInvalidCopy: "Please select a JPEG, PNG, or WEBP image.",
+    toastProfileImageTooLarge: "Profile image is too large",
+    toastProfileImageTooLargeCopy: "Profile images must be 5MB or smaller.",
+    toastAccessDenied: "Only approved testers can enter",
+    toastAccessDeniedCopy: "This private test currently allows a small whitelist of user names.",
+    landingAccessHint: "This private test is limited to approved users only.",
     connectionInvite: "Invite",
     connectionInvited: "Invited",
     connectionActive: "In chat",
@@ -863,6 +884,13 @@
     toastProfileImageRemovedCopy: "Anh bong nguoi mac dinh da duoc ap dung.",
     toastProfileImageInvalid: "Chi ho tro tep anh",
     toastProfileImageInvalidCopy: "Anh dai dien chi nhan tep hinh anh.",
+    toastImageFormatInvalid: "Dinh dang anh khong duoc ho tro",
+    toastImageFormatInvalidCopy: "Chi ho tro anh JPEG, PNG hoac WEBP.",
+    toastProfileImageTooLarge: "Anh dai dien qua lon",
+    toastProfileImageTooLargeCopy: "Anh dai dien phai nho hon hoac bang 5MB.",
+    toastAccessDenied: "Chi nguoi dung duoc phep moi vao duoc",
+    toastAccessDeniedCopy: "Ban thu rieng nay chi cho phep mot danh sach ten cu the.",
+    landingAccessHint: "Ban thu hien chi cho phep nhung nguoi dung da duoc phep.",
     connectionInvite: "Moi",
     connectionInvited: "Da moi",
     connectionActive: "Dang tro chuyen",
@@ -1096,6 +1124,15 @@
       id: uid("user"),
       name: normalizedName,
       profileImage,
+      // Future auth expansion point: replace test-name identity with Google, magic-link, or phone-backed identities.
+      auth: {
+        provider: "test-name",
+        subject: normalizeLoginIdentity(normalizedName),
+        email: null,
+        phoneNumber: null,
+        phoneVerified: false,
+      },
+      blockedUserIds: [],
       nativeLanguage,
       preferredChatLanguage: nativeLanguage,
       uiLanguage,
@@ -1182,6 +1219,14 @@
       .map((user) => ({
         ...user,
         name: normalizeDisplayText(user.name),
+        auth: {
+          provider: user?.auth?.provider || "test-name",
+          subject: user?.auth?.subject || normalizeLoginIdentity(user.name),
+          email: user?.auth?.email || null,
+          phoneNumber: user?.auth?.phoneNumber || null,
+          phoneVerified: Boolean(user?.auth?.phoneVerified),
+        },
+        blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
         preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
       }));
     const userIds = new Set(users.map((user) => user.id));
@@ -1280,6 +1325,7 @@
   }
 
   function persistState() {
+    // Prototype policy note: chats and inline image previews live in local/browser state until a room is deleted or expires.
     appState.updatedAt = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
     broadcastStateRefresh();
@@ -1364,6 +1410,7 @@
     if (!shouldUseTranslationBackend()) return;
 
     try {
+      // Prototype sync note: the local Node server mirrors app state for test devices only; replace with DB access control in production.
       const response = await fetch(CONFIG.stateApiPath, {
         method: "PUT",
         headers: {
@@ -1497,6 +1544,35 @@
     }
   }
 
+  function normalizeLoginIdentity(value) {
+    return normalizeDisplayText(value).trim().toLowerCase();
+  }
+
+  function isAllowedPrivateTester(name) {
+    if (CONFIG.accessGateMode !== "whitelist") {
+      return true;
+    }
+    return PRIVATE_TEST_ALLOWLIST.has(normalizeLoginIdentity(name));
+  }
+
+  // Added: web standard file-picker validation so only user-selected images are processed in memory.
+  function validateSelectedImageFile(file, options = {}) {
+    const maxBytes = Number(options.maxBytes || CONFIG.imageMaxBytes);
+    if (!file) {
+      return { ok: false, titleKey: "toastImageFormatInvalid", messageKey: "toastImageFormatInvalidCopy" };
+    }
+    if (!CONFIG.allowedImageMimeTypes.includes(String(file.type || "").toLowerCase())) {
+      return { ok: false, titleKey: "toastImageFormatInvalid", messageKey: "toastImageFormatInvalidCopy" };
+    }
+    if (file.size > maxBytes) {
+      if (options.kind === "profile") {
+        return { ok: false, titleKey: "toastProfileImageTooLarge", messageKey: "toastProfileImageTooLargeCopy" };
+      }
+      return { ok: false, titleKey: "imageTooLarge", messageKey: "imageTooLarge" };
+    }
+    return { ok: true };
+  }
+
   function getLanguageMeta(languageCode) {
     return LANGUAGE_META[languageCode] || { flag: "🏳️", nativeLabel: languageCode || "Unknown" };
   }
@@ -1526,8 +1602,15 @@
   }
 
   async function prepareProfileImage(file) {
-    if (!file || !String(file.type || "").startsWith("image/")) {
-      throw new Error("profile_image_invalid");
+    const validation = validateSelectedImageFile(file, {
+      maxBytes: CONFIG.profileImageMaxBytes,
+      kind: "profile",
+    });
+    if (!validation.ok) {
+      const error = new Error("profile_image_invalid");
+      error.titleKey = validation.titleKey;
+      error.messageKey = validation.messageKey;
+      throw error;
     }
 
     if (typeof createImageBitmap !== "function") {
@@ -1984,6 +2067,25 @@
     return `<button class="button button-secondary connection-invite-button" type="button" data-action="send-connection-invite" data-user-id="${friend.id}">${escapeHtml(t("connectionInvite"))}</button>`;
   }
 
+  function renderConnectionActionV2(friend, currentUser) {
+    const state = getConnectionActionState(currentUser, friend);
+    if (state.kind === "incoming") {
+      return `
+        <div class="connection-actions">
+          <button class="connection-icon-button accept" type="button" data-action="respond-invite" data-invite-id="${state.invite.id}" data-response="accept" aria-label="${escapeHtml(t("acceptInvite"))}">&#10003;</button>
+          <button class="connection-icon-button reject" type="button" data-action="respond-invite" data-invite-id="${state.invite.id}" data-response="reject" aria-label="${escapeHtml(t("rejectInvite"))}">&#10005;</button>
+        </div>
+      `;
+    }
+    if (state.kind === "active") {
+      return `<span class="status-pill pill-accent connection-state-pill">${escapeHtml(t("connectionActive"))}</span>`;
+    }
+    if (state.kind === "outgoing") {
+      return `<span class="status-pill connection-state-pill">${escapeHtml(t("connectionInvited"))}</span>`;
+    }
+    return `<button class="button button-secondary connection-invite-button" type="button" data-action="send-connection-invite" data-user-id="${friend.id}">${escapeHtml(t("connectionInvite"))}</button>`;
+  }
+
   function render() {
     if (runtime.compositionActive) {
       runtime.pendingRenderWhileComposing = true;
@@ -1994,7 +2096,7 @@
     applyTheme();
     const currentUser = getCurrentUser();
     document.documentElement.lang = getUiLanguage();
-    APP_ROOT.innerHTML = currentUser ? renderShellMobile(currentUser) : renderLandingEnhanced();
+    APP_ROOT.innerHTML = currentUser ? renderShellMobile(currentUser) : renderLandingEnhancedV2();
     bindPostRender(focusState, chatScrollState);
   }
 
@@ -2020,7 +2122,7 @@
                   <strong>${escapeHtml(t("landingPhotoLabel"))}</strong>
                   <span>${escapeHtml(t("landingPhotoHelper"))}</span>
                 </div>
-                <input data-input="landing-profile-image" type="file" accept="image/*" hidden>
+                <input data-input="landing-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
               </div>
               <div class="landing-input-row">
                 <input
@@ -2085,7 +2187,7 @@
                   <strong>${escapeHtml(t("landingPhotoLabel"))}</strong>
                   <span>${escapeHtml(t("landingPhotoHelper"))}</span>
                 </div>
-                <input data-input="landing-profile-image" type="file" accept="image/*" hidden>
+                <input data-input="landing-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
               </div>
               <div class="landing-input-row">
                 <input
@@ -2121,6 +2223,75 @@
                 <span class="landing-ui-language-icon" aria-hidden="true">🖥️</span>
                 <div class="landing-ui-language-buttons">${renderLandingLanguageButtons()}</div>
               </div>
+            </form>
+          </section>
+        </div>
+      </main>
+      ${renderToastStack()}
+    `;
+  }
+
+  function renderLandingEnhancedV2() {
+    const selectedNative = getLanguageMeta(uiState.landing.nativeLanguage || "ko");
+    const landingProfileImage = uiState.landing.profileImage || DEFAULT_PROFILE_IMAGE;
+    return `
+      <main class="shell landing">
+        <div class="landing-card landing-card-minimal">
+          <section class="landing-minimal-panel">
+            <h1 class="brand landing-brand-minimal">TRANSCHAT</h1>
+            <form class="landing-minimal-form" data-form="landing">
+              <div class="landing-profile-picker-block">
+                <button
+                  class="landing-profile-picker"
+                  type="button"
+                  data-action="trigger-landing-profile"
+                  aria-label="${escapeHtml(t("landingPhotoLabel"))}"
+                >
+                  ${renderProfileImage(landingProfileImage, "landing-profile-image", t("landingPhotoLabel"))}
+                </button>
+                <div class="landing-profile-copy">
+                  <strong>${escapeHtml(t("landingPhotoLabel"))}</strong>
+                  <span>${escapeHtml(t("landingPhotoHelper"))}</span>
+                </div>
+                <input data-input="landing-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+              </div>
+              <div class="landing-input-row">
+                <input
+                  id="entry-name"
+                  name="name"
+                  type="text"
+                  maxlength="24"
+                  value="${escapeHtml(uiState.landing.name)}"
+                  placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+                  autocapitalize="off"
+                  autocomplete="off"
+                />
+                <button class="landing-submit-button" type="submit" aria-label="${escapeHtml(t("enterButton"))}">&rarr;</button>
+              </div>
+              <div class="landing-language-accordion">
+                <button
+                  class="landing-language-accordion-trigger"
+                  type="button"
+                  data-action="toggle-landing-native-accordion"
+                  aria-expanded="${uiState.landing.nativeAccordionOpen ? "true" : "false"}"
+                >
+                  <span class="landing-language-trigger-main">
+                    <span aria-hidden="true">${selectedNative.flag}</span>
+                    <span>${escapeHtml(selectedNative.nativeLabel)}</span>
+                  </span>
+                  <span class="landing-language-trigger-caret" aria-hidden="true">${uiState.landing.nativeAccordionOpen ? "&minus;" : "+"}</span>
+                </button>
+                ${uiState.landing.nativeAccordionOpen
+                  ? `<div class="landing-language-accordion-panel">${renderLanguageAccordionOptions(uiState.landing.nativeLanguage)}</div>`
+                  : ""}
+              </div>
+              <div class="landing-ui-language-row" aria-label="${escapeHtml(t("labelUiLanguage"))}">
+                <span class="landing-ui-language-icon" aria-hidden="true">&#128421;&#65039;</span>
+                <div class="landing-ui-language-buttons">${renderLandingLanguageButtons()}</div>
+              </div>
+              <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
+                ${escapeHtml(uiState.landing.error || t("landingAccessHint"))}
+              </p>
             </form>
           </section>
         </div>
@@ -2284,7 +2455,7 @@
           <strong>${escapeHtml(friend.name)}</strong>
           <span class="helper">${escapeHtml(presence.label)}</span>
         </div>
-        ${currentUser ? renderConnectionAction(friend, currentUser) : `<span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>`}
+        ${currentUser ? renderConnectionActionV2(friend, currentUser) : `<span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>`}
       </article>
     `;
   }
@@ -2313,7 +2484,7 @@
               <button class="button button-secondary" type="button" data-action="trigger-profile-image">${escapeHtml(t("profilePhotoChange"))}</button>
               <button class="button button-ghost" type="button" data-action="remove-profile-image">${escapeHtml(t("profilePhotoRemove"))}</button>
             </div>
-            <input data-input="my-profile-image" type="file" accept="image/*" hidden>
+            <input data-input="my-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
             <div class="field compact-field">
               <label for="my-profile-name">${escapeHtml(t("profileNameLabel"))}</label>
               <input
@@ -2445,7 +2616,7 @@
           </div>
         </div>
       </div>
-      <input class="hidden-input" type="file" accept="image/*" data-input="image-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" accept="image/jpeg,image/png,image/webp" data-input="image-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" accept="video/*" data-input="video-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" data-input="generic-file" data-room-id="${room.id}" />
     `;
@@ -2525,7 +2696,7 @@
           <button class="button button-primary send-button" type="button" data-action="send-message" data-room-id="${room.id}" ${draft.processing ? "disabled" : ""}>${escapeHtml(t("sendButton"))}</button>
         </div>
       </div>
-      <input class="hidden-input" type="file" accept="image/*" data-input="image-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" accept="image/jpeg,image/png,image/webp" data-input="image-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" accept="video/*" data-input="video-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" data-input="generic-file" data-room-id="${room.id}" />
     `;
@@ -3255,7 +3426,7 @@
           </div>
         </div>
       </div>
-      <input class="hidden-input" type="file" accept="image/*" data-input="image-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" accept="image/jpeg,image/png,image/webp" data-input="image-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" accept="video/*" data-input="video-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" data-input="generic-file" data-room-id="${room.id}" />
     `;
@@ -3955,6 +4126,7 @@
     const target = event.target;
     if (target instanceof HTMLInputElement && target.name === "name" && target.closest('[data-form="landing"]')) {
       uiState.landing.name = target.value;
+      uiState.landing.error = "";
       return;
     }
     if (target instanceof HTMLInputElement && target.closest('form[data-form="create-room"]')) {
@@ -4053,9 +4225,10 @@
       if (file) {
         try {
           uiState.landing.profileImage = await prepareProfileImage(file);
+          uiState.landing.error = "";
           render();
         } catch (error) {
-          pushToast("toastProfileImageInvalid", "toastProfileImageInvalidCopy");
+          pushToast(error.titleKey || "toastProfileImageInvalid", error.messageKey || "toastProfileImageInvalidCopy");
           render();
         }
       }
@@ -4072,7 +4245,7 @@
           pushToast("toastProfileImageUpdated", "toastProfileImageUpdatedCopy");
           render();
         } catch (error) {
-          pushToast("toastProfileImageInvalid", "toastProfileImageInvalidCopy");
+          pushToast(error.titleKey || "toastProfileImageInvalid", error.messageKey || "toastProfileImageInvalidCopy");
           render();
         }
       }
@@ -4241,6 +4414,12 @@
       return;
     }
 
+    if (!isAllowedPrivateTester(nextName)) {
+      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
+      render();
+      return;
+    }
+
     const duplicate = appState.users.find(
       (user) => user.id !== currentUser.id && String(user.name || "").trim().toLowerCase() === nextName.toLowerCase()
     );
@@ -4251,6 +4430,13 @@
     }
 
     currentUser.name = nextName;
+    currentUser.auth = {
+      provider: currentUser?.auth?.provider || "test-name",
+      subject: normalizeLoginIdentity(nextName),
+      email: currentUser?.auth?.email || null,
+      phoneNumber: currentUser?.auth?.phoneNumber || null,
+      phoneVerified: Boolean(currentUser?.auth?.phoneVerified),
+    };
     uiState.profileEditor.name = nextName;
     persistState();
     pushToast("toastProfileSaved", "toastProfileSavedCopy");
@@ -4260,7 +4446,13 @@
   function enterLandingUser() {
     const baseName = normalizeDisplayText(uiState.landing.name).trim();
     if (!baseName) return;
-    const existingUser = appState.users.find((user) => String(user.name || "").trim().toLowerCase() === baseName.toLowerCase());
+    if (!isAllowedPrivateTester(baseName)) {
+      uiState.landing.error = t("toastAccessDeniedCopy");
+      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
+      render();
+      return;
+    }
+    const existingUser = appState.users.find((user) => normalizeLoginIdentity(user.name) === normalizeLoginIdentity(baseName));
     const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
     const user = existingUser
       ? {
@@ -4279,8 +4471,16 @@
     if (existingUser) {
       const shouldSyncPreferred =
         !existingUser.preferredChatLanguage || existingUser.preferredChatLanguage === existingUser.nativeLanguage;
+      existingUser.name = baseName;
       existingUser.uiLanguage = uiState.landing.uiLanguage;
       existingUser.nativeLanguage = uiState.landing.nativeLanguage || existingUser.nativeLanguage || defaultLanguage;
+      existingUser.auth = {
+        provider: existingUser?.auth?.provider || "test-name",
+        subject: normalizeLoginIdentity(baseName),
+        email: existingUser?.auth?.email || null,
+        phoneNumber: existingUser?.auth?.phoneNumber || null,
+        phoneVerified: Boolean(existingUser?.auth?.phoneVerified),
+      };
       if (shouldSyncPreferred) {
         existingUser.preferredChatLanguage = existingUser.nativeLanguage;
       }
@@ -4301,6 +4501,7 @@
     uiState.mobileRoomsOpen = false;
     uiState.landing.nativeAccordionOpen = false;
     uiState.landing.profileImage = null;
+    uiState.landing.error = "";
     uiState.profileEditor = {
       userId: user.id,
       name: user.name,
@@ -4547,6 +4748,7 @@
     const room = appState.rooms.find((item) => item.id === roomId);
     if (!room) return;
 
+    // Policy alignment: inline media previews live only inside room state and are revoked when the room is deleted or expires.
     room.messages.forEach((message) => {
       if (message.media?.kind === "video" && message.media.runtimeId) {
         revokeRuntimeVideo(message.media.runtimeId);
@@ -5188,8 +5390,12 @@
   }
 
   async function handleImageSelection(roomId, file) {
-    if (file.size > CONFIG.imageMaxBytes) {
-      pushToast("imageTooLarge", "imageTooLarge");
+    const validation = validateSelectedImageFile(file, {
+      maxBytes: CONFIG.imageMaxBytes,
+      kind: "chat",
+    });
+    if (!validation.ok) {
+      pushToast(validation.titleKey, validation.messageKey);
       return;
     }
     const existing = getDraft(roomId).attachment;
@@ -5206,6 +5412,7 @@
   }
 
   async function compressImage(file) {
+    // The browser only processes the specific user-selected file; no broad device storage access is requested.
     // Later this should move into a dedicated media pipeline with permanent storage metadata returned from the backend.
     const bitmap = await createImageBitmap(file);
     const ratio = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
@@ -5386,7 +5593,7 @@
   }
 
   function expireRoom(room) {
-    // Later this cleanup belongs in authoritative backend expiration logic tied to database rows and media storage deletion.
+    // Policy alignment: expiration must remove both the room UI and its stored message/media payloads in the same path.
     const title = room.title;
     deleteRoom(room.id);
     uiState.activeRoomId = null;

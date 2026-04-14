@@ -521,6 +521,7 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLang
       effort: "minimal",
     },
     max_output_tokens: estimateTranslationOutputTokens(text),
+    // Policy note: realtime translation sends message text to the configured OpenAI API endpoint only while live translation is enabled.
     input: buildTranslationPrompt({
       text,
       sourceLanguage,
@@ -633,6 +634,14 @@ function sanitizeSharedState(state) {
     .map((user) => ({
       ...user,
       name: normalizeDisplayText(user.name),
+      auth: {
+        provider: user?.auth?.provider || "test-name",
+        subject: user?.auth?.subject || normalizeDisplayText(user.name).trim().toLowerCase(),
+        email: user?.auth?.email || null,
+        phoneNumber: user?.auth?.phoneNumber || null,
+        phoneVerified: Boolean(user?.auth?.phoneVerified),
+      },
+      blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
     }));
   const userIds = new Set(users.map((user) => user.id));
 
