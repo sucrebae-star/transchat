@@ -298,6 +298,7 @@ function mergeInvites(previousInvites, nextInvites) {
       ...previous,
       ...next,
       respondedAt: Math.max(Number(previous.respondedAt || 0), Number(next.respondedAt || 0)) || null,
+      seenByInvitee: Boolean(previous.seenByInvitee || next.seenByInvitee),
     };
   });
 }
@@ -680,10 +681,14 @@ function sanitizeSharedState(state) {
     .filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user))
     .map((user) => ({
       ...user,
+      loginId: normalizeDisplayText(user?.loginId || user?.name).trim().toLowerCase(),
       name: normalizeDisplayText(user.name),
+      nickname: normalizeDisplayText(user?.nickname || "").trim(),
+      gender: user?.gender === "female" ? "female" : user?.gender === "male" ? "male" : "",
+      age: Number(user?.age || 0) || "",
       auth: {
         provider: user?.auth?.provider || "test-name",
-        subject: user?.auth?.subject || normalizeDisplayText(user.name).trim().toLowerCase(),
+        subject: user?.auth?.subject || normalizeDisplayText(user?.loginId || user?.name).trim().toLowerCase(),
         email: user?.auth?.email || null,
         phoneNumber: user?.auth?.phoneNumber || null,
         phoneVerified: Boolean(user?.auth?.phoneVerified),
@@ -700,6 +705,8 @@ function sanitizeSharedState(state) {
       joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
       lastLoginAt: Number(user?.lastLoginAt || 0) || null,
       loginState: user?.loginState === "online" ? "online" : "offline",
+      hasUnreadInvites: Boolean(user?.hasUnreadInvites),
+      hasUnreadMessages: Boolean(user?.hasUnreadMessages),
     }));
   const userIds = new Set(users.map((user) => user.id));
 
@@ -731,9 +738,14 @@ function sanitizeSharedState(state) {
       ...user,
       currentRoomId: roomIds.has(user.currentRoomId) ? user.currentRoomId : null,
     })),
-    invites: (state.invites || []).filter((invite) => {
-      return roomIds.has(invite.roomId) && userIds.has(invite.inviterId) && userIds.has(invite.inviteeId);
-    }),
+    invites: (state.invites || [])
+      .filter((invite) => roomIds.has(invite.roomId) && userIds.has(invite.inviterId) && userIds.has(invite.inviteeId))
+      .map((invite) => ({
+        ...invite,
+        status: ["pending", "accepted", "rejected"].includes(invite?.status) ? invite.status : "pending",
+        respondedAt: Number(invite?.respondedAt || 0) || null,
+        seenByInvitee: Boolean(invite?.seenByInvitee),
+      })),
     rooms,
   };
 }

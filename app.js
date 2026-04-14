@@ -81,6 +81,9 @@
     profileEditor: {
       userId: null,
       name: "",
+      nickname: "",
+      gender: "",
+      age: "",
     },
     landing: {
       name: "",
@@ -91,11 +94,13 @@
       profileImage: null,
       error: "",
       mode: "login",
-      signupName: "",
+      signupId: "",
       signupPassword: "",
-      signupPasswordConfirm: "",
+      signupName: "",
       signupQuestionKey: null,
       signupAnswer: "",
+      signupNativeLanguage: "ko",
+      signupNativeAccordionOpen: false,
       resetName: "",
       resetQuestionKey: null,
       resetAnswer: "",
@@ -954,6 +959,7 @@
   };
 
   let appState = loadState();
+  syncUserAlertState();
 
   Object.assign(DICTIONARY.ko, {
     tabFriends: "연결",
@@ -1097,6 +1103,118 @@
     toastRoomSettingsSaved: "Da luu cai dat phong",
     toastRoomSettingsSavedCopy: "{title} da duoc cap nhat.",
     roomDeleteConfirm: "Neu chu phong roi di, phong va toan bo noi dung se bi xoa. Tiep tuc?",
+  });
+
+  // Added: login/signup/profile copy for the dedicated auth screens and compact profile editing flow.
+  Object.assign(DICTIONARY.ko, {
+    landingNamePlaceholderSimple: "아이디를 작성하세요",
+    landingAuthSecondaryHint: "테스트 계정으로 간단히 로그인할 수 있습니다.",
+    landingBackToLogin: "로그인으로 돌아가기",
+    signupScreenTitle: "회원가입",
+    signupScreenCopy: "계정 정보와 모국어를 설정하면 바로 입장할 수 있습니다.",
+    resetScreenTitle: "비밀번호 변경",
+    resetScreenCopy: "아이디와 확인 질문으로 본인 확인 후 새 비밀번호를 설정하세요.",
+    authNameLabel: "이름",
+    authNamePlaceholder: "이름을 작성하세요",
+    authNicknameLabel: "닉네임",
+    authNicknamePlaceholder: "닉네임을 작성하세요",
+    authGenderLabel: "성별",
+    authGenderMale: "남성",
+    authGenderFemale: "여성",
+    authAgeLabel: "나이",
+    authAgePlaceholder: "나이를 입력하세요",
+    authSignupNativeLanguageLabel: "모국어 설정",
+    authInvalidIdTitle: "아이디 형식을 확인하세요",
+    authInvalidIdCopy: "아이디는 영어와 숫자를 조합한 5자 이상이어야 합니다.",
+    authInvalidPasswordTitle: "비밀번호 형식을 확인하세요",
+    authInvalidPasswordCopy: "비밀번호는 8자 이상이며 영어, 숫자, 특수문자를 모두 포함해야 합니다.",
+    authSignupNameRequired: "이름을 입력하세요.",
+    authProfileSavedCopy: "기본 프로필이 저장되었습니다.",
+    profileAccountIdLabel: "아이디",
+    profileNameReadonlyLabel: "이름",
+    profileNicknameLabel: "닉네임",
+    profileGenderLabel: "성별",
+    profileAgeLabel: "나이",
+    profilePopupTitle: "기본 프로필",
+    profilePopupName: "이름",
+    profilePopupId: "아이디",
+    profilePopupGender: "성별",
+    profilePopupAge: "나이",
+    profilePopupEmpty: "미설정",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    landingNamePlaceholderSimple: "Enter your ID",
+    landingAuthSecondaryHint: "Log in quickly with a private test account.",
+    landingBackToLogin: "Back to login",
+    signupScreenTitle: "Create account",
+    signupScreenCopy: "Set your account details and native language before entering.",
+    resetScreenTitle: "Change password",
+    resetScreenCopy: "Verify your identity with your account ID and question before setting a new password.",
+    authNameLabel: "Name",
+    authNamePlaceholder: "Enter your name",
+    authNicknameLabel: "Nickname",
+    authNicknamePlaceholder: "Enter your nickname",
+    authGenderLabel: "Gender",
+    authGenderMale: "Male",
+    authGenderFemale: "Female",
+    authAgeLabel: "Age",
+    authAgePlaceholder: "Enter your age",
+    authSignupNativeLanguageLabel: "Native language",
+    authInvalidIdTitle: "Check your user ID",
+    authInvalidIdCopy: "Your user ID must be at least 5 characters and include both letters and numbers.",
+    authInvalidPasswordTitle: "Check your password",
+    authInvalidPasswordCopy: "Your password must be at least 8 characters and include letters, numbers, and special characters.",
+    authSignupNameRequired: "Enter your name.",
+    authProfileSavedCopy: "Your basic profile has been saved.",
+    profileAccountIdLabel: "User ID",
+    profileNameReadonlyLabel: "Name",
+    profileNicknameLabel: "Nickname",
+    profileGenderLabel: "Gender",
+    profileAgeLabel: "Age",
+    profilePopupTitle: "Basic profile",
+    profilePopupName: "Name",
+    profilePopupId: "User ID",
+    profilePopupGender: "Gender",
+    profilePopupAge: "Age",
+    profilePopupEmpty: "Not set",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    landingNamePlaceholderSimple: "Nhap ID cua ban",
+    landingAuthSecondaryHint: "Dang nhap nhanh bang tai khoan thu nghiem rieng.",
+    landingBackToLogin: "Quay lai dang nhap",
+    signupScreenTitle: "Dang ky",
+    signupScreenCopy: "Hay cai dat thong tin tai khoan va ngon ngu me de truoc khi vao.",
+    resetScreenTitle: "Doi mat khau",
+    resetScreenCopy: "Nhap ID va cau hoi xac minh truoc khi dat mat khau moi.",
+    authNameLabel: "Ten",
+    authNamePlaceholder: "Nhap ten cua ban",
+    authNicknameLabel: "Biet danh",
+    authNicknamePlaceholder: "Nhap biet danh",
+    authGenderLabel: "Gioi tinh",
+    authGenderMale: "Nam",
+    authGenderFemale: "Nu",
+    authAgeLabel: "Tuoi",
+    authAgePlaceholder: "Nhap tuoi",
+    authSignupNativeLanguageLabel: "Ngon ngu me de",
+    authInvalidIdTitle: "Hay kiem tra ID",
+    authInvalidIdCopy: "ID phai co it nhat 5 ky tu va bao gom ca chu cai va so.",
+    authInvalidPasswordTitle: "Hay kiem tra mat khau",
+    authInvalidPasswordCopy: "Mat khau phai co it nhat 8 ky tu va bao gom chu cai, so, va ky tu dac biet.",
+    authSignupNameRequired: "Hay nhap ten.",
+    authProfileSavedCopy: "Da luu ho so co ban.",
+    profileAccountIdLabel: "ID",
+    profileNameReadonlyLabel: "Ten",
+    profileNicknameLabel: "Biet danh",
+    profileGenderLabel: "Gioi tinh",
+    profileAgeLabel: "Tuoi",
+    profilePopupTitle: "Ho so co ban",
+    profilePopupName: "Ten",
+    profilePopupId: "ID",
+    profilePopupGender: "Gioi tinh",
+    profilePopupAge: "Tuoi",
+    profilePopupEmpty: "Chua cai dat",
   });
 
   function loadState() {
@@ -1291,14 +1409,19 @@
   function createUser(name, nativeLanguage, uiLanguage, lastSeenAt, currentRoomId, profileImage = null, accountOptions = {}) {
     const normalizedName = normalizeDisplayText(name).trim();
     const joinedAt = Number(accountOptions.joinedAt || Date.now());
+    const normalizedLoginId = normalizeAccountId(accountOptions.loginId || normalizedName);
     return {
       id: uid("user"),
+      loginId: normalizedLoginId,
       name: normalizedName,
+      nickname: normalizeDisplayText(accountOptions.nickname || "").trim(),
+      gender: accountOptions.gender === "female" ? "female" : accountOptions.gender === "male" ? "male" : "",
+      age: Number(accountOptions.age || 0) || "",
       profileImage,
       // Future auth expansion point: replace test-name identity with Google, magic-link, or phone-backed identities.
       auth: {
         provider: "test-name",
-        subject: normalizeLoginIdentity(normalizedName),
+        subject: normalizedLoginId || normalizeLoginIdentity(normalizedName),
         email: null,
         phoneNumber: null,
         phoneVerified: false,
@@ -1318,6 +1441,8 @@
       createdAt: joinedAt,
       lastLoginAt: Number(accountOptions.lastLoginAt || 0) || null,
       loginState: accountOptions.loginState === "online" ? "online" : "offline",
+      hasUnreadInvites: Boolean(accountOptions.hasUnreadInvites),
+      hasUnreadMessages: Boolean(accountOptions.hasUnreadMessages),
     };
   }
 
@@ -1412,10 +1537,14 @@
       .filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user))
       .map((user) => ({
         ...user,
+        loginId: normalizeAccountId(user?.loginId || user?.name),
         name: normalizeDisplayText(user.name),
+        nickname: normalizeDisplayText(user?.nickname || "").trim(),
+        gender: user?.gender === "female" ? "female" : user?.gender === "male" ? "male" : "",
+        age: Number(user?.age || 0) || "",
         auth: {
           provider: user?.auth?.provider || "test-name",
-          subject: user?.auth?.subject || normalizeLoginIdentity(user.name),
+          subject: user?.auth?.subject || normalizeAccountId(user?.loginId || user?.name),
           email: user?.auth?.email || null,
           phoneNumber: user?.auth?.phoneNumber || null,
           phoneVerified: Boolean(user?.auth?.phoneVerified),
@@ -1433,6 +1562,8 @@
         joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
         lastLoginAt: Number(user?.lastLoginAt || 0) || null,
         loginState: user?.loginState === "online" ? "online" : "offline",
+        hasUnreadInvites: Boolean(user?.hasUnreadInvites),
+        hasUnreadMessages: Boolean(user?.hasUnreadMessages),
       }));
     const userIds = new Set(users.map((user) => user.id));
 
@@ -1460,9 +1591,14 @@
       currentRoomId: roomIds.has(user.currentRoomId) ? user.currentRoomId : null,
     }));
     nextState.rooms = rooms;
-    nextState.invites = (parsed.invites || []).filter((invite) => {
-      return roomIds.has(invite.roomId) && userIds.has(invite.inviterId) && userIds.has(invite.inviteeId);
-    });
+    nextState.invites = (parsed.invites || [])
+      .filter((invite) => roomIds.has(invite.roomId) && userIds.has(invite.inviterId) && userIds.has(invite.inviteeId))
+      .map((invite) => ({
+        ...invite,
+        status: ["pending", "accepted", "rejected"].includes(invite?.status) ? invite.status : "pending",
+        respondedAt: Number(invite?.respondedAt || 0) || null,
+        seenByInvitee: Boolean(invite?.seenByInvitee),
+      }));
 
     return nextState;
   }
@@ -1532,6 +1668,7 @@
 
   function persistState() {
     // Prototype policy note: chats and inline image previews live in local/browser state until a room is deleted or expires.
+    syncUserAlertState();
     appState.updatedAt = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
     broadcastStateRefresh();
@@ -1754,6 +1891,86 @@
     return normalizeDisplayText(value).trim().toLowerCase();
   }
 
+  function normalizeAccountId(value) {
+    return normalizeDisplayText(value).trim().toLowerCase();
+  }
+
+  function isValidSignupLoginId(value) {
+    return /^(?=.*[a-z])(?=.*\d)[a-z\d]{5,}$/i.test(String(value || "").trim());
+  }
+
+  function isValidSignupPassword(value) {
+    return /^(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/.test(String(value || ""));
+  }
+
+  function getUserDisplayName(user) {
+    return normalizeDisplayText(user?.nickname || user?.name || user?.loginId || "");
+  }
+
+  function openNoticeModal(titleKey, messageKey, params = {}) {
+    uiState.modal = {
+      type: "notice",
+      data: {
+        title: t(titleKey, params),
+        message: t(messageKey, params),
+      },
+    };
+  }
+
+  function hasUnreadInviteNotifications(userId) {
+    return appState.invites.some(
+      (invite) => invite.inviteeId === userId && invite.status === "pending" && !invite.seenByInvitee
+    );
+  }
+
+  function hasUnreadMessageNotifications(userId) {
+    return appState.rooms.some((room) => Number(room?.unreadByUser?.[userId] || 0) > 0);
+  }
+
+  function syncUserAlertState() {
+    appState.users.forEach((user) => {
+      user.hasUnreadInvites = hasUnreadInviteNotifications(user.id);
+      user.hasUnreadMessages = hasUnreadMessageNotifications(user.id);
+    });
+  }
+
+  function markIncomingInvitesSeen(userId) {
+    let changed = false;
+    appState.invites.forEach((invite) => {
+      if (invite.inviteeId === userId && invite.status === "pending" && !invite.seenByInvitee) {
+        invite.seenByInvitee = true;
+        changed = true;
+      }
+    });
+    if (changed) {
+      syncUserAlertState();
+    }
+    return changed;
+  }
+
+  function markAllChatNotificationsSeen(userId) {
+    let changed = false;
+    appState.rooms.forEach((room) => {
+      if (!room.unreadByUser) return;
+      if (Number(room.unreadByUser[userId] || 0) > 0) {
+        room.unreadByUser[userId] = 0;
+        changed = true;
+      }
+    });
+    if (changed) {
+      syncUserAlertState();
+    }
+    return changed;
+  }
+
+  function renderTabBadge(tabId, currentUser) {
+    if (!currentUser) return "";
+    const showBadge =
+      (tabId === "me" && (currentUser.hasUnreadInvites || hasUnreadInviteNotifications(currentUser.id))) ||
+      (tabId === "chat" && (currentUser.hasUnreadMessages || hasUnreadMessageNotifications(currentUser.id)));
+    return showBadge ? `<span class="mobile-tab-badge" aria-hidden="true">N</span>` : "";
+  }
+
   function normalizeRecoveryAnswer(value) {
     return normalizeDisplayText(value)
       .replace(/\s+/g, "")
@@ -1812,14 +2029,17 @@
   }
 
   function syncProfileEditor(currentUser) {
-    if (!currentUser) return "";
+    if (!currentUser) return null;
     if (uiState.profileEditor.userId !== currentUser.id) {
       uiState.profileEditor = {
         userId: currentUser.id,
         name: currentUser.name || "",
+        nickname: currentUser.nickname || "",
+        gender: currentUser.gender || "",
+        age: currentUser.age || "",
       };
     }
-    return uiState.profileEditor.name;
+    return uiState.profileEditor;
   }
 
   async function fileToDataUrl(file) {
@@ -1865,7 +2085,7 @@
     return `<img class="${className}" src="${escapeHtml(source)}" alt="${escapeHtml(altText)}">`;
   }
 
-  function renderLanguageAccordionOptions(selectedCode) {
+  function renderLanguageAccordionOptions(selectedCode, actionName = "select-landing-native-language") {
     return Object.keys(CHAT_LANGUAGES)
       .map((languageCode) => {
         const meta = getLanguageMeta(languageCode);
@@ -1873,7 +2093,7 @@
           <button
             class="landing-language-option ${selectedCode === languageCode ? "active" : ""}"
             type="button"
-            data-action="select-landing-native-language"
+            data-action="${actionName}"
             data-language="${languageCode}"
           >
             <span class="landing-language-option-flag" aria-hidden="true">${meta.flag}</span>
@@ -2223,6 +2443,7 @@
       status: "pending",
       createdAt: Date.now(),
       respondedAt: null,
+      seenByInvitee: false,
     };
     appState.invites.unshift(invite);
     room.messages.push(systemMessage(uid("sys"), "systemUserInvited", { inviter: currentUser.name, invitee: friend.name }, Date.now()));
@@ -2605,85 +2826,235 @@
     `;
   }
 
-  function renderLandingEnhancedV2() {
-    const selectedNative = getLanguageMeta(uiState.landing.nativeLanguage || "ko");
+  function renderLandingUiLanguageRow(centered = false) {
+    return `
+      <div class="landing-ui-language-row ${centered ? "centered" : ""}" aria-label="${escapeHtml(t("labelUiLanguage"))}">
+        <span class="landing-ui-language-icon" aria-hidden="true">&#128421;&#65039;</span>
+        <div class="landing-ui-language-buttons">${renderLandingLanguageButtons()}</div>
+      </div>
+    `;
+  }
+
+  function renderLandingLoginScreen() {
+    return `
+      <section class="landing-minimal-panel">
+        <h1 class="brand landing-brand-minimal">TRANSCHAT</h1>
+        <form class="landing-minimal-form" data-form="landing">
+          <div class="landing-input-stack">
+            <input
+              id="entry-name"
+              name="name"
+              type="text"
+              maxlength="24"
+              value="${escapeHtml(uiState.landing.name)}"
+              placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+              autocapitalize="off"
+              autocomplete="username"
+            />
+            <input
+              id="entry-password"
+              name="password"
+              type="password"
+              value="${escapeHtml(uiState.landing.password)}"
+              placeholder="${escapeHtml(t("authPasswordPlaceholder"))}"
+              autocomplete="current-password"
+            />
+          </div>
+          <div class="landing-auth-actions">
+            <button class="button button-primary landing-auth-button" type="submit">${escapeHtml(t("loginButton"))}</button>
+          </div>
+          <div class="landing-auth-links">
+            <button class="landing-text-button" type="button" data-action="open-landing-signup">${escapeHtml(t("signupButton"))}</button>
+            <button class="landing-text-button" type="button" data-action="open-landing-reset">${escapeHtml(t("passwordChangeButton"))}</button>
+          </div>
+          <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
+            ${escapeHtml(uiState.landing.error || t("landingAuthSecondaryHint"))}
+          </p>
+        </form>
+        ${renderLandingUiLanguageRow(true)}
+      </section>
+    `;
+  }
+
+  function renderLandingSignupScreen() {
+    const selectedNative = getLanguageMeta(uiState.landing.signupNativeLanguage || "ko");
     const landingProfileImage = uiState.landing.profileImage || DEFAULT_PROFILE_IMAGE;
+    return `
+      <section class="landing-minimal-panel">
+        <div class="landing-screen-topbar">
+          <button class="landing-text-button back" type="button" data-action="close-landing-panel">${escapeHtml(t("landingBackToLogin"))}</button>
+        </div>
+        <div class="landing-screen-copy">
+          <h2>${escapeHtml(t("signupScreenTitle"))}</h2>
+          <p>${escapeHtml(t("signupScreenCopy"))}</p>
+        </div>
+        <form class="landing-minimal-form" data-form="landing-signup">
+          <div class="landing-profile-picker-block">
+            <button
+              class="landing-profile-picker"
+              type="button"
+              data-action="trigger-landing-profile"
+              aria-label="${escapeHtml(t("landingPhotoLabel"))}"
+            >
+              ${renderProfileImage(landingProfileImage, "landing-profile-image", t("landingPhotoLabel"))}
+            </button>
+            <div class="landing-profile-copy">
+              <strong>${escapeHtml(t("landingPhotoLabel"))}</strong>
+              <span>${escapeHtml(t("landingPhotoHelper"))}</span>
+            </div>
+            <input data-input="landing-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+          </div>
+          <div class="landing-input-stack">
+            <input
+              id="signup-id"
+              data-input="signup-id"
+              type="text"
+              maxlength="24"
+              value="${escapeHtml(uiState.landing.signupId)}"
+              placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+              autocapitalize="off"
+              autocomplete="username"
+            />
+            <input
+              id="signup-password"
+              data-input="signup-password"
+              type="password"
+              value="${escapeHtml(uiState.landing.signupPassword)}"
+              placeholder="${escapeHtml(t("authPasswordPlaceholder"))}"
+              autocomplete="new-password"
+            />
+            <input
+              id="signup-name"
+              data-input="signup-name"
+              type="text"
+              maxlength="24"
+              value="${escapeHtml(uiState.landing.signupName)}"
+              placeholder="${escapeHtml(t("authNamePlaceholder"))}"
+              autocapitalize="off"
+              autocomplete="off"
+            />
+          </div>
+          <div class="landing-language-accordion">
+            <button
+              class="landing-language-accordion-trigger"
+              type="button"
+              data-action="toggle-signup-native-accordion"
+              aria-expanded="${uiState.landing.signupNativeAccordionOpen ? "true" : "false"}"
+            >
+              <span class="landing-language-trigger-main">
+                <span aria-hidden="true">${selectedNative.flag}</span>
+                <span>${escapeHtml(selectedNative.nativeLabel)}</span>
+              </span>
+              <span class="landing-language-trigger-caret" aria-hidden="true">${uiState.landing.signupNativeAccordionOpen ? "&minus;" : "+"}</span>
+            </button>
+            ${uiState.landing.signupNativeAccordionOpen
+              ? `<div class="landing-language-accordion-panel">${renderLanguageAccordionOptions(
+                  uiState.landing.signupNativeLanguage,
+                  "select-signup-native-language"
+                )}</div>`
+              : ""}
+          </div>
+          <div class="landing-auth-actions">
+            <button class="button button-primary landing-auth-button" type="button" data-action="submit-landing-signup">${escapeHtml(t("signupCompleteButton"))}</button>
+          </div>
+          <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
+            ${escapeHtml(uiState.landing.error || t("landingAccessHint"))}
+          </p>
+        </form>
+        ${renderLandingUiLanguageRow(true)}
+      </section>
+    `;
+  }
+
+  function renderLandingResetScreen() {
+    const questionKey = uiState.landing.resetQuestionKey;
+    return `
+      <section class="landing-minimal-panel">
+        <div class="landing-screen-topbar">
+          <button class="landing-text-button back" type="button" data-action="close-landing-panel">${escapeHtml(t("landingBackToLogin"))}</button>
+        </div>
+        <div class="landing-screen-copy">
+          <h2>${escapeHtml(t("resetScreenTitle"))}</h2>
+          <p>${escapeHtml(t("resetScreenCopy"))}</p>
+        </div>
+        <form class="landing-minimal-form" data-form="landing-reset">
+          <div class="landing-input-stack">
+            <input
+              id="reset-name"
+              data-input="reset-name"
+              type="text"
+              maxlength="24"
+              value="${escapeHtml(uiState.landing.resetName)}"
+              placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+              autocapitalize="off"
+              autocomplete="username"
+            />
+            ${uiState.landing.resetVerified
+              ? `
+                <input
+                  id="reset-password"
+                  data-input="reset-password"
+                  type="password"
+                  value="${escapeHtml(uiState.landing.resetPassword)}"
+                  placeholder="${escapeHtml(t("authNewPasswordPlaceholder"))}"
+                  autocomplete="new-password"
+                />
+                <input
+                  id="reset-password-confirm"
+                  data-input="reset-password-confirm"
+                  type="password"
+                  value="${escapeHtml(uiState.landing.resetPasswordConfirm)}"
+                  placeholder="${escapeHtml(t("authPasswordConfirmPlaceholder"))}"
+                  autocomplete="new-password"
+                />
+              `
+              : `
+                <div class="landing-question-pill">${escapeHtml(questionKey ? t(questionKey) : t("passwordResetFindIdHint"))}</div>
+                <input
+                  id="reset-answer"
+                  data-input="reset-answer"
+                  type="text"
+                  value="${escapeHtml(uiState.landing.resetAnswer)}"
+                  placeholder="${escapeHtml(t("authRecoveryAnswerPlaceholder"))}"
+                  autocapitalize="off"
+                  autocomplete="off"
+                />
+              `}
+          </div>
+          ${uiState.landing.resetVerified ? "" : `<p class="landing-inline-helper">${escapeHtml(t("authRecoveryAnswerHelper"))}</p>`}
+          <div class="landing-auth-actions">
+            <button
+              class="button button-primary landing-auth-button"
+              type="button"
+              data-action="${uiState.landing.resetVerified ? "submit-landing-password-update" : "submit-landing-password-verify"}"
+            >
+              ${escapeHtml(t(uiState.landing.resetVerified ? "passwordUpdateButton" : "nextButton"))}
+            </button>
+          </div>
+          <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
+            ${escapeHtml(uiState.landing.error || t("landingAccessHint"))}
+          </p>
+        </form>
+        ${renderLandingUiLanguageRow(true)}
+      </section>
+    `;
+  }
+
+  function renderLandingEnhancedV2() {
+    const content =
+      uiState.landing.mode === "signup"
+        ? renderLandingSignupScreen()
+        : uiState.landing.mode === "reset"
+          ? renderLandingResetScreen()
+          : renderLandingLoginScreen();
+
     return `
       <main class="shell landing">
         <div class="landing-card landing-card-minimal">
-          <section class="landing-minimal-panel">
-            <h1 class="brand landing-brand-minimal">TRANSCHAT</h1>
-            <form class="landing-minimal-form" data-form="landing">
-              <div class="landing-profile-picker-block">
-                <button
-                  class="landing-profile-picker"
-                  type="button"
-                  data-action="trigger-landing-profile"
-                  aria-label="${escapeHtml(t("landingPhotoLabel"))}"
-                >
-                  ${renderProfileImage(landingProfileImage, "landing-profile-image", t("landingPhotoLabel"))}
-                </button>
-                <div class="landing-profile-copy">
-                  <strong>${escapeHtml(t("landingPhotoLabel"))}</strong>
-                  <span>${escapeHtml(t("landingPhotoHelper"))}</span>
-                </div>
-                <input data-input="landing-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
-              </div>
-              <div class="landing-input-stack">
-                <input
-                  id="entry-name"
-                  name="name"
-                  type="text"
-                  maxlength="24"
-                  value="${escapeHtml(uiState.landing.name)}"
-                  placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
-                  autocapitalize="off"
-                  autocomplete="username"
-                />
-                <input
-                  id="entry-password"
-                  name="password"
-                  type="password"
-                  value="${escapeHtml(uiState.landing.password)}"
-                  placeholder="${escapeHtml(t("authPasswordPlaceholder"))}"
-                  autocomplete="current-password"
-                />
-              </div>
-              <div class="landing-auth-actions">
-                <button class="button button-primary landing-auth-button" type="submit">${escapeHtml(t("loginButton"))}</button>
-                <button class="button button-secondary landing-auth-button" type="button" data-action="open-landing-signup">${escapeHtml(t("signupButton"))}</button>
-                <button class="button button-ghost landing-auth-button" type="button" data-action="open-landing-reset">${escapeHtml(t("passwordChangeButton"))}</button>
-              </div>
-              <div class="landing-language-accordion">
-                <button
-                  class="landing-language-accordion-trigger"
-                  type="button"
-                  data-action="toggle-landing-native-accordion"
-                  aria-expanded="${uiState.landing.nativeAccordionOpen ? "true" : "false"}"
-                >
-                  <span class="landing-language-trigger-main">
-                    <span aria-hidden="true">${selectedNative.flag}</span>
-                    <span>${escapeHtml(selectedNative.nativeLabel)}</span>
-                  </span>
-                  <span class="landing-language-trigger-caret" aria-hidden="true">${uiState.landing.nativeAccordionOpen ? "&minus;" : "+"}</span>
-                </button>
-                ${uiState.landing.nativeAccordionOpen
-                  ? `<div class="landing-language-accordion-panel">${renderLanguageAccordionOptions(uiState.landing.nativeLanguage)}</div>`
-                  : ""}
-              </div>
-              <div class="landing-ui-language-row" aria-label="${escapeHtml(t("labelUiLanguage"))}">
-                <span class="landing-ui-language-icon" aria-hidden="true">&#128421;&#65039;</span>
-                <div class="landing-ui-language-buttons">${renderLandingLanguageButtons()}</div>
-              </div>
-              ${renderLandingSignupPanel()}
-              ${renderLandingPasswordResetPanel()}
-              <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
-                ${escapeHtml(uiState.landing.error || t("landingAccessHint"))}
-              </p>
-            </form>
-          </section>
+          ${content}
         </div>
       </main>
+      ${renderModal()}
       ${renderToastStack()}
     `;
   }
@@ -2709,6 +3080,7 @@
   }
 
   function renderMobileTopbar(currentUser) {
+    const displayName = getUserDisplayName(currentUser);
     return `
       <header class="topbar mobile-topbar">
         <div class="brand-chip compact">
@@ -2720,7 +3092,8 @@
         <button class="profile-chip compact profile-chip-button" type="button" data-action="go-my-info">
           ${renderProfileImage(currentUser, "avatar avatar-image", currentUser.name)}
           <div class="profile-text">
-            <strong>${escapeHtml(currentUser.name)}</strong>
+            <strong>${escapeHtml(currentUser.loginId || currentUser.name)}</strong>
+            ${displayName && displayName !== currentUser.loginId ? `<span>${escapeHtml(displayName)}</span>` : ""}
           </div>
         </button>
       </header>
@@ -2752,6 +3125,7 @@
   }
 
   function renderDirectoryTabButtonMobile(tabId, labelKey, icon) {
+    const currentUser = getCurrentUser();
     const active = uiState.directoryTab === tabId || (tabId === "chat" && uiState.directoryTab === "all-rooms");
     return `
       <button
@@ -2759,6 +3133,7 @@
         data-action="switch-directory-tab"
         data-tab-id="${tabId}"
       >
+        ${renderTabBadge(tabId, currentUser)}
         <span class="mobile-tab-icon" aria-hidden="true">${icon}</span>
         <span>${escapeHtml(t(labelKey))}</span>
       </button>
@@ -2836,20 +3211,21 @@
 
   function renderFriendRowMobile(friend, currentUser) {
     const presence = getPresence(friend, friend.currentRoomId || null);
+    const displayName = getUserDisplayName(friend) || friend.loginId || friend.name;
     return `
       <article class="friend-card mobile-friend-card">
         ${renderProfileImage(friend, "list-profile-image", friend.name)}
-        <div class="friend-card-meta">
-          <strong>${escapeHtml(friend.name)}</strong>
-          <span class="friend-inline-presence ${presence.kind}">${escapeHtml(presence.label)}</span>
-        </div>
+        <button class="friend-name-button" type="button" data-action="open-profile-preview" data-user-id="${friend.id}">
+          <strong>${escapeHtml(displayName)}</strong>
+        </button>
+        <span class="friend-inline-presence ${presence.kind}">${escapeHtml(presence.label)}</span>
         ${currentUser ? renderConnectionActionV2(friend, currentUser) : `<span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>`}
       </article>
     `;
   }
 
   function renderMyInfoScreenMobile(currentUser) {
-    const profileName = syncProfileEditor(currentUser);
+    const profileEditor = syncProfileEditor(currentUser);
     const incoming = appState.invites
       .filter((invite) => invite.inviteeId === currentUser.id)
       .sort((a, b) => b.createdAt - a.createdAt);
@@ -2865,7 +3241,7 @@
               ${renderProfileImage(currentUser, "profile-edit-image", currentUser.name)}
               <div class="profile-edit-copy">
                 <strong>${escapeHtml(t("profileCardTitle"))}</strong>
-                <span class="helper">${escapeHtml(currentUser.name)}</span>
+                <span class="helper">${escapeHtml(currentUser.loginId || "")}</span>
               </div>
             </div>
             <div class="profile-edit-actions">
@@ -2874,19 +3250,49 @@
             </div>
             <input data-input="my-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
             <div class="field compact-field">
-              <label for="my-profile-name">${escapeHtml(t("profileNameLabel"))}</label>
+              <label>${escapeHtml(t("profileAccountIdLabel"))}</label>
+              <div class="profile-static-value">${escapeHtml(currentUser.loginId || "")}</div>
+            </div>
+            <div class="field compact-field">
+              <label>${escapeHtml(t("profileNameReadonlyLabel"))}</label>
+              <div class="profile-static-value">${escapeHtml(currentUser.name || "")}</div>
+            </div>
+            <div class="field compact-field">
+              <label for="my-profile-nickname">${escapeHtml(t("profileNicknameLabel"))}</label>
               <input
-                id="my-profile-name"
-                data-input="my-profile-name"
+                id="my-profile-nickname"
+                data-input="my-profile-nickname"
                 type="text"
                 maxlength="24"
-                value="${escapeHtml(profileName)}"
-                placeholder="${escapeHtml(t("landingNamePlaceholderSimple"))}"
+                value="${escapeHtml(profileEditor?.nickname || "")}"
+                placeholder="${escapeHtml(t("authNicknamePlaceholder"))}"
                 autocapitalize="off"
                 autocomplete="off"
               />
             </div>
-            <button class="button" type="button" data-action="save-profile-name">${escapeHtml(t("profileSaveButton"))}</button>
+            <div class="field compact-field">
+              <label for="my-profile-gender">${escapeHtml(t("profileGenderLabel"))}</label>
+              <select id="my-profile-gender" data-input="my-profile-gender">
+                <option value="">${escapeHtml(t("profilePopupEmpty"))}</option>
+                <option value="male" ${profileEditor?.gender === "male" ? "selected" : ""}>${escapeHtml(t("authGenderMale"))}</option>
+                <option value="female" ${profileEditor?.gender === "female" ? "selected" : ""}>${escapeHtml(t("authGenderFemale"))}</option>
+              </select>
+            </div>
+            <div class="field compact-field">
+              <label for="my-profile-age">${escapeHtml(t("profileAgeLabel"))}</label>
+              <input
+                id="my-profile-age"
+                data-input="my-profile-age"
+                type="number"
+                min="0"
+                max="120"
+                inputmode="numeric"
+                value="${escapeHtml(profileEditor?.age || "")}"
+                placeholder="${escapeHtml(t("authAgePlaceholder"))}"
+                autocomplete="off"
+              />
+            </div>
+            <button class="button" type="button" data-action="save-basic-profile">${escapeHtml(t("profileSaveButton"))}</button>
           </div>
           <div class="setting-card compact">
             <strong>${escapeHtml(t("settingsUiLanguage"))}</strong>
@@ -2901,14 +3307,6 @@
             <div class="field compact-field">
               <select data-input="settings-native-language">
                 ${renderLanguageOptions(currentUser.nativeLanguage, CHAT_LANGUAGES)}
-              </select>
-            </div>
-          </div>
-          <div class="setting-card compact">
-            <strong>${escapeHtml(t("settingsPreferredLanguage"))}</strong>
-            <div class="field compact-field">
-              <select data-input="settings-preferred-language">
-                ${renderLanguageOptions(currentUser.preferredChatLanguage || currentUser.nativeLanguage, CHAT_LANGUAGES)}
               </select>
             </div>
           </div>
@@ -3998,7 +4396,7 @@
     return `
       <article class="invite-card">
         <strong>${escapeHtml(normalizeDisplayText(room?.title || "—"))}</strong>
-        <span>${escapeHtml(inviter?.name || "—")} · ${escapeHtml(formatRelativeTime(invite.createdAt))}</span>
+        <span>${escapeHtml(getUserDisplayName(inviter) || inviter?.loginId || "—")} · ${escapeHtml(formatRelativeTime(invite.createdAt))}</span>
         <div class="invite-row" style="margin-top: 12px;">
           ${invite.status === "pending"
             ? `
@@ -4139,6 +4537,10 @@
               ? renderParticipantsModal()
               : modalType === "media"
                 ? renderMediaModal()
+                : modalType === "profile-preview"
+                  ? renderProfilePreviewModal()
+                  : modalType === "notice"
+                    ? renderNoticeModal()
                 : "";
     return `<div class="modal-layer">${body}</div>`;
   }
@@ -4299,6 +4701,53 @@
         <div class="modal-body">${content}</div>
         <div class="modal-footer">
           <button class="button button-secondary" data-action="close-modal">${escapeHtml(t("mediaModalClose"))}</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderProfilePreviewModal() {
+    const friend = appState.users.find((user) => user.id === uiState.modal?.data?.userId);
+    if (!friend) return "";
+    const displayName = getUserDisplayName(friend) || friend.loginId || friend.name;
+    const genderLabel =
+      friend.gender === "male"
+        ? t("authGenderMale")
+        : friend.gender === "female"
+          ? t("authGenderFemale")
+          : t("profilePopupEmpty");
+    return `
+      <section class="modal">
+        <div class="modal-header">
+          <h3>${escapeHtml(t("profilePopupTitle"))}</h3>
+          <p>${escapeHtml(displayName)}</p>
+        </div>
+        <div class="modal-body profile-preview-grid">
+          <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupName"))}</span><strong>${escapeHtml(friend.name || t("profilePopupEmpty"))}</strong></div>
+          <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupId"))}</span><strong>${escapeHtml(friend.loginId || "")}</strong></div>
+          <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupGender"))}</span><strong>${escapeHtml(genderLabel)}</strong></div>
+          <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupAge"))}</span><strong>${escapeHtml(friend.age || t("profilePopupEmpty"))}</strong></div>
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" data-action="close-modal">${escapeHtml(t("settingsClose"))}</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderNoticeModal() {
+    const title = uiState.modal?.data?.title || "";
+    const message = uiState.modal?.data?.message || "";
+    return `
+      <section class="modal notice-modal">
+        <div class="modal-header">
+          <h3>${escapeHtml(title)}</h3>
+        </div>
+        <div class="modal-body">
+          <p>${escapeHtml(message)}</p>
+        </div>
+        <div class="modal-footer">
+          <button class="button button-primary" data-action="close-modal">${escapeHtml(t("settingsClose"))}</button>
         </div>
       </section>
     `;
@@ -4468,11 +4917,25 @@
       render();
       return;
     }
+    if (action === "toggle-signup-native-accordion") {
+      uiState.landing.signupNativeAccordionOpen = !uiState.landing.signupNativeAccordionOpen;
+      render();
+      return;
+    }
     if (action === "select-landing-native-language") {
       const nextLanguage = actionTarget.dataset.language;
       if (nextLanguage) {
         uiState.landing.nativeLanguage = nextLanguage;
         uiState.landing.nativeAccordionOpen = false;
+        render();
+      }
+      return;
+    }
+    if (action === "select-signup-native-language") {
+      const nextLanguage = actionTarget.dataset.language;
+      if (nextLanguage) {
+        uiState.landing.signupNativeLanguage = nextLanguage;
+        uiState.landing.signupNativeAccordionOpen = false;
         render();
       }
       return;
@@ -4483,7 +4946,7 @@
     }
     if (action === "open-landing-signup") {
       uiState.landing.mode = "signup";
-      uiState.landing.signupName = uiState.landing.signupName || uiState.landing.name;
+      uiState.landing.signupId = uiState.landing.signupId || normalizeAccountId(uiState.landing.name);
       uiState.landing.signupQuestionKey = uiState.landing.signupQuestionKey || getRandomRecoveryQuestionKey();
       uiState.landing.error = "";
       render();
@@ -4504,6 +4967,7 @@
     if (action === "close-landing-panel") {
       resetLandingPanelState();
       uiState.landing.error = "";
+      uiState.landing.profileImage = null;
       render();
       return;
     }
@@ -4520,18 +4984,32 @@
       return;
     }
     if (action === "go-my-info") {
+      const currentUser = getCurrentUser();
       stopTypingForRoom(uiState.activeRoomId);
+      if (currentUser) {
+        markIncomingInvitesSeen(currentUser.id);
+      }
       uiState.directoryTab = "me";
       uiState.activeRoomId = null;
       uiState.chatDetailsOpen = false;
       uiState.attachmentMenuOpen = false;
       markUserPresence(null);
+      if (currentUser) {
+        persistState();
+      }
       render();
       return;
     }
     if (action === "switch-directory-tab") {
       const nextTab = actionTarget.dataset.tabId;
+      const currentUser = getCurrentUser();
       uiState.directoryTab = nextTab;
+      if (currentUser && nextTab === "me") {
+        markIncomingInvitesSeen(currentUser.id);
+      }
+      if (currentUser && nextTab === "chat") {
+        markAllChatNotificationsSeen(currentUser.id);
+      }
       if (nextTab !== "chat") {
         stopTypingForRoom(uiState.activeRoomId);
         uiState.activeRoomId = null;
@@ -4541,6 +5019,9 @@
         uiState.chatDetailsOpen = false;
       }
       uiState.attachmentMenuOpen = false;
+      if (currentUser && (nextTab === "me" || nextTab === "chat")) {
+        persistState();
+      }
       render();
       return;
     }
@@ -4551,12 +5032,17 @@
       return;
     }
     if (action === "back-to-chat-list") {
+      const currentUser = getCurrentUser();
       stopTypingForRoom(uiState.activeRoomId);
       uiState.activeRoomId = null;
       uiState.directoryTab = "chat";
       uiState.chatDetailsOpen = false;
       uiState.attachmentMenuOpen = false;
       markUserPresence(null);
+      if (currentUser) {
+        markAllChatNotificationsSeen(currentUser.id);
+        persistState();
+      }
       render();
       return;
     }
@@ -4708,8 +5194,16 @@
       }
       return;
     }
-    if (action === "save-profile-name") {
-      saveProfileName();
+    if (action === "save-basic-profile") {
+      saveBasicProfile();
+      return;
+    }
+    if (action === "open-profile-preview") {
+      uiState.modal = {
+        type: "profile-preview",
+        data: { userId: actionTarget.dataset.userId },
+      };
+      render();
       return;
     }
     if (action === "send-connection-invite") {
@@ -4766,6 +5260,11 @@
     }
     if (target instanceof HTMLInputElement && target.name === "password" && target.closest('[data-form="landing"]')) {
       uiState.landing.password = target.value;
+      uiState.landing.error = "";
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "signup-id") {
+      uiState.landing.signupId = target.value;
       uiState.landing.error = "";
       return;
     }
@@ -4827,8 +5326,12 @@
       render();
       return;
     }
-    if (target instanceof HTMLInputElement && target.dataset.input === "my-profile-name") {
-      uiState.profileEditor.name = target.value;
+    if (target instanceof HTMLInputElement && target.dataset.input === "my-profile-nickname") {
+      uiState.profileEditor.nickname = target.value;
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "my-profile-age") {
+      uiState.profileEditor.age = target.value;
       return;
     }
     if (target.dataset.input === "composer") {
@@ -4876,22 +5379,7 @@
     if (target.dataset.input === "settings-native-language") {
       const currentUser = getCurrentUser();
       if (currentUser) {
-        const shouldSyncPreferred =
-          !currentUser.preferredChatLanguage ||
-          currentUser.preferredChatLanguage === currentUser.nativeLanguage;
         currentUser.nativeLanguage = target.value;
-        if (shouldSyncPreferred) {
-          currentUser.preferredChatLanguage = target.value;
-        }
-        persistState();
-        render();
-      }
-      return;
-    }
-    if (target.dataset.input === "settings-preferred-language") {
-      const currentUser = getCurrentUser();
-      if (currentUser) {
-        currentUser.preferredChatLanguage = target.value;
         persistState();
         render();
       }
@@ -4935,6 +5423,10 @@
       target.value = "";
       return;
     }
+    if (target.dataset.input === "my-profile-gender") {
+      uiState.profileEditor.gender = target.value;
+      return;
+    }
     if (target.dataset.input === "image-file") {
       const [file] = target.files || [];
       if (file) {
@@ -4964,7 +5456,7 @@
     const target = event.target;
     if (
       target instanceof HTMLInputElement &&
-      ["signup-name", "signup-password", "signup-password-confirm", "signup-answer"].includes(target.dataset.input) &&
+      ["signup-id", "signup-name", "signup-password"].includes(target.dataset.input) &&
       event.key === "Enter" &&
       !event.shiftKey &&
       !event.isComposing
@@ -4999,13 +5491,13 @@
     }
     if (
       target instanceof HTMLInputElement &&
-      target.dataset.input === "my-profile-name" &&
+      ["my-profile-nickname", "my-profile-age"].includes(target.dataset.input) &&
       event.key === "Enter" &&
       !event.shiftKey &&
       !event.isComposing
     ) {
       event.preventDefault();
-      saveProfileName();
+      saveBasicProfile();
       return;
     }
     if (
@@ -5055,8 +5547,10 @@
       runtime.compositionTarget = null;
       if (target.dataset.input === "room-search") {
         uiState.roomSearch = target.value;
-      } else if (target.dataset.input === "my-profile-name") {
-        uiState.profileEditor.name = target.value;
+      } else if (target.dataset.input === "my-profile-nickname") {
+        uiState.profileEditor.nickname = target.value;
+      } else if (target.dataset.input === "my-profile-age") {
+        uiState.profileEditor.age = target.value;
       }
     }
     if (target instanceof HTMLInputElement && target.dataset.input === "composer") {
@@ -5076,6 +5570,18 @@
       uiState.landing.name = String(formData.get("name") || "").trim();
       uiState.landing.password = String(formData.get("password") || "");
       enterLandingUser();
+      return;
+    }
+    if (form.dataset.form === "landing-signup") {
+      submitLandingSignup();
+      return;
+    }
+    if (form.dataset.form === "landing-reset") {
+      if (uiState.landing.resetVerified) {
+        submitLandingPasswordUpdate();
+      } else {
+        verifyLandingPasswordReset();
+      }
     }
   }
 
@@ -5131,57 +5637,37 @@
     return `${baseName}${suffix}`;
   }
 
-  function saveProfileName() {
+  function saveBasicProfile() {
     const currentUser = getCurrentUser();
     if (!currentUser) return;
 
-    const nextName = normalizeDisplayText(uiState.profileEditor.name).trim();
-    if (!nextName) {
-      pushToast("toastProfileNameTaken", "toastProfileNameTakenCopy");
-      render();
-      return;
-    }
-
-    if (!isAllowedPrivateTester(nextName)) {
-      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
-      render();
-      return;
-    }
-
-    const duplicate = appState.users.find(
-      (user) => user.id !== currentUser.id && String(user.name || "").trim().toLowerCase() === nextName.toLowerCase()
-    );
-    if (duplicate) {
-      pushToast("toastProfileNameTaken", "toastProfileNameTakenCopy");
-      render();
-      return;
-    }
-
-    currentUser.name = nextName;
-    currentUser.auth = {
-      provider: currentUser?.auth?.provider || "test-name",
-      subject: normalizeLoginIdentity(nextName),
-      email: currentUser?.auth?.email || null,
-      phoneNumber: currentUser?.auth?.phoneNumber || null,
-      phoneVerified: Boolean(currentUser?.auth?.phoneVerified),
-    };
-    uiState.profileEditor.name = nextName;
+    currentUser.nickname = normalizeDisplayText(uiState.profileEditor.nickname).trim();
+    currentUser.gender =
+      uiState.profileEditor.gender === "male" || uiState.profileEditor.gender === "female"
+        ? uiState.profileEditor.gender
+        : "";
+    currentUser.age = Math.max(0, Math.min(120, Number(uiState.profileEditor.age || 0) || 0)) || "";
+    uiState.profileEditor.nickname = currentUser.nickname;
+    uiState.profileEditor.gender = currentUser.gender;
+    uiState.profileEditor.age = currentUser.age;
     persistState();
-    pushToast("toastProfileSaved", "toastProfileSavedCopy");
+    pushToast("toastProfileSaved", "authProfileSavedCopy");
     render();
   }
 
   function findUserByLoginName(name) {
-    return appState.users.find((user) => normalizeLoginIdentity(user.name) === normalizeLoginIdentity(name)) || null;
+    return appState.users.find((user) => normalizeAccountId(user.loginId || user.name) === normalizeAccountId(name)) || null;
   }
 
   function resetLandingPanelState() {
     uiState.landing.mode = "login";
-    uiState.landing.signupName = "";
+    uiState.landing.signupId = "";
     uiState.landing.signupPassword = "";
-    uiState.landing.signupPasswordConfirm = "";
+    uiState.landing.signupName = "";
     uiState.landing.signupQuestionKey = null;
     uiState.landing.signupAnswer = "";
+    uiState.landing.signupNativeLanguage = "ko";
+    uiState.landing.signupNativeAccordionOpen = false;
     uiState.landing.resetName = "";
     uiState.landing.resetQuestionKey = null;
     uiState.landing.resetAnswer = "";
@@ -5193,21 +5679,19 @@
   function completeLandingLogin(user, options = {}) {
     if (!user) return;
     const now = Date.now();
-    const shouldSyncPreferred = !user.preferredChatLanguage || user.preferredChatLanguage === user.nativeLanguage;
     const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
 
     user.name = normalizeDisplayText(user.name).trim();
+    user.loginId = normalizeAccountId(user.loginId || user.name);
     user.uiLanguage = uiState.landing.uiLanguage;
-    user.nativeLanguage = uiState.landing.nativeLanguage || user.nativeLanguage || defaultLanguage;
-    if (shouldSyncPreferred) {
-      user.preferredChatLanguage = user.nativeLanguage;
-    }
-    if (uiState.landing.profileImage) {
+    user.nativeLanguage = user.nativeLanguage || defaultLanguage;
+    user.preferredChatLanguage = user.preferredChatLanguage || user.nativeLanguage;
+    if (options.useLandingProfile && uiState.landing.profileImage) {
       user.profileImage = uiState.landing.profileImage;
     }
     user.auth = {
       provider: user?.auth?.provider || "test-name",
-      subject: normalizeLoginIdentity(user.name),
+      subject: normalizeAccountId(user.loginId || user.name),
       email: user?.auth?.email || null,
       phoneNumber: user?.auth?.phoneNumber || null,
       phoneVerified: Boolean(user?.auth?.phoneVerified),
@@ -5223,7 +5707,7 @@
     uiState.chatDetailsOpen = false;
     uiState.attachmentMenuOpen = false;
     uiState.mobileRoomsOpen = false;
-    uiState.landing.name = user.name;
+    uiState.landing.name = user.loginId || user.name;
     uiState.landing.password = "";
     uiState.landing.nativeAccordionOpen = false;
     uiState.landing.profileImage = null;
@@ -5232,27 +5716,30 @@
     uiState.profileEditor = {
       userId: user.id,
       name: user.name,
+      nickname: user.nickname || "",
+      gender: user.gender || "",
+      age: user.age || "",
     };
     persistState();
     markUserPresence(user.currentRoomId || null);
     if (options.toastKey !== false) {
-      pushToast(options.toastKey || "toastEnter", options.toastCopyKey || "toastEnterCopy", { name: user.name });
+      pushToast(options.toastKey || "toastEnter", options.toastCopyKey || "toastEnterCopy", { name: getUserDisplayName(user) || user.loginId || user.name });
     }
     render();
   }
 
   function enterLandingUser() {
-    const baseName = normalizeDisplayText(uiState.landing.name).trim();
+    const baseId = normalizeAccountId(uiState.landing.name);
     const password = String(uiState.landing.password || "");
-    if (!baseName) return;
-    if (!isAllowedPrivateTester(baseName)) {
+    if (!baseId) return;
+    const existingUser = findUserByLoginName(baseId);
+    if (!isAllowedPrivateTester(baseId) && !(existingUser && isAllowedPrivateTester(existingUser.name))) {
       uiState.landing.error = t("toastAccessDeniedCopy");
       pushToast("toastAccessDenied", "toastAccessDeniedCopy");
       render();
       return;
     }
 
-    const existingUser = findUserByLoginName(baseName);
     if (!existingUser) {
       uiState.landing.error = t("authLoginNotFound");
       render();
@@ -5269,71 +5756,74 @@
   }
 
   function submitLandingSignup() {
-    const baseName = normalizeDisplayText(uiState.landing.signupName || uiState.landing.name).trim();
+    const signupId = normalizeAccountId(uiState.landing.signupId);
     const password = String(uiState.landing.signupPassword || "");
-    const passwordConfirm = String(uiState.landing.signupPasswordConfirm || "");
-    const answer = normalizeRecoveryAnswer(uiState.landing.signupAnswer);
-    const questionKey = uiState.landing.signupQuestionKey || getRandomRecoveryQuestionKey();
+    const realName = normalizeDisplayText(uiState.landing.signupName).trim();
     const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
 
-    if (!baseName) {
+    if (!signupId) {
       uiState.landing.error = t("authNeedId");
       render();
       return;
     }
-    if (!isAllowedPrivateTester(baseName)) {
+    if (!realName) {
+      uiState.landing.error = t("authSignupNameRequired");
+      render();
+      return;
+    }
+    if (!isAllowedPrivateTester(signupId) && !isAllowedPrivateTester(realName)) {
       uiState.landing.error = t("toastAccessDeniedCopy");
       pushToast("toastAccessDenied", "toastAccessDeniedCopy");
       render();
       return;
     }
-    if (findUserByLoginName(baseName)) {
+    if (!isValidSignupLoginId(signupId)) {
+      openNoticeModal("authInvalidIdTitle", "authInvalidIdCopy");
+      render();
+      return;
+    }
+    if (!isValidSignupPassword(password)) {
+      openNoticeModal("authInvalidPasswordTitle", "authInvalidPasswordCopy");
+      render();
+      return;
+    }
+    if (findUserByLoginName(signupId)) {
       uiState.landing.error = t("authSignupDuplicate");
-      render();
-      return;
-    }
-    if (!password) {
-      uiState.landing.error = t("authNeedPassword");
-      render();
-      return;
-    }
-    if (password !== passwordConfirm) {
-      uiState.landing.error = t("authPasswordMismatch");
-      render();
-      return;
-    }
-    if (!answer) {
-      uiState.landing.error = t("authNeedRecoveryAnswer");
       render();
       return;
     }
 
     const user = createUser(
-      baseName,
-      uiState.landing.nativeLanguage || defaultLanguage,
+      realName,
+      uiState.landing.signupNativeLanguage || defaultLanguage,
       uiState.landing.uiLanguage,
       Date.now(),
       null,
       uiState.landing.profileImage || null,
       {
+        loginId: signupId,
         password,
-        recoveryQuestionKey: questionKey,
-        recoveryAnswer: answer,
+        recoveryQuestionKey: getDeterministicRecoveryQuestionKey(signupId),
+        recoveryAnswer: realName,
         loginState: "online",
         lastLoginAt: Date.now(),
+        nickname: "",
+        gender: "",
+        age: "",
       }
     );
     appState.users.push(user);
-    uiState.landing.name = user.name;
+    uiState.landing.name = user.loginId || user.name;
     uiState.landing.password = "";
     completeLandingLogin(user, {
       toastKey: "toastSignupSuccess",
       toastCopyKey: "toastSignupSuccessCopy",
+      useLandingProfile: true,
     });
   }
 
   function verifyLandingPasswordReset() {
-    const baseName = normalizeDisplayText(uiState.landing.resetName).trim();
+    const baseName = normalizeAccountId(uiState.landing.resetName);
     const answer = normalizeRecoveryAnswer(uiState.landing.resetAnswer);
     const user = findUserByLoginName(baseName);
 
@@ -5358,7 +5848,7 @@
       return;
     }
 
-    uiState.landing.resetName = user.name;
+    uiState.landing.resetName = user.loginId || user.name;
     uiState.landing.resetQuestionKey = user.recoveryQuestionKey;
     uiState.landing.resetVerified = true;
     uiState.landing.error = "";
@@ -5366,7 +5856,7 @@
   }
 
   function submitLandingPasswordUpdate() {
-    const baseName = normalizeDisplayText(uiState.landing.resetName).trim();
+    const baseName = normalizeAccountId(uiState.landing.resetName);
     const nextPassword = String(uiState.landing.resetPassword || "");
     const nextPasswordConfirm = String(uiState.landing.resetPasswordConfirm || "");
     const user = findUserByLoginName(baseName);
@@ -5386,6 +5876,11 @@
       render();
       return;
     }
+    if (!isValidSignupPassword(nextPassword)) {
+      openNoticeModal("authInvalidPasswordTitle", "authInvalidPasswordCopy");
+      render();
+      return;
+    }
     if (nextPassword !== nextPasswordConfirm) {
       uiState.landing.error = t("authPasswordMismatch");
       render();
@@ -5394,7 +5889,7 @@
 
     user.password = nextPassword;
     user.lastLoginAt = user.lastLoginAt || Date.now();
-    uiState.landing.name = user.name;
+    uiState.landing.name = user.loginId || user.name;
     uiState.landing.password = "";
     uiState.landing.error = "";
     resetLandingPanelState();
@@ -5439,6 +5934,9 @@
     uiState.profileEditor = {
       userId: user.id,
       name: user.name,
+      nickname: user.nickname || "",
+      gender: user.gender || "",
+      age: user.age || "",
     };
     markUserPresence(user.currentRoomId || null);
     pushToast("toastUserSwitched", "toastUserSwitchedCopy", { name: user.name });
@@ -5461,6 +5959,9 @@
     uiState.profileEditor = {
       userId: null,
       name: "",
+      nickname: "",
+      gender: "",
+      age: "",
     };
     uiState.landing.nativeAccordionOpen = false;
     uiState.landing.profileImage = null;
@@ -5754,6 +6255,9 @@
     uiState.profileEditor = {
       userId: null,
       name: "",
+      nickname: "",
+      gender: "",
+      age: "",
     };
 
     setActiveUserId(null);
@@ -6433,6 +6937,7 @@
       status: "pending",
       createdAt: Date.now(),
       respondedAt: null,
+      seenByInvitee: false,
     };
     appState.invites.unshift(invite);
     room.messages.push(systemMessage(uid("sys"), "systemUserInvited", { inviter: currentUser.name, invitee: invitee.name }, Date.now()));
@@ -6450,6 +6955,7 @@
     if (!invite || !room || !currentUser) return;
     invite.status = response === "accept" ? "accepted" : "rejected";
     invite.respondedAt = Date.now();
+    invite.seenByInvitee = true;
     if (response === "accept") {
       ensureParticipant(room, currentUser.id);
       room.accessByUser[currentUser.id] = true;
@@ -6464,6 +6970,7 @@
       room.messages.push(systemMessage(uid("sys"), "systemInviteRejected", { name: currentUser.name }, Date.now()));
       pushToast("toastInviteRejected", "toastInviteRejectedCopy", { name: currentUser.name });
     }
+    syncUserAlertState();
     persistState();
     render();
     if (response === "accept") {

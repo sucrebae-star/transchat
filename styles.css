@@ -2820,3 +2820,142 @@ body[data-theme="dark"] .mobile-composer {
   font-size: 0.76rem;
   color: var(--text-soft);
 }
+
+.landing-auth-actions {
+  grid-template-columns: 1fr;
+}
+
+.landing-auth-links {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-top: -2px;
+}
+
+.landing-text-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 0.77rem;
+  color: var(--text-soft);
+}
+
+.landing-text-button.back {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.landing-screen-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.landing-screen-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.landing-screen-copy h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.landing-screen-copy p {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-soft);
+}
+
+.landing-ui-language-row.centered {
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.landing-ui-language-row.centered .landing-ui-language-buttons {
+  justify-content: center;
+}
+
+.mobile-friend-card {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.friend-name-button {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+}
+
+.friend-name-button strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+}
+
+.friend-inline-presence {
+  justify-self: end;
+}
+
+.profile-static-value {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface-alt);
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.profile-preview-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.profile-preview-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface-alt);
+}
+
+.profile-preview-item span {
+  font-size: 0.74rem;
+  color: var(--text-soft);
+}
+
+.profile-preview-item strong {
+  font-size: 0.84rem;
+  color: var(--text);
+}
+
+.mobile-tab {
+  position: relative;
+}
+
+.mobile-tab-badge {
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1;
+}
