@@ -654,6 +654,15 @@ function summarizeTranslationError(error) {
   return raw.slice(0, 320);
 }
 
+function sanitizeUsageState(value) {
+  return {
+    windowKey: typeof value?.windowKey === "string" ? value.windowKey : "",
+    totalMessages: Math.max(0, Number(value?.totalMessages || 0)),
+    softLimitNotified: Boolean(value?.softLimitNotified),
+    lastUpdatedAt: Number(value?.lastUpdatedAt || Date.now()),
+  };
+}
+
 function sanitizeMessageState(message, allowedUserIds) {
   if (!message || message.kind !== "user") {
     return message;
@@ -695,6 +704,10 @@ function sanitizeSharedState(state) {
       },
       blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
       password: typeof user?.password === "string" ? user.password : "",
+      planTier: ["monthly", "yearly"].includes(user?.planTier) ? user.planTier : "free",
+      usage: sanitizeUsageState(user?.usage),
+      planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
+      planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
       recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
         ? user.recoveryQuestionKey
         : getDeterministicRecoveryQuestionKey(user?.name),

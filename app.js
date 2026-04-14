@@ -6,6 +6,14 @@
     roomExpireMs: 30 * 60 * 1000,
     passwordAttemptLimit: 5,
     passwordLockMs: 90 * 1000,
+    freeDailyMessageLimit: 30,
+    freeResetHour: 7,
+    monthlyPlanPrice: 9900,
+    yearlyPlanPrice: 99000,
+    premiumSoftLimit: 600,
+    premiumHardLimit: 900,
+    abuseGuardMessage: "planPremiumAbuseGuardCopy",
+    planPolicyVersion: "2026-04-preview",
     imageMaxBytes: 10 * 1024 * 1024,
     profileImageMaxBytes: 5 * 1024 * 1024,
     videoMaxBytes: 50 * 1024 * 1024,
@@ -48,6 +56,7 @@
     composerHeight: 0,
     viewportBaseHeight: 0,
     keyboardOffset: 0,
+    preservedScrollPositions: {},
     receiptTimer: null,
     typingSignals: {},
     presenceSignals: {},
@@ -959,6 +968,7 @@
   };
 
   let appState = loadState();
+  syncUsageWindows();
   syncUserAlertState();
 
   Object.assign(DICTIONARY.ko, {
@@ -1217,6 +1227,109 @@
     profilePopupEmpty: "Chua cai dat",
   });
 
+  // Added: plan/pricing copy stays in the central dictionary so the lightweight billing preview remains localizable.
+  Object.assign(DICTIONARY.ko, {
+    planSectionTitle: "현재 이용중인 플랜",
+    planCurrentLabel: "현재 나의 플랜",
+    planFreeLabel: "무료",
+    planMonthlyLabel: "월 구독",
+    planYearlyLabel: "연간 구독",
+    planChangeButton: "변경하기",
+    planModalTitle: "플랜 변경",
+    planModalCopy: "실제 결제 연동 전 단계의 안내용 구독 화면입니다.",
+    planMonthlyPrice: "월 {price}",
+    planYearlyPrice: "연 {price}",
+    planMonthlyCopyPrimary: "일반적인 개인 대화에 충분한 사용량 제공",
+    planMonthlyCopySecondary: "과도한 자동화 또는 비정상적인 사용은 제한될 수 있음",
+    planYearlyCopyPrimary: "월 구독 대비 할인된 요금",
+    planYearlyCopySecondary: "일반적인 개인 대화에 충분한 사용량 제공",
+    planApplyPreview: "테스트용 적용",
+    planCurrentBadge: "현재 사용중",
+    planCheckoutPlaceholder: "결제 연결 예정",
+    planPolicyButton: "이용 정책 보기",
+    planRemainingMessages: "오늘 무료 잔여 메시지: {count}개",
+    planResetAt: "다음 초기화: {time}",
+    planFreeExceededTitle: "오늘 무료 메시지 한도를 모두 사용했습니다.",
+    planFreeExceededCopy: "다음 이용 가능 시간: {time}\n더 많이 사용하려면 플랜을 변경하세요.",
+    planPremiumAbuseTitle: "일반적인 사용 범위를 초과했습니다.",
+    planPremiumAbuseCopy: "안정적인 서비스 운영을 위해 사용량이 일시적으로 제한될 수 있습니다.\n자세한 내용은 이용 정책을 확인해 주세요.",
+    planPolicyTitle: "이용 정책",
+    planPolicyCopy: "무료 플랜은 일일 메시지 제한이 있으며, 유료 플랜은 일반 개인 대화 기준으로 넉넉하게 제공되지만 비정상적 자동화나 남용 사용은 제한될 수 있습니다. 실제 결제 단계에서는 이 정책에 동의하는 구조로 확장될 예정입니다.",
+    planPremiumUsageCopy: "일반적인 개인 대화에 충분한 사용량 제공",
+    planPremiumGuardCopy: "비정상적 자동화/과도 사용은 제한될 수 있음",
+    planSoftLimitToast: "사용량이 많아지고 있습니다. 안정적인 서비스 운영을 위해 정책이 적용될 수 있습니다.",
+    planUpdatedTitle: "플랜이 변경되었습니다",
+    planUpdatedCopy: "현재 플랜 정보가 테스트 상태로 반영되었습니다.",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    planSectionTitle: "Current plan",
+    planCurrentLabel: "My current plan",
+    planFreeLabel: "Free",
+    planMonthlyLabel: "Monthly",
+    planYearlyLabel: "Yearly",
+    planChangeButton: "Change",
+    planModalTitle: "Change plan",
+    planModalCopy: "This is a preview subscription screen before real payments are connected.",
+    planMonthlyPrice: "{price} / month",
+    planYearlyPrice: "{price} / year",
+    planMonthlyCopyPrimary: "Enough usage for typical personal conversations",
+    planMonthlyCopySecondary: "Excessive automation or abusive usage may be limited",
+    planYearlyCopyPrimary: "Discounted compared with monthly billing",
+    planYearlyCopySecondary: "Enough usage for typical personal conversations",
+    planApplyPreview: "Apply for testing",
+    planCurrentBadge: "Current",
+    planCheckoutPlaceholder: "Checkout coming soon",
+    planPolicyButton: "View usage policy",
+    planRemainingMessages: "Free messages left today: {count}",
+    planResetAt: "Next reset: {time}",
+    planFreeExceededTitle: "You have used all free messages for today.",
+    planFreeExceededCopy: "Next available time: {time}\nChange your plan for more usage.",
+    planPremiumAbuseTitle: "Typical usage has been exceeded.",
+    planPremiumAbuseCopy: "Usage may be limited temporarily for stable service operations.\nSee the usage policy for details.",
+    planPolicyTitle: "Usage policy",
+    planPolicyCopy: "The free plan includes a daily message limit. Paid plans are generous for normal personal conversations, but abusive automation or excessive usage may still be limited. The real payment flow can later require agreement to this policy.",
+    planPremiumUsageCopy: "Enough usage for typical personal conversations",
+    planPremiumGuardCopy: "Abusive automation or heavy usage may still be limited",
+    planSoftLimitToast: "Usage is getting high. Service policies may apply to protect stability.",
+    planUpdatedTitle: "Plan updated",
+    planUpdatedCopy: "The current plan has been updated in preview mode.",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    planSectionTitle: "Goi dang su dung",
+    planCurrentLabel: "Goi hien tai cua toi",
+    planFreeLabel: "Mien phi",
+    planMonthlyLabel: "Goi thang",
+    planYearlyLabel: "Goi nam",
+    planChangeButton: "Thay doi",
+    planModalTitle: "Thay doi goi",
+    planModalCopy: "Day la man hinh goi cuoc mang tinh chat gioi thieu, truoc khi ket noi thanh toan that.",
+    planMonthlyPrice: "{price} / thang",
+    planYearlyPrice: "{price} / nam",
+    planMonthlyCopyPrimary: "Du dung cho cac cuoc tro chuyen ca nhan thong thuong",
+    planMonthlyCopySecondary: "Tu dong hoa qua muc hoac su dung bat thuong co the bi gioi han",
+    planYearlyCopyPrimary: "Tiet kiem hon so voi goi thang",
+    planYearlyCopySecondary: "Du dung cho cac cuoc tro chuyen ca nhan thong thuong",
+    planApplyPreview: "Ap dung de test",
+    planCurrentBadge: "Dang dung",
+    planCheckoutPlaceholder: "Cho ket noi thanh toan",
+    planPolicyButton: "Xem chinh sach",
+    planRemainingMessages: "Tin nhan mien phi con lai hom nay: {count}",
+    planResetAt: "Lan dat lai tiep theo: {time}",
+    planFreeExceededTitle: "Ban da dung het so tin nhan mien phi hom nay.",
+    planFreeExceededCopy: "Thoi gian dung lai: {time}\nHay doi goi neu muon dung nhieu hon.",
+    planPremiumAbuseTitle: "Ban da vuot qua muc su dung thong thuong.",
+    planPremiumAbuseCopy: "De giu he thong on dinh, viec su dung co the bi gioi han tam thoi.\nHay xem chinh sach de biet them.",
+    planPolicyTitle: "Chinh sach su dung",
+    planPolicyCopy: "Goi mien phi co gioi han tin nhan theo ngay. Goi tra phi du rong cho tro chuyen ca nhan thong thuong, nhung van co the gioi han neu co tu dong hoa bat thuong hoac lam dung. Sau nay luong thanh toan that co the yeu cau dong y voi chinh sach nay.",
+    planPremiumUsageCopy: "Du dung cho cac cuoc tro chuyen ca nhan thong thuong",
+    planPremiumGuardCopy: "Tu dong hoa bat thuong hoac su dung qua muc van co the bi gioi han",
+    planSoftLimitToast: "Muc su dung dang tang cao. Chinh sach dich vu co the duoc ap dung de giu on dinh.",
+    planUpdatedTitle: "Da doi goi",
+    planUpdatedCopy: "Thong tin goi hien tai da duoc cap nhat o che do thu.",
+  });
+
   function loadState() {
     const parsed = readPersistedState();
     if (parsed) return parsed;
@@ -1431,6 +1544,10 @@
       preferredChatLanguage: nativeLanguage,
       uiLanguage,
       password: String(accountOptions.password || ""),
+      planTier: ["monthly", "yearly"].includes(accountOptions.planTier) ? accountOptions.planTier : "free",
+      usage: sanitizeUsageState(accountOptions.usage, joinedAt),
+      planUpdatedAt: Number(accountOptions.planUpdatedAt || joinedAt),
+      planPolicyAcknowledgedAt: Number(accountOptions.planPolicyAcknowledgedAt || 0) || null,
       recoveryQuestionKey: accountOptions.recoveryQuestionKey || getDeterministicRecoveryQuestionKey(normalizedName),
       recoveryAnswer: normalizeRecoveryAnswer(
         accountOptions.recoveryAnswer != null ? accountOptions.recoveryAnswer : normalizedName
@@ -1552,6 +1669,10 @@
         blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
         preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
         password: typeof user?.password === "string" ? user.password : "",
+        planTier: ["monthly", "yearly"].includes(user?.planTier) ? user.planTier : "free",
+        usage: sanitizeUsageState(user?.usage, Number(parsed.updatedAt || Date.now())),
+        planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
+        planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
         recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
           ? user.recoveryQuestionKey
           : getDeterministicRecoveryQuestionKey(user?.name),
@@ -1668,6 +1789,7 @@
 
   function persistState() {
     // Prototype policy note: chats and inline image previews live in local/browser state until a room is deleted or expires.
+    syncUsageWindows();
     syncUserAlertState();
     appState.updatedAt = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
@@ -1905,6 +2027,140 @@
 
   function getUserDisplayName(user) {
     return normalizeDisplayText(user?.nickname || user?.name || user?.loginId || "");
+  }
+
+  function getUsageWindowInfo(now = Date.now()) {
+    const current = new Date(now);
+    const resetPoint = new Date(current);
+    resetPoint.setHours(CONFIG.freeResetHour, 0, 0, 0);
+
+    let windowStart = resetPoint;
+    let nextReset = new Date(resetPoint);
+    if (current < resetPoint) {
+      windowStart = new Date(resetPoint);
+      windowStart.setDate(windowStart.getDate() - 1);
+      nextReset = resetPoint;
+    } else {
+      nextReset = new Date(resetPoint);
+      nextReset.setDate(nextReset.getDate() + 1);
+    }
+
+    const key = [
+      windowStart.getFullYear(),
+      String(windowStart.getMonth() + 1).padStart(2, "0"),
+      String(windowStart.getDate()).padStart(2, "0"),
+      CONFIG.freeResetHour,
+    ].join("-");
+
+    return {
+      key,
+      windowStartAt: windowStart.getTime(),
+      nextResetAt: nextReset.getTime(),
+    };
+  }
+
+  function sanitizeUsageState(value, now = Date.now()) {
+    const info = getUsageWindowInfo(now);
+    if (!value || value.windowKey !== info.key) {
+      return {
+        windowKey: info.key,
+        totalMessages: 0,
+        softLimitNotified: false,
+        lastUpdatedAt: now,
+      };
+    }
+
+    return {
+      windowKey: info.key,
+      totalMessages: Math.max(0, Number(value.totalMessages || 0)),
+      softLimitNotified: Boolean(value.softLimitNotified),
+      lastUpdatedAt: Number(value.lastUpdatedAt || now),
+    };
+  }
+
+  function ensureUserUsageState(user, now = Date.now()) {
+    if (!user) return getUsageWindowInfo(now);
+    const info = getUsageWindowInfo(now);
+    user.planTier = ["free", "monthly", "yearly"].includes(user.planTier) ? user.planTier : "free";
+    user.usage = sanitizeUsageState(user.usage, now);
+    return {
+      ...info,
+      usage: user.usage,
+    };
+  }
+
+  function syncUsageWindows() {
+    appState.users.forEach((user) => ensureUserUsageState(user));
+  }
+
+  function isPremiumPlan(user) {
+    return ["monthly", "yearly"].includes(user?.planTier);
+  }
+
+  function getPlanLabel(planTier) {
+    return t(
+      planTier === "monthly"
+        ? "planMonthlyLabel"
+        : planTier === "yearly"
+          ? "planYearlyLabel"
+          : "planFreeLabel"
+    );
+  }
+
+  function formatPriceLabel(amount, type) {
+    const formatted = `${new Intl.NumberFormat("ko-KR").format(amount)}원`;
+    return t(type === "monthly" ? "planMonthlyPrice" : "planYearlyPrice", { price: formatted });
+  }
+
+  function formatPlanResetTime(timestamp) {
+    return new Intl.DateTimeFormat(getLocale(), {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(timestamp));
+  }
+
+  function getPlanUsageSummary(user) {
+    const info = ensureUserUsageState(user);
+    const used = Number(user?.usage?.totalMessages || 0);
+    const remaining = Math.max(0, CONFIG.freeDailyMessageLimit - used);
+    return {
+      used,
+      remaining,
+      nextResetAt: info.nextResetAt,
+    };
+  }
+
+  function getMessageLimitState(user) {
+    const summary = getPlanUsageSummary(user);
+    if (!isPremiumPlan(user) && summary.used >= CONFIG.freeDailyMessageLimit) {
+      return { blocked: true, kind: "free", summary };
+    }
+    if (isPremiumPlan(user) && summary.used >= CONFIG.premiumHardLimit) {
+      return { blocked: true, kind: "premium", summary };
+    }
+    return { blocked: false, kind: "ok", summary };
+  }
+
+  function maybeFlagPremiumSoftLimit(user) {
+    if (!isPremiumPlan(user)) return false;
+    ensureUserUsageState(user);
+    if (Number(user.usage.totalMessages || 0) < CONFIG.premiumSoftLimit) return false;
+    if (user.usage.softLimitNotified) return false;
+    user.usage.softLimitNotified = true;
+    return true;
+  }
+
+  function recordMessageUsage(room, senderId, createdAt = Date.now()) {
+    const affectedUserIds = new Set(deriveRoomParticipantIds(room));
+    affectedUserIds.add(senderId);
+
+    affectedUserIds.forEach((userId) => {
+      const user = appState.users.find((item) => item.id === userId);
+      if (!user) return;
+      ensureUserUsageState(user, createdAt);
+      user.usage.totalMessages = Math.max(0, Number(user.usage.totalMessages || 0)) + 1;
+      user.usage.lastUpdatedAt = createdAt;
+    });
   }
 
   function openNoticeModal(titleKey, messageKey, params = {}) {
@@ -2544,11 +2800,12 @@
     }
     const focusState = captureFocusState();
     const chatScrollState = captureChatScrollState();
+    const surfaceScrollState = captureSurfaceScrollState();
     applyTheme();
     const currentUser = getCurrentUser();
     document.documentElement.lang = getUiLanguage();
     APP_ROOT.innerHTML = currentUser ? renderShellMobile(currentUser) : renderLandingEnhancedV2();
-    bindPostRender(focusState, chatScrollState);
+    bindPostRender(focusState, chatScrollState, surfaceScrollState);
   }
 
   function renderLanding() {
@@ -3080,7 +3337,7 @@
   }
 
   function renderMobileTopbar(currentUser) {
-    const displayName = getUserDisplayName(currentUser);
+    const displayName = normalizeDisplayText(currentUser?.name || currentUser?.loginId || "");
     return `
       <header class="topbar mobile-topbar">
         <div class="brand-chip compact">
@@ -3092,8 +3349,8 @@
         <button class="profile-chip compact profile-chip-button" type="button" data-action="go-my-info">
           ${renderProfileImage(currentUser, "avatar avatar-image", currentUser.name)}
           <div class="profile-text">
-            <strong>${escapeHtml(currentUser.loginId || currentUser.name)}</strong>
-            ${displayName && displayName !== currentUser.loginId ? `<span>${escapeHtml(displayName)}</span>` : ""}
+            <strong>${escapeHtml(displayName || currentUser.loginId || currentUser.name)}</strong>
+            ${currentUser.loginId && displayName !== currentUser.loginId ? `<span>${escapeHtml(currentUser.loginId)}</span>` : ""}
           </div>
         </button>
       </header>
@@ -3158,7 +3415,7 @@
             </button>
           </div>
         </div>
-        <div class="screen-body mobile-list-body">
+        <div class="screen-body mobile-list-body" data-scroll-key="chat-list">
           ${joinedRooms.length
             ? joinedRooms.map((room) => renderRoomCardMobile(room)).join("")
             : `<div class="empty-card compact-empty"><h3>${escapeHtml(t("activeRoomsEmptyTitle"))}</h3><p>${escapeHtml(t("activeRoomsEmptyCopy"))}</p></div>`}
@@ -3200,7 +3457,7 @@
         <div class="screen-header mobile-screen-header">
           <h2>${escapeHtml(t("tabFriends"))}</h2>
         </div>
-        <div class="screen-body mobile-list-body">
+        <div class="screen-body mobile-list-body" data-scroll-key="friends-list">
           ${friends.length
             ? friends.map((friend) => renderFriendRowMobile(friend, currentUser)).join("")
             : `<div class="empty-card compact-empty"><h3>${escapeHtml(t("friendsEmptyTitle"))}</h3><p>${escapeHtml(t("friendsEmptyCopy"))}</p></div>`}
@@ -3226,16 +3483,15 @@
 
   function renderMyInfoScreenMobile(currentUser) {
     const profileEditor = syncProfileEditor(currentUser);
-    const incoming = appState.invites
-      .filter((invite) => invite.inviteeId === currentUser.id)
-      .sort((a, b) => b.createdAt - a.createdAt);
+    const planSummary = getPlanUsageSummary(currentUser);
 
     return `
       <section class="panel screen-panel mobile-screen">
         <div class="screen-header mobile-screen-header">
           <h2>${escapeHtml(t("tabMyInfo"))}</h2>
         </div>
-        <div class="screen-body mobile-list-body my-info-mobile">
+        <div class="screen-body mobile-list-body my-info-mobile" data-scroll-key="my-info">
+          ${renderPlanSummaryCard(currentUser, planSummary)}
           <div class="setting-card compact profile-edit-card">
             <div class="profile-edit-head">
               ${renderProfileImage(currentUser, "profile-edit-image", currentUser.name)}
@@ -3310,19 +3566,38 @@
               </select>
             </div>
           </div>
-          <div class="setting-card compact">
-            <strong>${escapeHtml(t("sideInvitesTitle"))}</strong>
-            ${incoming.length
-              ? incoming.map((invite) => renderInviteCard(invite)).join("")
-              : `<span class="helper">${escapeHtml(t("noInvitesCopy"))}</span>`}
-          </div>
-          <div class="setting-card compact">
-            <strong>${escapeHtml(t("logoutButton"))}</strong>
-            <span class="helper">${escapeHtml(t("logoutCopy"))}</span>
-            <button class="button button-danger" data-action="logout-current-user">${escapeHtml(t("logoutButton"))}</button>
-          </div>
+          <button class="button button-danger logout-inline-button" data-action="logout-current-user">${escapeHtml(t("logoutButton"))}</button>
         </div>
       </section>
+    `;
+  }
+
+  function renderPlanSummaryCard(currentUser, summary) {
+    const currentPlanLabel = getPlanLabel(currentUser.planTier);
+    const premiumPlan = isPremiumPlan(currentUser);
+    return `
+      <div class="setting-card compact plan-summary-card">
+        <div class="plan-summary-head">
+          <div>
+            <strong>${escapeHtml(t("planSectionTitle"))}</strong>
+            <span class="helper">${escapeHtml(t("planCurrentLabel"))} : ${escapeHtml(currentPlanLabel)}</span>
+          </div>
+          <button class="button button-secondary compact-action-button" type="button" data-action="open-modal" data-modal="plan">${escapeHtml(t("planChangeButton"))}</button>
+        </div>
+        ${premiumPlan
+          ? `
+            <div class="plan-usage-copy">
+              <span>${escapeHtml(t("planPremiumUsageCopy"))}</span>
+              <span>${escapeHtml(t("planPremiumGuardCopy"))}</span>
+            </div>
+          `
+          : `
+            <div class="plan-usage-copy">
+              <span>${escapeHtml(t("planRemainingMessages", { count: summary.remaining }))}</span>
+              <span>${escapeHtml(t("planResetAt", { time: formatPlanResetTime(summary.nextResetAt) }))}</span>
+            </div>
+          `}
+      </div>
     `;
   }
 
@@ -4529,6 +4804,8 @@
         ? renderCreateRoomModal()
         : modalType === "room-settings"
           ? renderRoomSettingsModal()
+        : modalType === "plan"
+          ? renderPlanModal()
         : modalType === "password"
           ? renderPasswordModal()
           : modalType === "invite"
@@ -4537,6 +4814,8 @@
               ? renderParticipantsModal()
               : modalType === "media"
                 ? renderMediaModal()
+                : modalType === "usage-limit"
+                  ? renderUsageLimitModal()
                 : modalType === "profile-preview"
                   ? renderProfilePreviewModal()
                   : modalType === "notice"
@@ -4594,6 +4873,71 @@
         <div class="modal-footer">
           <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
           <button class="button button-primary" type="button" data-action="submit-room-settings">${escapeHtml(t("applyButton"))}</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderPlanModal() {
+    const currentUser = getCurrentUser();
+    if (!currentUser) return "";
+    const plans = [
+      {
+        tier: "free",
+        label: t("planFreeLabel"),
+        price: `${new Intl.NumberFormat("ko-KR").format(0)}원`,
+        lines: [t("planRemainingMessages", { count: Math.max(0, CONFIG.freeDailyMessageLimit - getPlanUsageSummary(currentUser).used) }), t("planResetAt", { time: formatPlanResetTime(getPlanUsageSummary(currentUser).nextResetAt) })],
+      },
+      {
+        tier: "monthly",
+        label: t("planMonthlyLabel"),
+        price: t("planMonthlyPrice", { price: `${new Intl.NumberFormat("ko-KR").format(CONFIG.monthlyPlanPrice)}원` }),
+        lines: [t("planMonthlyCopyPrimary"), t("planMonthlyCopySecondary")],
+      },
+      {
+        tier: "yearly",
+        label: t("planYearlyLabel"),
+        price: t("planYearlyPrice", { price: `${new Intl.NumberFormat("ko-KR").format(CONFIG.yearlyPlanPrice)}원` }),
+        lines: [t("planYearlyCopyPrimary"), t("planYearlyCopySecondary")],
+      },
+    ];
+    return `
+      <section class="modal plan-modal">
+        <div class="modal-header">
+          <h3>${escapeHtml(t("planModalTitle"))}</h3>
+          <p>${escapeHtml(t("planModalCopy"))}</p>
+        </div>
+        <div class="modal-body plan-modal-body">
+          ${plans
+            .map(
+              (plan) => `
+                <article class="plan-option-card ${currentUser.planTier === plan.tier ? "current" : ""}">
+                  <div class="plan-option-top">
+                    <strong>${escapeHtml(plan.label)}</strong>
+                    ${currentUser.planTier === plan.tier ? `<span class="status-pill pill-accent">${escapeHtml(t("planCurrentBadge"))}</span>` : ""}
+                  </div>
+                  <div class="plan-option-price">${escapeHtml(plan.price)}</div>
+                  <div class="plan-usage-copy">
+                    ${plan.lines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
+                  </div>
+                  <div class="plan-option-actions">
+                    <button class="button button-primary" type="button" data-action="apply-plan-selection" data-plan-tier="${plan.tier}">
+                      ${escapeHtml(currentUser.planTier === plan.tier ? t("planCurrentBadge") : t("planApplyPreview"))}
+                    </button>
+                    <button class="button button-ghost" type="button" data-action="open-checkout-placeholder">${escapeHtml(t("planCheckoutPlaceholder"))}</button>
+                  </div>
+                </article>
+              `
+            )
+            .join("")}
+          <div class="plan-policy-block">
+            <strong>${escapeHtml(t("planPolicyTitle"))}</strong>
+            <p>${escapeHtml(t("planPolicyCopy"))}</p>
+            <button class="button button-ghost" type="button" data-action="open-plan-policy">${escapeHtml(t("planPolicyButton"))}</button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
         </div>
       </section>
     `;
@@ -4753,6 +5097,30 @@
     `;
   }
 
+  function renderUsageLimitModal() {
+    const data = uiState.modal?.data || {};
+    const isFree = data.kind === "free";
+    const lines = t(isFree ? "planFreeExceededCopy" : "planPremiumAbuseCopy", {
+      time: formatPlanResetTime(data.nextResetAt || getUsageWindowInfo().nextResetAt),
+    })
+      .split("\n")
+      .filter(Boolean);
+    return `
+      <section class="modal notice-modal">
+        <div class="modal-header">
+          <h3>${escapeHtml(t(isFree ? "planFreeExceededTitle" : "planPremiumAbuseTitle"))}</h3>
+        </div>
+        <div class="modal-body">
+          ${lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
+          <button class="button button-primary" type="button" data-action="open-modal" data-modal="plan">${escapeHtml(t("planChangeButton"))}</button>
+        </div>
+      </section>
+    `;
+  }
+
   function renderToastStack() {
     if (!uiState.toasts.length) return "";
     return `
@@ -4762,9 +5130,10 @@
     `;
   }
 
-  function bindPostRender(focusState, chatScrollState) {
+  function bindPostRender(focusState, chatScrollState, surfaceScrollState) {
     syncViewport();
     restoreChatScrollState(chatScrollState);
+    restoreSurfaceScrollState(surfaceScrollState);
     updateChatLayoutMetrics();
     restoreFocusState(focusState);
     scheduleReceiptRefresh({ delay: 70 });
@@ -4784,6 +5153,21 @@
     };
   }
 
+  function captureSurfaceScrollState() {
+    const surface = APP_ROOT.querySelector("[data-scroll-key]");
+    if (!(surface instanceof HTMLElement)) {
+      return null;
+    }
+
+    const key = String(surface.dataset.scrollKey || "").trim();
+    if (!key) return null;
+    runtime.preservedScrollPositions[key] = surface.scrollTop;
+    return {
+      key,
+      scrollTop: surface.scrollTop,
+    };
+  }
+
   function restoreChatScrollState(chatScrollState) {
     const scroll = document.getElementById("chat-scroll");
     if (!(scroll instanceof HTMLElement)) {
@@ -4798,6 +5182,22 @@
 
     scroll.scrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight - chatScrollState.distanceFromBottom);
     runtime.chatPinnedToBottom = isScrollNearBottom(scroll);
+  }
+
+  function restoreSurfaceScrollState(surfaceScrollState) {
+    const surface = APP_ROOT.querySelector("[data-scroll-key]");
+    if (!(surface instanceof HTMLElement)) {
+      return;
+    }
+
+    const key = String(surface.dataset.scrollKey || "").trim();
+    if (!key) return;
+    const nextScrollTop =
+      surfaceScrollState?.key === key
+        ? surfaceScrollState.scrollTop
+        : runtime.preservedScrollPositions[key];
+    if (typeof nextScrollTop !== "number") return;
+    surface.scrollTop = nextScrollTop;
   }
 
   function captureFocusState() {
@@ -4872,7 +5272,15 @@
 
   function onRootScroll(event) {
     const target = event.target;
-    if (!(target instanceof HTMLElement) || target.id !== "chat-scroll") {
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    if (target.dataset.scrollKey) {
+      runtime.preservedScrollPositions[target.dataset.scrollKey] = target.scrollTop;
+    }
+
+    if (target.id !== "chat-scroll") {
       return;
     }
     runtime.chatPinnedToBottom = isScrollNearBottom(target);
@@ -5070,6 +5478,29 @@
     if (action === "close-modal") {
       uiState.modal = null;
       uiState.previewMedia = null;
+      render();
+      return;
+    }
+    if (action === "apply-plan-selection") {
+      const currentUser = getCurrentUser();
+      const planTier = actionTarget.dataset.planTier;
+      if (!currentUser || !["free", "monthly", "yearly"].includes(planTier)) return;
+      currentUser.planTier = planTier;
+      currentUser.planUpdatedAt = Date.now();
+      currentUser.planPolicyAcknowledgedAt = Date.now();
+      persistState();
+      pushToast("planUpdatedTitle", "planUpdatedCopy");
+      uiState.modal = null;
+      render();
+      return;
+    }
+    if (action === "open-plan-policy") {
+      openNoticeModal("planPolicyTitle", "planPolicyCopy");
+      render();
+      return;
+    }
+    if (action === "open-checkout-placeholder") {
+      openNoticeModal("planModalTitle", "planModalCopy");
       render();
       return;
     }
@@ -5600,6 +6031,8 @@
     } else if (type === "invite") {
       uiState.modal = { type, data: { name: "", error: "" } };
     } else if (type === "participants") {
+      uiState.modal = { type };
+    } else if (type === "plan") {
       uiState.modal = { type };
     }
     render();
@@ -6321,6 +6754,18 @@
       pushToast("toastEmptyDraft", "toastEmptyDraftCopy");
       return;
     }
+    const limitState = getMessageLimitState(currentUser);
+    if (limitState.blocked) {
+      uiState.modal = {
+        type: "usage-limit",
+        data: {
+          kind: limitState.kind,
+          nextResetAt: limitState.summary.nextResetAt,
+        },
+      };
+      render();
+      return;
+    }
     stopTypingForRoom(roomId);
     setDraft(roomId, { processing: true });
     ensureParticipant(room, currentUser.id, false);
@@ -6342,6 +6787,8 @@
     room.lastMessageAt = Date.now();
     currentUser.currentRoomId = room.id;
     currentUser.lastSeenAt = Date.now();
+    recordMessageUsage(room, currentUser.id, message.createdAt);
+    const softLimitWarning = maybeFlagPremiumSoftLimit(currentUser);
     markRoomRead(room.id, currentUser.id);
     room.participants.forEach((participantId) => {
       if (participantId !== currentUser.id) {
@@ -6376,6 +6823,9 @@
     uiState.attachmentMenuOpen = false;
     persistState();
     scheduleReceiptRefresh({ delay: 90 });
+    if (softLimitWarning) {
+      pushToast("planPremiumAbuseTitle", "planSoftLimitToast");
+    }
     pushToast("toastMessageSent", "toastMessageSentCopy");
     render();
   }
