@@ -2741,6 +2741,13 @@ body[data-theme="dark"] .mobile-composer {
   border-radius: 16px;
 }
 
+.friend-row-tail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .list-profile-image {
   width: 34px;
   height: 34px;
@@ -2797,6 +2804,12 @@ body[data-theme="dark"] .mobile-composer {
   padding: 0 10px;
   border-radius: 10px;
   font-size: 0.7rem;
+}
+
+.admin-delete-user-button {
+  color: #b42318;
+  border-color: rgba(180, 35, 24, 0.16);
+  background: rgba(180, 35, 24, 0.08);
 }
 
 .mobile-chat-room .chat-scroll {

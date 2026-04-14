@@ -1344,37 +1344,46 @@
   Object.assign(DICTIONARY.ko, {
     adminDeleteUserButton: "계정 삭제",
     adminDeleteRoomButton: "방 삭제",
-    adminAccountDeleteConfirm: "이 계정을 삭제하면 관련 정보도 함께 삭제됩니다.",
+    adminAccountDeleteConfirm: "이 계정을 삭제하면 모든 기록이 완전히 삭제됩니다. 계속하시겠습니까?",
     adminRoomDeleteConfirm: "이 대화방과 모든 메시지를 삭제합니다. 계속할까요?",
     toastAccountDeleted: "계정이 삭제되었습니다",
     toastAccountDeletedCopy: "{name} 계정과 관련 데이터가 삭제되었습니다.",
     toastAdminSelfDeleteBlocked: "관리자 본인은 삭제할 수 없습니다",
     toastAdminSelfDeleteBlockedCopy: "admin 계정은 직접 삭제할 수 없습니다.",
     planUnlimitedTesterCopy: "테스트용 무제한 예외 계정",
+    adminProfileEditTitle: "사용자 정보 수정",
+    adminProfilePasswordLabel: "비밀번호",
+    adminProfileSaveButton: "저장",
   });
 
   Object.assign(DICTIONARY.en, {
     adminDeleteUserButton: "Delete account",
     adminDeleteRoomButton: "Delete room",
-    adminAccountDeleteConfirm: "Deleting this account also removes related data.",
+    adminAccountDeleteConfirm: "This deletes the account and all related records permanently. Continue?",
     adminRoomDeleteConfirm: "Delete this room and all of its messages?",
     toastAccountDeleted: "Account deleted",
     toastAccountDeletedCopy: "{name} and related data were deleted.",
     toastAdminSelfDeleteBlocked: "You cannot delete the admin account",
     toastAdminSelfDeleteBlockedCopy: "The admin account cannot delete itself.",
     planUnlimitedTesterCopy: "Unlimited tester bypass account",
+    adminProfileEditTitle: "Edit user profile",
+    adminProfilePasswordLabel: "Password",
+    adminProfileSaveButton: "Save",
   });
 
   Object.assign(DICTIONARY.vi, {
     adminDeleteUserButton: "Xoa tai khoan",
     adminDeleteRoomButton: "Xoa phong",
-    adminAccountDeleteConfirm: "Neu xoa tai khoan nay, du lieu lien quan cung se bi xoa.",
+    adminAccountDeleteConfirm: "Neu xoa tai khoan nay, toan bo lich su lien quan se bi xoa vinh vien. Tiep tuc?",
     adminRoomDeleteConfirm: "Xoa phong chat nay va toan bo tin nhan?",
     toastAccountDeleted: "Da xoa tai khoan",
     toastAccountDeletedCopy: "Tai khoan {name} va du lieu lien quan da bi xoa.",
     toastAdminSelfDeleteBlocked: "Khong the xoa tai khoan admin",
     toastAdminSelfDeleteBlockedCopy: "Tai khoan admin khong the tu xoa chinh no.",
     planUnlimitedTesterCopy: "Tai khoan test khong gioi han",
+    adminProfileEditTitle: "Sua thong tin nguoi dung",
+    adminProfilePasswordLabel: "Mat khau",
+    adminProfileSaveButton: "Luu",
   });
 
   Object.assign(DICTIONARY.ko, {
@@ -1606,6 +1615,7 @@
       profileImage,
       isAdmin,
       isUnlimitedTester,
+      isUnlimitedUser: isAdmin || isUnlimitedTester,
       canBypassUsageLimit: isAdmin || isUnlimitedTester,
       // Future auth expansion point: replace test-name identity with Google, magic-link, or phone-backed identities.
       auth: {
@@ -1624,10 +1634,10 @@
       usage: sanitizeUsageState(accountOptions.usage, joinedAt),
       planUpdatedAt: Number(accountOptions.planUpdatedAt || joinedAt),
       planPolicyAcknowledgedAt: Number(accountOptions.planPolicyAcknowledgedAt || 0) || null,
-      recoveryQuestionKey: accountOptions.recoveryQuestionKey || getDeterministicRecoveryQuestionKey(normalizedName),
-      recoveryAnswer: normalizeRecoveryAnswer(
-        accountOptions.recoveryAnswer != null ? accountOptions.recoveryAnswer : normalizedName
-      ),
+      recoveryQuestionKey: accountOptions.recoveryQuestionKey || accountOptions.recoveryQuestion || getDeterministicRecoveryQuestionKey(normalizedName),
+      recoveryQuestion:
+        accountOptions.recoveryQuestion || accountOptions.recoveryQuestionKey || getDeterministicRecoveryQuestionKey(normalizedName),
+      recoveryAnswer: normalizeRecoveryAnswer(accountOptions.recoveryAnswer != null ? accountOptions.recoveryAnswer : normalizedName),
       joinedAt,
       lastSeenAt,
       currentRoomId,
@@ -1742,6 +1752,7 @@
           age: Number(user?.age || 0) || "",
           isAdmin,
           isUnlimitedTester,
+          isUnlimitedUser: Boolean(user?.isUnlimitedUser) || isAdmin || isUnlimitedTester,
           canBypassUsageLimit: isAdmin || isUnlimitedTester,
           auth: {
             provider: user?.auth?.provider || "test-name",
@@ -1759,7 +1770,14 @@
           planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
           recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
             ? user.recoveryQuestionKey
-            : getDeterministicRecoveryQuestionKey(user?.name),
+            : RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestion)
+              ? user.recoveryQuestion
+              : getDeterministicRecoveryQuestionKey(user?.name),
+          recoveryQuestion: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestion)
+            ? user.recoveryQuestion
+            : RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+              ? user.recoveryQuestionKey
+              : getDeterministicRecoveryQuestionKey(user?.name),
           recoveryAnswer:
             typeof user?.recoveryAnswer === "string"
               ? normalizeRecoveryAnswer(user.recoveryAnswer)
@@ -1895,6 +1913,9 @@
   function syncUiWithCurrentUserState() {
     const currentUser = getCurrentUser();
     if (!currentUser) {
+      if (getActiveUserId()) {
+        setActiveUserId(null);
+      }
       uiState.activeRoomId = null;
       return;
     }
@@ -2120,13 +2141,14 @@
   }
 
   function canBypassUsageLimit(user) {
-    return Boolean(user) && (isAdminUser(user) || Boolean(user?.isUnlimitedTester) || isUnlimitedTesterName(user?.name));
+    return Boolean(user) && (isAdminUser(user) || Boolean(user?.isUnlimitedTester) || Boolean(user?.isUnlimitedUser) || isUnlimitedTesterName(user?.name));
   }
 
   function applySpecialUserFlags(user) {
     if (!user) return user;
     user.isAdmin = Boolean(user.isAdmin) || isAdminLoginId(user.loginId);
     user.isUnlimitedTester = isUnlimitedTesterName(user.name);
+    user.isUnlimitedUser = user.isUnlimitedTester;
     user.canBypassUsageLimit = user.isAdmin || user.isUnlimitedTester;
     return user;
   }
@@ -3517,6 +3539,23 @@
                 )}</div>`
               : ""}
           </div>
+          <div class="field compact-field">
+            <label>${escapeHtml(t("authRecoveryQuestionLabel"))}</label>
+            <div class="landing-question-pill">${escapeHtml(t(uiState.landing.signupQuestionKey || getRandomRecoveryQuestionKey()))}</div>
+          </div>
+          <div class="field compact-field">
+            <label for="signup-answer">${escapeHtml(t("authRecoveryAnswerLabel"))}</label>
+            <input
+              id="signup-answer"
+              data-input="signup-answer"
+              type="text"
+              value="${escapeHtml(uiState.landing.signupAnswer)}"
+              placeholder="${escapeHtml(t("authRecoveryAnswerPlaceholder"))}"
+              autocapitalize="off"
+              autocomplete="off"
+            />
+            <span class="helper">${escapeHtml(t("authRecoveryAnswerHelper"))}</span>
+          </div>
           <div class="landing-auth-actions">
             <button class="button button-primary landing-auth-button" type="button" data-action="submit-landing-signup">${escapeHtml(t("signupCompleteButton"))}</button>
           </div>
@@ -3705,8 +3744,20 @@
 
   function renderChatListScreenMobile(currentUser) {
     const joinedRooms = appState.rooms
-      .filter((room) => room.status === "active" && deriveRoomParticipantIds(room).includes(currentUser.id))
-      .sort((a, b) => (b.lastMessageAt || b.createdAt) - (a.lastMessageAt || a.createdAt));
+      .filter((room) => room.status === "active")
+      .sort((a, b) => {
+        const aIsCurrent = currentUser.currentRoomId === a.id ? 1 : 0;
+        const bIsCurrent = currentUser.currentRoomId === b.id ? 1 : 0;
+        if (aIsCurrent !== bIsCurrent) {
+          return bIsCurrent - aIsCurrent;
+        }
+        const aParticipating = deriveRoomParticipantIds(a).includes(currentUser.id) ? 1 : 0;
+        const bParticipating = deriveRoomParticipantIds(b).includes(currentUser.id) ? 1 : 0;
+        if (aParticipating !== bParticipating) {
+          return bParticipating - aParticipating;
+        }
+        return (b.lastMessageAt || b.createdAt || 0) - (a.lastMessageAt || a.createdAt || 0);
+      });
 
     return `
       <section class="panel screen-panel mobile-screen">
@@ -3775,14 +3826,20 @@
   function renderFriendRowMobile(friend, currentUser) {
     const presence = getPresence(friend, friend.currentRoomId || null);
     const displayName = getUserDisplayName(friend) || friend.loginId || friend.name;
+    const canDeleteUser = isAdminUser(currentUser) && !isAdminUser(friend);
     return `
       <article class="friend-card mobile-friend-card" data-diff-key="friend:${friend.id}">
         ${renderProfileImage(friend, "list-profile-image", friend.name)}
         <button class="friend-name-button" type="button" data-action="open-profile-preview" data-user-id="${friend.id}">
           <strong>${escapeHtml(displayName)}</strong>
         </button>
-        <span class="friend-inline-presence ${presence.kind}">${escapeHtml(presence.label)}</span>
-        ${currentUser ? renderConnectionActionV2(friend, currentUser) : `<span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>`}
+        <div class="friend-row-tail">
+          <span class="friend-inline-presence ${presence.kind}">${escapeHtml(presence.label)}</span>
+          ${currentUser ? renderConnectionActionV2(friend, currentUser) : `<span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>`}
+          ${canDeleteUser
+            ? `<button class="connection-icon-button admin-delete-user-button" type="button" data-action="admin-delete-user" data-user-id="${friend.id}" aria-label="${escapeHtml(t("adminDeleteUserButton"))}" title="${escapeHtml(t("adminDeleteUserButton"))}">×</button>`
+            : ""}
+        </div>
       </article>
     `;
   }
@@ -3790,6 +3847,7 @@
   function renderMyInfoScreenMobile(currentUser) {
     const profileEditor = syncProfileEditor(currentUser);
     const planSummary = getPlanUsageSummary(currentUser);
+    const adminView = isAdminUser(currentUser);
 
     return `
       <section class="panel screen-panel mobile-screen">
@@ -3798,51 +3856,55 @@
         </div>
         <div class="screen-body mobile-list-body my-info-mobile" data-scroll-key="my-info">
           ${renderPlanSummaryCard(currentUser, planSummary)}
-          <div class="setting-card compact profile-edit-card">
-            <div class="profile-edit-head">
-              ${renderProfileImage(currentUser, "profile-edit-image", currentUser.name)}
-              <div class="profile-edit-copy">
-                <strong>${escapeHtml(t("profileCardTitle"))}</strong>
-                <span class="helper">${escapeHtml(currentUser.loginId || "")}</span>
+          ${adminView
+            ? ""
+            : `
+              <div class="setting-card compact profile-edit-card">
+                <div class="profile-edit-head">
+                  ${renderProfileImage(currentUser, "profile-edit-image", currentUser.name)}
+                  <div class="profile-edit-copy">
+                    <strong>${escapeHtml(t("profileCardTitle"))}</strong>
+                    <span class="helper">${escapeHtml(currentUser.loginId || "")}</span>
+                  </div>
+                </div>
+                <div class="profile-edit-actions">
+                  <button class="button button-secondary" type="button" data-action="trigger-profile-image">${escapeHtml(t("profilePhotoChange"))}</button>
+                  <button class="button button-ghost" type="button" data-action="remove-profile-image">${escapeHtml(t("profilePhotoRemove"))}</button>
+                </div>
+                <input data-input="my-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+                <div class="field compact-field">
+                  <label>${escapeHtml(t("profileAccountIdLabel"))}</label>
+                  <div class="profile-static-value">${escapeHtml(currentUser.loginId || "")}</div>
+                </div>
+                <div class="field compact-field">
+                  <label>${escapeHtml(t("profileNameReadonlyLabel"))}</label>
+                  <div class="profile-static-value">${escapeHtml(currentUser.name || "")}</div>
+                </div>
+                <div class="field compact-field">
+                  <label for="my-profile-gender">${escapeHtml(t("profileGenderLabel"))}</label>
+                  <select id="my-profile-gender" data-input="my-profile-gender">
+                    <option value="">${escapeHtml(t("profilePopupEmpty"))}</option>
+                    <option value="male" ${profileEditor?.gender === "male" ? "selected" : ""}>${escapeHtml(t("authGenderMale"))}</option>
+                    <option value="female" ${profileEditor?.gender === "female" ? "selected" : ""}>${escapeHtml(t("authGenderFemale"))}</option>
+                  </select>
+                </div>
+                <div class="field compact-field">
+                  <label for="my-profile-age">${escapeHtml(t("profileAgeLabel"))}</label>
+                  <input
+                    id="my-profile-age"
+                    data-input="my-profile-age"
+                    type="number"
+                    min="0"
+                    max="120"
+                    inputmode="numeric"
+                    value="${escapeHtml(profileEditor?.age || "")}"
+                    placeholder="${escapeHtml(t("authAgePlaceholder"))}"
+                    autocomplete="off"
+                  />
+                </div>
+                <button class="button" type="button" data-action="save-basic-profile">${escapeHtml(t("profileSaveButton"))}</button>
               </div>
-            </div>
-            <div class="profile-edit-actions">
-              <button class="button button-secondary" type="button" data-action="trigger-profile-image">${escapeHtml(t("profilePhotoChange"))}</button>
-              <button class="button button-ghost" type="button" data-action="remove-profile-image">${escapeHtml(t("profilePhotoRemove"))}</button>
-            </div>
-            <input data-input="my-profile-image" type="file" accept="image/jpeg,image/png,image/webp" hidden>
-            <div class="field compact-field">
-              <label>${escapeHtml(t("profileAccountIdLabel"))}</label>
-              <div class="profile-static-value">${escapeHtml(currentUser.loginId || "")}</div>
-            </div>
-            <div class="field compact-field">
-              <label>${escapeHtml(t("profileNameReadonlyLabel"))}</label>
-              <div class="profile-static-value">${escapeHtml(currentUser.name || "")}</div>
-            </div>
-            <div class="field compact-field">
-              <label for="my-profile-gender">${escapeHtml(t("profileGenderLabel"))}</label>
-              <select id="my-profile-gender" data-input="my-profile-gender">
-                <option value="">${escapeHtml(t("profilePopupEmpty"))}</option>
-                <option value="male" ${profileEditor?.gender === "male" ? "selected" : ""}>${escapeHtml(t("authGenderMale"))}</option>
-                <option value="female" ${profileEditor?.gender === "female" ? "selected" : ""}>${escapeHtml(t("authGenderFemale"))}</option>
-              </select>
-            </div>
-            <div class="field compact-field">
-              <label for="my-profile-age">${escapeHtml(t("profileAgeLabel"))}</label>
-              <input
-                id="my-profile-age"
-                data-input="my-profile-age"
-                type="number"
-                min="0"
-                max="120"
-                inputmode="numeric"
-                value="${escapeHtml(profileEditor?.age || "")}"
-                placeholder="${escapeHtml(t("authAgePlaceholder"))}"
-                autocomplete="off"
-              />
-            </div>
-            <button class="button" type="button" data-action="save-basic-profile">${escapeHtml(t("profileSaveButton"))}</button>
-          </div>
+            `}
           <div class="setting-card compact">
             <strong>${escapeHtml(t("settingsUiLanguage"))}</strong>
             <div class="field compact-field">
@@ -5355,6 +5417,8 @@
   function renderProfilePreviewModal() {
     const friend = appState.users.find((user) => user.id === uiState.modal?.data?.userId);
     if (!friend) return "";
+    const currentUser = getCurrentUser();
+    const canAdminEdit = isAdminUser(currentUser) && !isAdminUser(friend);
     const displayName = getUserDisplayName(friend) || friend.loginId || friend.name;
     const genderLabel =
       friend.gender === "male"
@@ -5362,19 +5426,50 @@
         : friend.gender === "female"
           ? t("authGenderFemale")
           : t("profilePopupEmpty");
+    const modalData = uiState.modal?.data || {};
     return `
       <section class="modal">
         <div class="modal-header">
-          <h3>${escapeHtml(t("profilePopupTitle"))}</h3>
+          <h3>${escapeHtml(canAdminEdit ? t("adminProfileEditTitle") : t("profilePopupTitle"))}</h3>
           <p>${escapeHtml(displayName)}</p>
         </div>
         <div class="modal-body profile-preview-grid">
-          <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupName"))}</span><strong>${escapeHtml(friend.name || t("profilePopupEmpty"))}</strong></div>
-          <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupId"))}</span><strong>${escapeHtml(friend.loginId || "")}</strong></div>
-          <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupGender"))}</span><strong>${escapeHtml(genderLabel)}</strong></div>
-          <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupAge"))}</span><strong>${escapeHtml(friend.age || t("profilePopupEmpty"))}</strong></div>
+          ${canAdminEdit
+            ? `
+              <div class="field compact-field">
+                <label for="admin-profile-name">${escapeHtml(t("profilePopupName"))}</label>
+                <input id="admin-profile-name" data-input="admin-profile-name" type="text" maxlength="24" value="${escapeHtml(modalData.editName ?? friend.name ?? "")}" autocomplete="off" />
+              </div>
+              <div class="field compact-field">
+                <label>${escapeHtml(t("profilePopupId"))}</label>
+                <div class="profile-static-value">${escapeHtml(friend.loginId || "")}</div>
+              </div>
+              <div class="field compact-field">
+                <label for="admin-profile-gender">${escapeHtml(t("profilePopupGender"))}</label>
+                <select id="admin-profile-gender" data-input="admin-profile-gender">
+                  <option value="">${escapeHtml(t("profilePopupEmpty"))}</option>
+                  <option value="male" ${(modalData.editGender ?? friend.gender) === "male" ? "selected" : ""}>${escapeHtml(t("authGenderMale"))}</option>
+                  <option value="female" ${(modalData.editGender ?? friend.gender) === "female" ? "selected" : ""}>${escapeHtml(t("authGenderFemale"))}</option>
+                </select>
+              </div>
+              <div class="field compact-field">
+                <label for="admin-profile-age">${escapeHtml(t("profilePopupAge"))}</label>
+                <input id="admin-profile-age" data-input="admin-profile-age" type="number" min="0" max="120" inputmode="numeric" value="${escapeHtml(String(modalData.editAge ?? friend.age ?? ""))}" autocomplete="off" />
+              </div>
+              <div class="field compact-field">
+                <label for="admin-profile-password">${escapeHtml(t("adminProfilePasswordLabel"))}</label>
+                <input id="admin-profile-password" data-input="admin-profile-password" type="text" value="${escapeHtml(modalData.editPassword ?? friend.password ?? "")}" autocomplete="off" />
+              </div>
+            `
+            : `
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupName"))}</span><strong>${escapeHtml(friend.name || t("profilePopupEmpty"))}</strong></div>
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupId"))}</span><strong>${escapeHtml(friend.loginId || "")}</strong></div>
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupGender"))}</span><strong>${escapeHtml(genderLabel)}</strong></div>
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupAge"))}</span><strong>${escapeHtml(friend.age || t("profilePopupEmpty"))}</strong></div>
+            `}
         </div>
         <div class="modal-footer">
+          ${canAdminEdit ? `<button class="button button-primary" data-action="save-admin-profile" data-user-id="${friend.id}">${escapeHtml(t("adminProfileSaveButton"))}</button>` : ""}
           <button class="button button-secondary" data-action="close-modal">${escapeHtml(t("settingsClose"))}</button>
         </div>
       </section>
@@ -5927,10 +6022,62 @@
       return;
     }
     if (action === "open-profile-preview") {
+      const friend = appState.users.find((user) => user.id === actionTarget.dataset.userId);
       uiState.modal = {
         type: "profile-preview",
-        data: { userId: actionTarget.dataset.userId },
+        data: {
+          userId: actionTarget.dataset.userId,
+          editName: friend?.name || "",
+          editGender: friend?.gender || "",
+          editAge: friend?.age || "",
+          editPassword: friend?.password || "",
+        },
       };
+      render();
+      return;
+    }
+    if (action === "save-admin-profile") {
+      const currentUser = getCurrentUser();
+      const targetUser = appState.users.find((user) => user.id === actionTarget.dataset.userId);
+      if (!isAdminUser(currentUser) || !targetUser || isAdminUser(targetUser)) {
+        return;
+      }
+      const nextName = normalizeDisplayText(uiState.modal?.data?.editName || "").trim();
+      const nextGender = uiState.modal?.data?.editGender === "male" || uiState.modal?.data?.editGender === "female"
+        ? uiState.modal.data.editGender
+        : "";
+      const nextAge = Math.max(0, Math.min(120, Number(uiState.modal?.data?.editAge || 0) || 0)) || "";
+      const nextPassword = String(uiState.modal?.data?.editPassword || "").trim();
+
+      if (nextName) {
+        targetUser.name = nextName;
+      }
+      targetUser.gender = nextGender;
+      targetUser.age = nextAge;
+      if (nextPassword) {
+        targetUser.password = nextPassword;
+      }
+      applySpecialUserFlags(targetUser);
+      persistState();
+      uiState.modal = null;
+      render();
+      return;
+    }
+    if (action === "admin-delete-user") {
+      const currentUser = getCurrentUser();
+      const userId = actionTarget.dataset.userId;
+      const targetUser = appState.users.find((user) => user.id === userId);
+      if (!isAdminUser(currentUser) || !targetUser) return;
+      if (isAdminUser(targetUser)) {
+        pushToast("toastAdminSelfDeleteBlocked", "toastAdminSelfDeleteBlockedCopy");
+        render();
+        return;
+      }
+      const confirmed = window.confirm(t("adminAccountDeleteConfirm"));
+      if (!confirmed) return;
+      deleteUserAccount(userId);
+      persistState();
+      pushToast("toastAccountDeleted", "toastAccountDeletedCopy", { name: targetUser.name || targetUser.loginId });
       render();
       return;
     }
@@ -6058,6 +6205,18 @@
       uiState.profileEditor.age = target.value;
       return;
     }
+    if (target instanceof HTMLInputElement && target.dataset.input === "admin-profile-name" && uiState.modal?.type === "profile-preview") {
+      uiState.modal.data.editName = target.value;
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "admin-profile-age" && uiState.modal?.type === "profile-preview") {
+      uiState.modal.data.editAge = target.value;
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.input === "admin-profile-password" && uiState.modal?.type === "profile-preview") {
+      uiState.modal.data.editPassword = target.value;
+      return;
+    }
     if (target.dataset.input === "composer") {
       const roomId = target.dataset.roomId;
       runtime.lastComposerInputAt = Date.now();
@@ -6149,6 +6308,10 @@
     }
     if (target.dataset.input === "my-profile-gender") {
       uiState.profileEditor.gender = target.value;
+      return;
+    }
+    if (target.dataset.input === "admin-profile-gender" && uiState.modal?.type === "profile-preview") {
+      uiState.modal.data.editGender = target.value;
       return;
     }
     if (target.dataset.input === "image-file") {
@@ -6456,15 +6619,15 @@
     const password = String(uiState.landing.password || "");
     if (!baseId) return;
     const existingUser = findUserByLoginName(baseId);
-    if (!isAllowedPrivateTester(baseId) && !(existingUser && (isAllowedPrivateTester(existingUser.name) || isAdminUser(existingUser)))) {
-      uiState.landing.error = t("toastAccessDeniedCopy");
-      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
+    if (!existingUser) {
+      uiState.landing.error = t("authLoginNotFound");
       render();
       return;
     }
 
-    if (!existingUser) {
-      uiState.landing.error = t("authLoginNotFound");
+    if (!isAdminUser(existingUser) && !isAllowedPrivateTester(existingUser.name)) {
+      uiState.landing.error = t("toastAccessDeniedCopy");
+      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
       render();
       return;
     }
@@ -6494,7 +6657,7 @@
       render();
       return;
     }
-    if (!isAllowedPrivateTester(signupId) && !isAllowedPrivateTester(realName)) {
+    if (!isAllowedPrivateTester(realName)) {
       uiState.landing.error = t("toastAccessDeniedCopy");
       pushToast("toastAccessDenied", "toastAccessDeniedCopy");
       render();
@@ -6507,6 +6670,11 @@
     }
     if (!isValidSignupPassword(password)) {
       openNoticeModal("authInvalidPasswordTitle", "authInvalidPasswordCopy");
+      render();
+      return;
+    }
+    if (!uiState.landing.signupQuestionKey || !uiState.landing.signupAnswer.trim()) {
+      uiState.landing.error = t("authNeedRecoveryAnswer");
       render();
       return;
     }
@@ -6526,8 +6694,9 @@
       {
         loginId: signupId,
         password,
-        recoveryQuestionKey: getDeterministicRecoveryQuestionKey(signupId),
-        recoveryAnswer: realName,
+        recoveryQuestionKey: uiState.landing.signupQuestionKey,
+        recoveryQuestion: uiState.landing.signupQuestionKey,
+        recoveryAnswer: uiState.landing.signupAnswer,
         loginState: "online",
         lastLoginAt: Date.now(),
         nickname: "",
@@ -6923,6 +7092,7 @@
   function deleteUserAccount(userId) {
     const user = appState.users.find((item) => item.id === userId);
     if (!user) return;
+    if (isAdminUser(user)) return;
 
     const ownedRoomIds = appState.rooms.filter((room) => room.creatorId === userId).map((room) => room.id);
     ownedRoomIds.forEach((roomId) => deleteRoom(roomId));
@@ -6930,15 +7100,31 @@
     appState.rooms.forEach((room) => {
       if ((room.participants || []).includes(userId)) {
         room.participants = room.participants.filter((participantId) => participantId !== userId);
-        room.messages.push(systemMessage(uid("sys"), "systemUserLeft", { name: user.name }, Date.now()));
       }
+      room.messages = (room.messages || []).filter((message) => {
+        if (message?.senderId !== userId) return true;
+        if (message.media?.kind === "video" && message.media.runtimeId) {
+          revokeRuntimeVideo(message.media.runtimeId);
+        }
+        return false;
+      });
       if (room.accessByUser) {
         delete room.accessByUser[userId];
       }
       if (room.unreadByUser) {
         delete room.unreadByUser[userId];
       }
+      room.messages = (room.messages || []).map((message) =>
+        message?.kind === "user"
+          ? {
+              ...message,
+              deliveredTo: Object.fromEntries(Object.entries(message.deliveredTo || {}).filter(([key]) => key !== userId)),
+              readBy: Object.fromEntries(Object.entries(message.readBy || {}).filter(([key]) => key !== userId)),
+            }
+          : message
+      );
     });
+    appState.rooms = appState.rooms.filter((room) => (room.participants || []).length > 0);
 
     Object.keys(runtime.typingSignals).forEach((roomId) => {
       if (!runtime.typingSignals[roomId]) return;
@@ -6950,11 +7136,22 @@
 
     delete runtime.presenceSignals[userId];
     appState.invites = appState.invites.filter((invite) => invite.inviterId !== userId && invite.inviteeId !== userId);
+    appState.users.forEach((item) => {
+      if (Array.isArray(item.blockedUserIds)) {
+        item.blockedUserIds = item.blockedUserIds.filter((blockedId) => blockedId !== userId);
+      }
+      if (item.currentRoomId && !appState.rooms.some((room) => room.id === item.currentRoomId)) {
+        item.currentRoomId = null;
+      }
+    });
     appState.deletedUsers = {
       ...(appState.deletedUsers || {}),
       [userId]: Date.now(),
     };
     appState.users = appState.users.filter((item) => item.id !== userId);
+    if (uiState.modal?.data?.userId === userId) {
+      uiState.modal = null;
+    }
   }
 
   function logoutCurrentUser() {

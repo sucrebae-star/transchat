@@ -274,9 +274,31 @@ function mergeUsers(previousUsers, nextUsers) {
     const next = nextById.get(id);
     if (!previous) return next;
     if (!next) return previous;
+    const nextPassword =
+      typeof next.password === "string" && next.password.length
+        ? next.password
+        : typeof previous.password === "string"
+          ? previous.password
+          : "";
+    const nextRecoveryQuestion =
+      RECOVERY_QUESTION_KEYS.includes(next.recoveryQuestion)
+        ? next.recoveryQuestion
+        : RECOVERY_QUESTION_KEYS.includes(next.recoveryQuestionKey)
+          ? next.recoveryQuestionKey
+          : RECOVERY_QUESTION_KEYS.includes(previous.recoveryQuestion)
+            ? previous.recoveryQuestion
+            : previous.recoveryQuestionKey;
+    const nextRecoveryAnswer =
+      typeof next.recoveryAnswer === "string" && next.recoveryAnswer.length
+        ? next.recoveryAnswer
+        : previous.recoveryAnswer;
     return {
       ...previous,
       ...next,
+      password: nextPassword,
+      recoveryQuestion: nextRecoveryQuestion,
+      recoveryQuestionKey: nextRecoveryQuestion,
+      recoveryAnswer: nextRecoveryAnswer,
       joinedAt: Math.min(Number(previous.joinedAt || previous.createdAt || Date.now()), Number(next.joinedAt || next.createdAt || Date.now())),
       lastSeenAt: Math.max(Number(previous.lastSeenAt || 0), Number(next.lastSeenAt || 0)),
       lastLoginAt: Math.max(Number(previous.lastLoginAt || 0), Number(next.lastLoginAt || 0)) || null,
@@ -708,9 +730,26 @@ function sanitizeSharedState(state) {
       usage: sanitizeUsageState(user?.usage),
       planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
       planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
+      isAdmin: Boolean(user?.isAdmin) || normalizeDisplayText(user?.loginId || "").trim().toLowerCase() === "admin",
+      isUnlimitedTester: Boolean(user?.isUnlimitedTester) || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "hoa" || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "현태",
+      isUnlimitedUser: Boolean(user?.isUnlimitedUser) || Boolean(user?.isUnlimitedTester) || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "hoa" || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "현태",
+      canBypassUsageLimit:
+        Boolean(user?.canBypassUsageLimit) ||
+        Boolean(user?.isAdmin) ||
+        Boolean(user?.isUnlimitedTester) ||
+        normalizeDisplayText(user?.loginId || "").trim().toLowerCase() === "admin" ||
+        normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "hoa" ||
+        normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "현태",
       recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
         ? user.recoveryQuestionKey
-        : getDeterministicRecoveryQuestionKey(user?.name),
+        : RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestion)
+          ? user.recoveryQuestion
+          : getDeterministicRecoveryQuestionKey(user?.name),
+      recoveryQuestion: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestion)
+        ? user.recoveryQuestion
+        : RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+          ? user.recoveryQuestionKey
+          : getDeterministicRecoveryQuestionKey(user?.name),
       recoveryAnswer:
         typeof user?.recoveryAnswer === "string"
           ? normalizeRecoveryAnswer(user.recoveryAnswer)
