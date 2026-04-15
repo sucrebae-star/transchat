@@ -2536,6 +2536,18 @@ body[data-theme="dark"] .mobile-nav-dock {
   gap: 8px;
 }
 
+.single-action-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pwa-install-card {
+  margin-bottom: 6px;
+}
+
+.pwa-install-button {
+  min-height: 44px;
+}
+
 .compact-field label {
   display: block;
   margin-bottom: 6px;

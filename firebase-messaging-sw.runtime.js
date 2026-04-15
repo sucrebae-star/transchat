@@ -72,6 +72,12 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+// Keep a fetch handler so the same service worker also satisfies installability requirements for PWA.
+self.addEventListener("fetch", (event) => {
+  if (event.request.method !== "GET") return;
+  event.respondWith(fetch(event.request));
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const payload = normalizePushPayload(event.notification.data || {});

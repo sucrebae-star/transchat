@@ -10,6 +10,7 @@
   const FCM_VAPID_PUBLIC_KEY = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTtF90lOTYkONeydXEBE_u0_IJQBHx6djF2yftZvhqpz2Ws";
   const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY, PUSH_TOKEN_CACHE_KEY, PUSH_TOKEN_USER_KEY]);
   const CONFIG = {
+    roomAutoExpirationEnabled: false,
     roomExpireMs: 30 * 60 * 1000,
     passwordAttemptLimit: 5,
     passwordLockMs: 90 * 1000,
@@ -134,6 +135,13 @@
       lastError: "",
       swMessageBound: false,
       pendingNavigation: null,
+    },
+    pwa: {
+      supported: typeof window !== "undefined" && "serviceWorker" in navigator,
+      deferredPrompt: null,
+      installed: false,
+      swRegistered: false,
+      listenersBound: false,
     },
   };
 
@@ -384,6 +392,51 @@
     pushToastMessageCopy: "{name}: {preview}",
     pushToastInviteTitle: "Loi moi moi",
     pushToastInviteCopy: "{name} da gui loi moi tro chuyen",
+  });
+
+  Object.assign(DICTIONARY.ko, {
+    pwaInstallTitle: "앱 설치",
+    pwaInstallButton: "앱 설치하기",
+    pwaInstalledButton: "앱이 설치됨",
+    pwaInstallGuideButton: "홈 화면에 추가 안내 보기",
+    pwaInstallReadyCopy: "이 기기에서 TRANSCHAT을 앱처럼 빠르게 열 수 있습니다.",
+    pwaInstalledCopy: "이 기기에서는 이미 앱처럼 설치되어 있습니다.",
+    pwaInstallManualCopy: "브라우저 메뉴에서 앱 설치 또는 홈 화면에 추가를 선택해 주세요.",
+    pwaInstallIosCopy: "Safari의 공유 버튼을 누른 뒤 '홈 화면에 추가'를 선택해 주세요.",
+    pwaInstallUnsupportedCopy: "이 브라우저에서는 앱 설치 지원이 제한될 수 있습니다.",
+    pwaInstallGuideTitle: "앱 설치 안내",
+    pwaInstalledToastTitle: "앱 설치 완료",
+    pwaInstalledToastCopy: "이제 TRANSCHAT을 앱처럼 바로 실행할 수 있습니다.",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    pwaInstallTitle: "Install app",
+    pwaInstallButton: "Install app",
+    pwaInstalledButton: "App installed",
+    pwaInstallGuideButton: "Show install guide",
+    pwaInstallReadyCopy: "You can open TRANSCHAT like an app on this device.",
+    pwaInstalledCopy: "TRANSCHAT is already installed like an app on this device.",
+    pwaInstallManualCopy: "Use your browser menu to install the app or add it to the home screen.",
+    pwaInstallIosCopy: "In Safari, tap Share and choose Add to Home Screen.",
+    pwaInstallUnsupportedCopy: "Install support may be limited in this browser.",
+    pwaInstallGuideTitle: "Install guide",
+    pwaInstalledToastTitle: "App installed",
+    pwaInstalledToastCopy: "You can now launch TRANSCHAT like an app.",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    pwaInstallTitle: "Cai dat ung dung",
+    pwaInstallButton: "Cai dat ung dung",
+    pwaInstalledButton: "Da cai dat",
+    pwaInstallGuideButton: "Xem huong dan them vao man hinh chinh",
+    pwaInstallReadyCopy: "Ban co the mo TRANSCHAT nhu mot ung dung tren thiet bi nay.",
+    pwaInstalledCopy: "TRANSCHAT da duoc cai dat nhu mot ung dung tren thiet bi nay.",
+    pwaInstallManualCopy: "Hay mo menu trinh duyet de cai dat ung dung hoac them vao man hinh chinh.",
+    pwaInstallIosCopy: "Trong Safari, nhan nut Chia se roi chon Them vao man hinh chinh.",
+    pwaInstallUnsupportedCopy: "Tinh nang cai dat co the bi gioi han tren trinh duyet nay.",
+    pwaInstallGuideTitle: "Huong dan cai dat",
+    pwaInstalledToastTitle: "Da cai dat ung dung",
+    pwaInstalledToastCopy: "Ban da co the mo TRANSCHAT nhu mot ung dung.",
   });
 
   const LOCALES = {
@@ -2213,9 +2266,9 @@
         return {
           ...room,
           title: normalizeDisplayText(room.title),
-          disableExpiration: persistent,
-          status: persistent && room.status === "expired" ? "active" : room.status,
-          expiredAt: persistent ? null : room.expiredAt || null,
+          disableExpiration: CONFIG.roomAutoExpirationEnabled ? persistent : true,
+          status: !CONFIG.roomAutoExpirationEnabled || (persistent && room.status === "expired") ? "active" : room.status,
+          expiredAt: CONFIG.roomAutoExpirationEnabled && !persistent ? room.expiredAt || null : null,
           participants,
           accessByUser: filterRecordByAllowedKeys(room.accessByUser, userIds),
           unreadByUser: filterRecordByAllowedKeys(room.unreadByUser, userIds),
@@ -2258,6 +2311,9 @@
   }
 
   function shouldDiscardRoom(room) {
+    if (!CONFIG.roomAutoExpirationEnabled) {
+      return false;
+    }
     return room?.status === "expired" && !(room?.messages || []).some((message) => message.kind === "user");
   }
 
@@ -5130,6 +5186,7 @@
             </div>
           </div>
           ${renderPushSettingsCard(currentUser)}
+          ${renderPwaInstallCard()}
           <button class="button button-danger logout-inline-button" data-action="logout-current-user">${escapeHtml(t("logoutButton"))}</button>
         </div>
       </section>
@@ -5218,6 +5275,108 @@
         <span class="helper">${escapeHtml(t(pushStatus.helperKey))}</span>
       </div>
     `;
+  }
+
+  function isStandaloneApp() {
+    return Boolean(
+      window.matchMedia?.("(display-mode: standalone)")?.matches ||
+      window.navigator.standalone === true
+    );
+  }
+
+  function isIosInstallGuideBrowser() {
+    const ua = navigator.userAgent || "";
+    const isIOS = /iphone|ipad|ipod/i.test(ua);
+    const isWebKit = /webkit/i.test(ua);
+    const isOtherBrowser = /CriOS|FxiOS|EdgiOS|OPiOS/i.test(ua);
+    return isIOS && isWebKit && !isOtherBrowser;
+  }
+
+  function syncPwaInstallState(options = {}) {
+    runtime.pwa.installed = isStandaloneApp();
+    if (runtime.pwa.installed) {
+      runtime.pwa.deferredPrompt = null;
+    }
+    if (options.render) {
+      renderSafelyDuringInput();
+    }
+  }
+
+  function getPwaInstallMeta() {
+    syncPwaInstallState();
+    if (runtime.pwa.installed) {
+      return {
+        buttonKey: "pwaInstalledButton",
+        helperKey: "pwaInstalledCopy",
+        disabled: true,
+      };
+    }
+
+    if (runtime.pwa.deferredPrompt) {
+      return {
+        buttonKey: "pwaInstallButton",
+        helperKey: "pwaInstallReadyCopy",
+        disabled: false,
+      };
+    }
+
+    if (isIosInstallGuideBrowser()) {
+      return {
+        buttonKey: "pwaInstallGuideButton",
+        helperKey: "pwaInstallIosCopy",
+        disabled: false,
+      };
+    }
+
+    return {
+      buttonKey: "pwaInstallGuideButton",
+      helperKey: runtime.pwa.swRegistered ? "pwaInstallManualCopy" : "pwaInstallUnsupportedCopy",
+      disabled: false,
+    };
+  }
+
+  function renderPwaInstallCard() {
+    const meta = getPwaInstallMeta();
+    return `
+      <div class="setting-card compact pwa-install-card">
+        <strong>${escapeHtml(t("pwaInstallTitle"))}</strong>
+        <div class="profile-edit-actions single-action-row">
+          <button
+            class="button button-secondary pwa-install-button"
+            type="button"
+            data-action="trigger-pwa-install"
+            ${meta.disabled ? "disabled" : ""}
+          >
+            ${escapeHtml(t(meta.buttonKey))}
+          </button>
+        </div>
+        <span class="helper">${escapeHtml(t(meta.helperKey))}</span>
+      </div>
+    `;
+  }
+
+  async function triggerPwaInstallFlow() {
+    syncPwaInstallState();
+    if (runtime.pwa.installed) {
+      renderSafelyDuringInput();
+      return;
+    }
+
+    if (runtime.pwa.deferredPrompt) {
+      const promptEvent = runtime.pwa.deferredPrompt;
+      runtime.pwa.deferredPrompt = null;
+      await promptEvent.prompt();
+      try {
+        await promptEvent.userChoice;
+      } catch (error) {
+        // Ignore dismissal; button state is recalculated from installability after the prompt closes.
+      }
+      syncPwaInstallState({ render: true });
+      return;
+    }
+
+    openNoticeModal("pwaInstallGuideTitle", isIosInstallGuideBrowser() ? "pwaInstallIosCopy" : "pwaInstallManualCopy");
+    render();
   }
 
   function renderChatRoomMobile(currentUser, room) {
@@ -5829,6 +5988,7 @@
               }).join("")
             : `<span>${escapeHtml(t("inviteResultEmpty"))}</span>`}
         </div>
+        ${renderPwaInstallCard()}
         <div class="setting-card">
           <strong>${escapeHtml(t("logoutButton"))}</strong>
           <span>${escapeHtml(t("logoutCopy"))}</span>
@@ -5872,7 +6032,7 @@
             <p>${escapeHtml(t("chatHeaderCreator"))}: ${escapeHtml(creator?.name || "—")} · ${escapeHtml(t("roomParticipants"))}: ${participantCount}</p>
           </div>
           <div class="header-actions">
-            ${room.status === "active"
+            ${room.status === "active" && CONFIG.roomAutoExpirationEnabled
               ? room.disableExpiration
                 ? `<span class="pill pill-success">${escapeHtml(t("roomPersistent"))}</span>`
                 : `<span class="pill pill-accent">${escapeHtml(t("expireCountdown"))}: ${escapeHtml(formatRemaining((room.lastMessageAt || room.createdAt) + CONFIG.roomExpireMs - Date.now()))}</span>`
@@ -7667,6 +7827,10 @@
       void requestPushPermissionAndRegister();
       return;
     }
+    if (action === "trigger-pwa-install") {
+      void triggerPwaInstallFlow();
+      return;
+    }
     if (action === "send-push-test") {
       void sendPushTestToCurrentUser(actionTarget.dataset.pushType || "message");
       return;
@@ -8997,17 +9161,21 @@
       return;
     }
     stopTypingForRoom(roomId);
+    const composerInput = getComposerInput(roomId);
     const draftSnapshot = {
       text: liveText,
       attachment,
       failTranslation,
       translationConcept,
     };
+    if (composerInput instanceof HTMLInputElement || composerInput instanceof HTMLTextAreaElement) {
+      composerInput.value = "";
+    }
     setDraft(roomId, {
       text: "",
       attachment: null,
       failTranslation: false,
-      processing: false,
+      processing: true,
       translationConcept,
     });
     uiState.attachmentMenuOpen = false;
@@ -9076,6 +9244,7 @@
     });
     persistState();
     scheduleReceiptRefresh({ delay: 90 });
+    setDraft(roomId, { processing: false });
     if (softLimitWarning) {
       pushToast("planPremiumAbuseTitle", "planSoftLimitToast");
     }
@@ -10598,6 +10767,7 @@
   }
 
   function fastForwardRoom(roomId) {
+    if (!CONFIG.roomAutoExpirationEnabled) return;
     const room = appState.rooms.find((item) => item.id === roomId);
     if (!room || room.status === "expired" || room.disableExpiration) return;
     room.lastMessageAt = Date.now() - 31 * 60 * 1000;
@@ -10608,6 +10778,9 @@
   }
 
   function checkRoomExpirations() {
+    if (!CONFIG.roomAutoExpirationEnabled) {
+      return;
+    }
     const expiredRooms = appState.rooms.filter((room) => {
       if (room.status === "expired" || room.disableExpiration) return false;
       const lastActivity = room.lastMessageAt || room.createdAt;
@@ -10652,6 +10825,23 @@
     APP_ROOT.addEventListener("compositionend", onRootCompositionEnd);
     APP_ROOT.addEventListener("change", onRootChange);
     APP_ROOT.addEventListener("submit", onRootSubmit);
+    if (!runtime.pwa.listenersBound) {
+      window.addEventListener("beforeinstallprompt", (event) => {
+        event.preventDefault();
+        runtime.pwa.deferredPrompt = event;
+        syncPwaInstallState({ render: true });
+      });
+      window.addEventListener("appinstalled", () => {
+        runtime.pwa.deferredPrompt = null;
+        runtime.pwa.installed = true;
+        pushToast("pwaInstalledToastTitle", "pwaInstalledToastCopy");
+        syncPwaInstallState({ render: true });
+      });
+      window.matchMedia?.("(display-mode: standalone)")?.addEventListener?.("change", () => {
+        syncPwaInstallState({ render: true });
+      });
+      runtime.pwa.listenersBound = true;
+    }
     syncPushPermissionState();
     if ("serviceWorker" in navigator && !runtime.push.swMessageBound) {
       navigator.serviceWorker.addEventListener("message", (event) => {
@@ -10689,6 +10879,7 @@
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) {
         syncPushPermissionState();
+        syncPwaInstallState();
         markUserPresence(uiState.activeRoomId);
         checkRoomExpirations();
         cleanupExpiredChatMedia();
@@ -10844,6 +11035,7 @@
       runtime.push.token = cachedPushRegistration.token;
       runtime.push.tokenUserId = cachedPushRegistration.userId;
       syncPushPermissionState();
+      syncPwaInstallState();
       consumePushNavigationFromLocation();
       restoreAutoLoginSession({ clearOnMissing: false });
       const currentUser = getCurrentUser();
@@ -10856,6 +11048,13 @@
       }
 
       bindGlobalListeners();
+      try {
+        await registerPushServiceWorker();
+        runtime.pwa.swRegistered = true;
+      } catch (error) {
+        runtime.pwa.swRegistered = false;
+        console.warn("[pwa] service worker registration failed", error);
+      }
       initRealtimeSync();
       startRuntimeLoops();
       checkRoomExpirations();

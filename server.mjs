@@ -25,6 +25,7 @@ const FIREBASE_VAPID_KEY_FALLBACK = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTt
 const FIREBASE_WEB_CONFIG_JSON = process.env.FIREBASE_WEB_CONFIG_JSON || JSON.stringify(FIREBASE_WEB_CONFIG_FALLBACK);
 const FIREBASE_VAPID_KEY = process.env.FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY_FALLBACK;
 const FIREBASE_SERVICE_ACCOUNT_PATH = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "";
+const ROOM_AUTO_EXPIRATION_ENABLED = false;
 const TYPING_SIGNAL_TTL_MS = 4500;
 const PRESENCE_SIGNAL_TTL_MS = 2 * 60 * 1000;
 const ALLOWED_LANGUAGES = new Set(["ko", "en", "vi"]);
@@ -45,14 +46,19 @@ const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
 };
 
 const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/index.html", "index.html"],
+  ["/manifest.json", "manifest.json"],
   ["/styles.css", "styles.css"],
   ["/app.js", "app.js"],
   ["/firebase-messaging-sw.js", "firebase-messaging-sw.runtime.js"],
+  ["/icons/icon-192.png", path.join("icons", "icon-192.png")],
+  ["/icons/icon-512.png", path.join("icons", "icon-512.png")],
+  ["/icons/apple-touch-icon.png", path.join("icons", "apple-touch-icon.png")],
 ]);
 
 let serverState = await loadServerState();
@@ -1374,9 +1380,9 @@ function sanitizeSharedState(state) {
       return {
         ...room,
         title: normalizeDisplayText(room.title),
-        disableExpiration: persistent,
-        status: persistent && room.status === "expired" ? "active" : room.status,
-        expiredAt: persistent ? null : room.expiredAt || null,
+        disableExpiration: ROOM_AUTO_EXPIRATION_ENABLED ? persistent : true,
+        status: !ROOM_AUTO_EXPIRATION_ENABLED || (persistent && room.status === "expired") ? "active" : room.status,
+        expiredAt: ROOM_AUTO_EXPIRATION_ENABLED && !persistent ? room.expiredAt || null : null,
         participants,
         accessByUser: filterRecordByAllowedKeys(room.accessByUser, userIds),
         unreadByUser: filterRecordByAllowedKeys(room.unreadByUser, userIds),
@@ -1424,6 +1430,9 @@ function isDemoRoom(room) {
 }
 
 function shouldDiscardRoom(room) {
+  if (!ROOM_AUTO_EXPIRATION_ENABLED) {
+    return false;
+  }
   return room?.status === "expired" && !(room?.messages || []).some((message) => message.kind === "user");
 }
 
