@@ -57,7 +57,7 @@
   const MEDIA_DB_NAME = "transchat-media-v1";
   const MEDIA_DB_STORE = "chat-media";
 
-  const APP_ROOT = document.getElementById("app");
+  const APP_ROOT = ensureAppRoot();
   const runtime = {
     clientId: `client-${Math.random().toString(36).slice(2, 10)}`,
     videoUrls: new Map(),
@@ -106,6 +106,50 @@
       checkedAt: 0,
     },
   };
+
+  function ensureAppRoot() {
+    const existing = document.getElementById("app");
+    if (existing instanceof HTMLElement) {
+      return existing;
+    }
+    const fallbackRoot = document.createElement("div");
+    fallbackRoot.id = "app";
+    document.body.appendChild(fallbackRoot);
+    return fallbackRoot;
+  }
+
+  function escapeFallbackHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function renderBootstrapFallback(error, phase = "bootstrap") {
+    if (!(APP_ROOT instanceof HTMLElement)) return;
+    const message = String(error?.message || error || "Unknown error");
+    APP_ROOT.innerHTML = `
+      <main style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#f5f7fb;color:#10203a;font-family:system-ui,sans-serif;">
+        <section style="width:min(420px,100%);padding:24px;border-radius:20px;background:#fff;border:1px solid rgba(16,32,58,.08);box-shadow:0 18px 40px rgba(16,32,58,.08);">
+          <h1 style="margin:0 0 8px;font-size:1.15rem;">TRANSCHAT</h1>
+          <p style="margin:0 0 10px;font-size:.95rem;font-weight:600;">앱을 불러오지 못했습니다.</p>
+          <p style="margin:0 0 16px;font-size:.86rem;color:#5c6c84;">콘솔을 확인한 뒤 다시 시도해 주세요.</p>
+          <div style="padding:12px 14px;border-radius:14px;background:#f7f9fc;border:1px solid rgba(16,32,58,.08);font-size:.78rem;line-height:1.5;word-break:break-word;">
+            <strong>${escapeFallbackHtml(phase)}</strong><br />
+            ${escapeFallbackHtml(message)}
+          </div>
+          <button type="button" onclick="window.location.reload()" style="margin-top:16px;width:100%;height:44px;border:none;border-radius:14px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer;">다시 시도</button>
+        </section>
+      </main>
+    `;
+  }
+
+  function reportBootstrapError(error, phase = "bootstrap") {
+    console.error(`[transchat] ${phase}:failed`, error);
+    renderBootstrapFallback(error, phase);
+  }
 
   const uiState = {
     activeRoomId: null,
@@ -195,6 +239,9 @@
   const DEFAULT_PROFILE_IMAGE =
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' rx='28' fill='%23eef3fb'/%3E%3Ccircle cx='48' cy='35' r='18' fill='%2398a8c0'/%3E%3Cpath d='M20 82c4-16 16-24 28-24s24 8 28 24' fill='%2398a8c0'/%3E%3C/svg%3E";
 
+  // Keep dictionary containers defined before any extension block so startup never fails on first paint.
+  const DICTIONARY = { ko: {}, en: {}, vi: {} };
+
   Object.assign(DICTIONARY.ko, {
     presenceRecentSeen: "최근 접속",
     presenceHoursAgo: "{count}시간 전 접속",
@@ -245,9 +292,9 @@
   const DEMO_ROOM_TITLES = new Set(["Global Lounge", "Weekend Passport", "Night Shift Ideas"]);
   const PERSISTENT_ROOM_TITLE_KEYS = new Set(["호아와현태", "호아와현태의방"]);
 
-  const DICTIONARY = {};
+  // Base dictionary content is assigned after the early extension blocks above.
 
-  DICTIONARY.ko = {
+  DICTIONARY.ko = { ...DICTIONARY.ko,
     appSubtitle: "한국어 중심의 실시간 다국어 채팅 프로토타입",
     landingEyebrow: "한국어 기본 UI",
     landingTitle: "TRANSCHAT",
@@ -467,7 +514,7 @@
     remainingSeconds: "{count}초",
   };
 
-  DICTIONARY.en = {
+  DICTIONARY.en = { ...DICTIONARY.en,
     appSubtitle: "Korean-first multilingual chat prototype",
     landingEyebrow: "Default UI in Korean",
     landingTitle: "TRANSCHAT",
@@ -687,7 +734,7 @@
     remainingSeconds: "{count} sec",
   };
 
-  DICTIONARY.vi = {
+  DICTIONARY.vi = { ...DICTIONARY.vi,
     appSubtitle: "Nguyên mẫu chat đa ngôn ngữ ưu tiên giao diện Hàn Quốc",
     landingEyebrow: "Giao diện mặc định là tiếng Hàn",
     landingTitle: "TRANSCHAT",
@@ -1041,10 +1088,21 @@
     },
   };
 
-  let appState = loadState();
-  ensureSystemAccounts();
-  syncUsageWindows();
-  syncUserAlertState();
+  let appState = createInitialState();
+  try {
+    console.info("[transchat] bootstrap:state-load:start");
+    appState = loadState();
+    ensureSystemAccounts();
+    syncUsageWindows();
+    syncUserAlertState();
+    console.info("[transchat] bootstrap:state-load:complete", {
+      users: (appState.users || []).length,
+      rooms: (appState.rooms || []).length,
+      invites: (appState.invites || []).length,
+    });
+  } catch (error) {
+    reportBootstrapError(error, "state-load");
+  }
 
   Object.assign(DICTIONARY.ko, {
     tabFriends: "연결",
@@ -1497,6 +1555,8 @@
     planYearlyCopySecondary: "De van hanh on dinh, tu dong hoa qua muc hoac lam dung co the bi gioi han.",
     planPremiumGuardCopy: "De van hanh on dinh, tu dong hoa qua muc hoac lam dung co the bi gioi han.",
   });
+
+  console.info("[transchat] dictionary:init:complete", Object.keys(DICTIONARY));
 
   function loadState() {
     cleanupLegacyBrowserStorage();
@@ -4002,18 +4062,24 @@
   }
 
   function render() {
-    if (runtime.compositionActive) {
-      runtime.pendingRenderWhileComposing = true;
-      return;
+    try {
+      console.debug("[transchat] render:start");
+      if (runtime.compositionActive) {
+        runtime.pendingRenderWhileComposing = true;
+        return;
+      }
+      const focusState = captureFocusState();
+      const chatScrollState = captureChatScrollState();
+      const surfaceScrollState = captureSurfaceScrollState();
+      applyTheme();
+      const currentUser = getCurrentUser();
+      document.documentElement.lang = getUiLanguage();
+      patchRootHtml(currentUser ? renderShellMobile(currentUser) : renderLandingEnhancedV2());
+      bindPostRender(focusState, chatScrollState, surfaceScrollState);
+      console.debug("[transchat] render:complete");
+    } catch (error) {
+      reportBootstrapError(error, "render");
     }
-    const focusState = captureFocusState();
-    const chatScrollState = captureChatScrollState();
-    const surfaceScrollState = captureSurfaceScrollState();
-    applyTheme();
-    const currentUser = getCurrentUser();
-    document.documentElement.lang = getUiLanguage();
-    patchRootHtml(currentUser ? renderShellMobile(currentUser) : renderLandingEnhancedV2());
-    bindPostRender(focusState, chatScrollState, surfaceScrollState);
   }
 
   function renderLanding() {
@@ -9834,23 +9900,40 @@
     }, CONFIG.mediaCleanupIntervalMs);
   }
 
-  restoreAutoLoginSession({ clearOnMissing: false });
-  const currentUser = getCurrentUser();
-  if (currentUser) {
-    uiState.activeRoomId = currentUser.currentRoomId || null;
-    uiState.directoryTab = "chat";
-    uiState.chatDetailsOpen = false;
-    uiState.attachmentMenuOpen = false;
-    markUserPresence(uiState.activeRoomId);
+  async function bootApplication() {
+    try {
+      console.info("[transchat] bootstrap:start");
+      restoreAutoLoginSession({ clearOnMissing: false });
+      const currentUser = getCurrentUser();
+      if (currentUser) {
+        uiState.activeRoomId = currentUser.currentRoomId || null;
+        uiState.directoryTab = "chat";
+        uiState.chatDetailsOpen = false;
+        uiState.attachmentMenuOpen = false;
+        markUserPresence(uiState.activeRoomId);
+      }
+
+      bindGlobalListeners();
+      initRealtimeSync();
+      startRuntimeLoops();
+      checkRoomExpirations();
+      cleanupExpiredChatMedia();
+      refreshStorageEstimate();
+      refreshBackendStatus();
+      console.info("[transchat] bootstrap:render");
+      render();
+      await bootstrapServerState();
+      console.info("[transchat] bootstrap:complete");
+    } catch (error) {
+      reportBootstrapError(error, "bootstrap");
+    }
   }
 
-  bindGlobalListeners();
-  initRealtimeSync();
-  startRuntimeLoops();
-  checkRoomExpirations();
-  cleanupExpiredChatMedia();
-  refreshStorageEstimate();
-  refreshBackendStatus();
-  render();
-  bootstrapServerState();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      bootApplication();
+    }, { once: true });
+  } else {
+    bootApplication();
+  }
 })();
