@@ -444,6 +444,13 @@ body[data-theme="dark"] .metric {
   box-shadow: var(--shadow);
 }
 
+.brand-chip-button {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
 .brand-mark,
 .avatar {
   width: 38px;
@@ -921,6 +928,16 @@ body[data-theme="dark"] .metric {
   line-height: 1.5;
 }
 
+.typing-bubble.compact {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 0.76rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .message-row.mine .bubble {
   background: linear-gradient(135deg, rgba(28, 102, 242, 0.16), rgba(28, 102, 242, 0.08)), var(--surface-alt);
   border-color: rgba(28, 102, 242, 0.16);
@@ -1022,11 +1039,14 @@ body[data-theme="dark"] .metric {
 .message-footer {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
   padding: 0 6px;
   color: var(--text-faint);
   font-size: 0.78rem;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .text-button {
@@ -1039,6 +1059,33 @@ body[data-theme="dark"] .metric {
   background: transparent;
   color: var(--accent-strong);
   border: 1px solid var(--line);
+}
+
+.message-footer > span,
+.message-footer > button {
+  flex: 0 0 auto;
+}
+
+.message-footer .text-button {
+  flex: 0 1 auto;
+  min-height: 22px;
+  padding: 0 8px;
+  line-height: 1;
+  font-size: 0.72rem;
+  max-width: 82px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-meta-pill {
+  min-width: 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  font-size: 0.74rem;
+  line-height: 1;
 }
 
 .composer {
@@ -2010,6 +2057,11 @@ body[data-theme="dark"] .mobile-topbar {
   box-shadow: none;
 }
 
+.brand-chip-button.brand-chip.compact {
+  padding: 6px 4px;
+  margin: -6px -4px;
+}
+
 .brand-chip.compact .brand-mark,
 .profile-chip.compact .avatar {
   width: 34px;
@@ -2601,6 +2653,19 @@ body[data-theme="dark"] .mobile-chat-header {
 
 .mobile-chat-room .message-footer {
   font-size: 0.68rem;
+}
+
+.typing-slot {
+  min-height: 38px;
+  padding: 4px 12px 6px;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.typing-slot:not(.active) .typing-bubble {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .mobile-composer {

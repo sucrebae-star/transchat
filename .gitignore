@@ -1,2 +1,4 @@
 .env
 transchat-server-state.json
+transchat-push-tokens.json
+*adminsdk*.json

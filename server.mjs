@@ -1,16 +1,21 @@
 import { createServer } from "node:http";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SERVER_STATE_FILE = path.join(__dirname, "transchat-server-state.json");
+const PUSH_TOKEN_STATE_FILE = path.join(__dirname, "transchat-push-tokens.json");
 const STATE_SCHEMA_VERSION = 2;
+const PUSH_TOKEN_SCHEMA_VERSION = 1;
 
 const PORT = Number(process.env.PORT || 3000);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_TRANSLATION_MODEL || "gpt-5-mini";
+const FIREBASE_WEB_CONFIG_JSON = process.env.FIREBASE_WEB_CONFIG_JSON || "";
+const FIREBASE_VAPID_KEY = process.env.FIREBASE_VAPID_KEY || "";
+const FIREBASE_SERVICE_ACCOUNT_PATH = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "";
 const TYPING_SIGNAL_TTL_MS = 4500;
 const PRESENCE_SIGNAL_TTL_MS = 2 * 60 * 1000;
 const ALLOWED_LANGUAGES = new Set(["ko", "en", "vi"]);
@@ -38,13 +43,16 @@ const STATIC_FILES = new Map([
   ["/index.html", "index.html"],
   ["/styles.css", "styles.css"],
   ["/app.js", "app.js"],
+  ["/firebase-messaging-sw.js", "firebase-messaging-sw.runtime.js"],
 ]);
 
 let serverState = await loadServerState();
+let pushTokenState = await loadPushTokenState();
 const sseClients = new Set();
 const typingSignals = new Map();
 const presenceSignals = new Map();
 const translationCache = new Map();
+let firebaseMessagingPromise = null;
 let lastTranslationError = null;
 let lastTranslationErrorDetail = null;
 
@@ -99,6 +107,22 @@ const server = createServer(async (req, res) => {
       lastTranslationError,
       lastTranslationErrorDetail,
     });
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/push/config") {
+    return handlePushConfig(req, res);
+  }
+
+  if (req.method === "POST" && requestUrl.pathname === "/api/push/register") {
+    return handlePushRegister(req, res);
+  }
+
+  if (req.method === "POST" && requestUrl.pathname === "/api/push/unregister") {
+    return handlePushUnregister(req, res);
+  }
+
+  if (req.method === "POST" && requestUrl.pathname === "/api/push/send-test") {
+    return handlePushSendTest(req, res);
   }
 
   if (req.method === "POST" && requestUrl.pathname === "/api/translate") {
@@ -193,6 +217,101 @@ async function handleTranslate(req, res) {
   }
 }
 
+async function handlePushConfig(_req, res) {
+  const clientConfig = getFirebaseClientConfig();
+  return sendJson(res, 200, {
+    enabled: Boolean(clientConfig && FIREBASE_VAPID_KEY),
+    webConfig: clientConfig,
+    vapidKey: FIREBASE_VAPID_KEY || "",
+  });
+}
+
+async function handlePushRegister(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const userId = String(body?.userId || "").trim();
+    const token = String(body?.token || "").trim();
+    const platform = String(body?.platform || "web").trim() || "web";
+
+    if (!userId || !token) {
+      return sendJson(res, 400, { error: "invalid_push_registration" });
+    }
+
+    if (!serverState?.users?.some((user) => user.id === userId)) {
+      return sendJson(res, 404, { error: "user_not_found" });
+    }
+
+    upsertPushToken({ userId, token, platform });
+    await savePushTokenState(pushTokenState);
+    return sendJson(res, 200, { ok: true });
+  } catch (error) {
+    console.error("[push-register]", error);
+    return sendJson(res, 500, { error: "push_register_failed" });
+  }
+}
+
+async function handlePushUnregister(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const userId = String(body?.userId || "").trim();
+    const token = String(body?.token || "").trim();
+    if (!userId && !token) {
+      return sendJson(res, 400, { error: "invalid_push_unregistration" });
+    }
+
+    const changed = removePushToken({ userId, token });
+    if (changed) {
+      await savePushTokenState(pushTokenState);
+    }
+    return sendJson(res, 200, { ok: true, removed: changed });
+  } catch (error) {
+    console.error("[push-unregister]", error);
+    return sendJson(res, 500, { error: "push_unregister_failed" });
+  }
+}
+
+async function handlePushSendTest(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const userId = String(body?.userId || "").trim();
+    const type = String(body?.type || "message").trim().toLowerCase();
+
+    if (!userId || !["message", "invite"].includes(type)) {
+      return sendJson(res, 400, { error: "invalid_push_test_request" });
+    }
+
+    const targetUser = (serverState?.users || []).find((user) => user.id === userId);
+    if (!targetUser) {
+      return sendJson(res, 404, { error: "user_not_found" });
+    }
+
+    const tokenEntries = getPushTokensForUser(userId);
+    if (!tokenEntries.length) {
+      return sendJson(res, 409, {
+        error: "push_token_not_found",
+        message: "No push token is registered for this user.",
+      });
+    }
+
+    const payload = buildTestPushPayload(userId, type);
+    const result = await sendPushToUser(userId, payload);
+    console.info("[push-test]", { userId, type, attempted: result.attempted, delivered: result.delivered });
+
+    return sendJson(res, 200, {
+      ok: true,
+      type,
+      userId,
+      attempted: result.attempted,
+      delivered: result.delivered,
+      roomId: payload.roomId || "",
+      inviteId: payload.inviteId || "",
+    });
+  } catch (error) {
+    console.error("[push-test]", error);
+    return sendJson(res, 500, { error: "push_test_failed" });
+  }
+}
+
 async function handleStateUpdate(req, res) {
   try {
     const body = await readJsonBody(req);
@@ -203,18 +322,23 @@ async function handleStateUpdate(req, res) {
       return sendJson(res, 400, { error: "invalid_state" });
     }
 
+    const previousState = serverState;
     const normalizedState = mergeStates(serverState, {
       ...nextState,
       updatedAt: Number(nextState.updatedAt || Date.now()),
     });
 
     serverState = normalizedState;
+    prunePushTokensForDeletedUsers(serverState);
     await saveServerState(normalizedState);
     broadcastServerEvent({
       type: "state-updated",
       sourceId,
       updatedAt: normalizedState.updatedAt,
     });
+    if (previousState) {
+      void dispatchPushNotifications(previousState, normalizedState);
+    }
 
     return sendJson(res, 200, {
       ok: true,
@@ -403,6 +527,349 @@ function mergeMessages(previousMessages, nextMessages) {
     });
 
   return [...byId.values()].sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+}
+
+function getFirebaseClientConfig() {
+  if (!FIREBASE_WEB_CONFIG_JSON) return null;
+  try {
+    const parsed = JSON.parse(FIREBASE_WEB_CONFIG_JSON);
+    if (!(parsed && typeof parsed === "object")) {
+      return null;
+    }
+    return {
+      apiKey: String(parsed.apiKey || "").trim(),
+      authDomain: String(parsed.authDomain || "").trim(),
+      projectId: String(parsed.projectId || "").trim(),
+      storageBucket: String(parsed.storageBucket || "").trim(),
+      messagingSenderId: String(parsed.messagingSenderId || "").trim(),
+      appId: String(parsed.appId || "").trim(),
+      measurementId: String(parsed.measurementId || "").trim(),
+    };
+  } catch (error) {
+    console.warn("[push-config] Invalid FIREBASE_WEB_CONFIG_JSON", error);
+    return null;
+  }
+}
+
+async function resolveFirebaseServiceAccountPath() {
+  if (FIREBASE_SERVICE_ACCOUNT_PATH) {
+    return path.isAbsolute(FIREBASE_SERVICE_ACCOUNT_PATH)
+      ? FIREBASE_SERVICE_ACCOUNT_PATH
+      : path.join(__dirname, FIREBASE_SERVICE_ACCOUNT_PATH);
+  }
+
+  try {
+    const entries = await readdir(__dirname);
+    const match = entries.find((entry) => /firebase.*adminsdk.*\.json$/i.test(entry) || /adminsdk.*\.json$/i.test(entry));
+    return match ? path.join(__dirname, match) : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+async function getFirebaseMessagingClient() {
+  if (firebaseMessagingPromise) {
+    return firebaseMessagingPromise;
+  }
+
+  firebaseMessagingPromise = (async () => {
+    const serviceAccountPath = await resolveFirebaseServiceAccountPath();
+    if (!serviceAccountPath) {
+      console.warn("[push] No Firebase service account path found.");
+      return null;
+    }
+
+    try {
+      const serviceAccountRaw = await readFile(serviceAccountPath, "utf8");
+      const serviceAccount = JSON.parse(serviceAccountRaw);
+      const adminModule = await import("firebase-admin");
+      const admin = adminModule.default || adminModule;
+      if (!admin.apps.length) {
+        admin.initializeApp({
+          credential: admin.credential.cert(serviceAccount),
+        });
+      }
+      return admin.messaging();
+    } catch (error) {
+      console.error("[push] Firebase Admin init failed", error);
+      return null;
+    }
+  })();
+
+  return firebaseMessagingPromise;
+}
+
+function sanitizePushTokenState(parsed) {
+  const byToken = new Map();
+  (parsed?.tokens || []).forEach((entry) => {
+    const token = String(entry?.token || "").trim();
+    const userId = String(entry?.userId || "").trim();
+    if (!token || !userId) return;
+    const previous = byToken.get(token);
+    const nextEntry = {
+      token,
+      userId,
+      platform: String(entry?.platform || "web").trim() || "web",
+      updatedAt: Number(entry?.updatedAt || Date.now()),
+    };
+    if (!previous || nextEntry.updatedAt >= previous.updatedAt) {
+      byToken.set(token, nextEntry);
+    }
+  });
+
+  return {
+    version: PUSH_TOKEN_SCHEMA_VERSION,
+    tokens: [...byToken.values()].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)),
+  };
+}
+
+async function loadPushTokenState() {
+  try {
+    const raw = await readFile(PUSH_TOKEN_STATE_FILE, "utf8");
+    return sanitizePushTokenState(JSON.parse(raw));
+  } catch (error) {
+    return {
+      version: PUSH_TOKEN_SCHEMA_VERSION,
+      tokens: [],
+    };
+  }
+}
+
+async function savePushTokenState(state) {
+  await writeFile(PUSH_TOKEN_STATE_FILE, JSON.stringify(sanitizePushTokenState(state)), "utf8");
+}
+
+function upsertPushToken(entry) {
+  const nextEntry = {
+    token: String(entry?.token || "").trim(),
+    userId: String(entry?.userId || "").trim(),
+    platform: String(entry?.platform || "web").trim() || "web",
+    updatedAt: Date.now(),
+  };
+  if (!nextEntry.token || !nextEntry.userId) return false;
+
+  const filtered = (pushTokenState?.tokens || []).filter((item) => item.token !== nextEntry.token);
+  filtered.unshift(nextEntry);
+  pushTokenState = sanitizePushTokenState({
+    version: PUSH_TOKEN_SCHEMA_VERSION,
+    tokens: filtered,
+  });
+  return true;
+}
+
+function removePushToken({ userId = "", token = "" } = {}) {
+  const nextUserId = String(userId || "").trim();
+  const nextToken = String(token || "").trim();
+  const before = (pushTokenState?.tokens || []).length;
+  pushTokenState = sanitizePushTokenState({
+    version: PUSH_TOKEN_SCHEMA_VERSION,
+    tokens: (pushTokenState?.tokens || []).filter((entry) => {
+      if (nextToken && entry.token === nextToken) return false;
+      if (nextUserId && entry.userId === nextUserId && !nextToken) return false;
+      return true;
+    }),
+  });
+  return (pushTokenState?.tokens || []).length !== before;
+}
+
+function prunePushTokensForDeletedUsers(state) {
+  const activeUserIds = new Set((state?.users || []).map((user) => user.id));
+  const before = (pushTokenState?.tokens || []).length;
+  pushTokenState = sanitizePushTokenState({
+    version: PUSH_TOKEN_SCHEMA_VERSION,
+    tokens: (pushTokenState?.tokens || []).filter((entry) => activeUserIds.has(entry.userId)),
+  });
+  if ((pushTokenState?.tokens || []).length !== before) {
+    void savePushTokenState(pushTokenState);
+  }
+}
+
+function getPushTokensForUser(userId) {
+  return (pushTokenState?.tokens || []).filter((entry) => entry.userId === userId);
+}
+
+function collectNewUserMessages(previousState, nextState) {
+  const previousRoomMap = new Map((previousState?.rooms || []).map((room) => [room.id, room]));
+  const events = [];
+
+  (nextState?.rooms || []).forEach((room) => {
+    const previousRoom = previousRoomMap.get(room.id);
+    const previousMessageIds = new Set((previousRoom?.messages || []).map((message) => message.id));
+    (room.messages || []).forEach((message) => {
+      if (message?.kind !== "user" || previousMessageIds.has(message.id)) return;
+      events.push({ room, message });
+    });
+  });
+
+  return events;
+}
+
+function collectNewPendingInvites(previousState, nextState) {
+  const previousInviteMap = new Map((previousState?.invites || []).map((invite) => [invite.id, invite]));
+  return (nextState?.invites || []).filter((invite) => {
+    const previousInvite = previousInviteMap.get(invite.id);
+    if (!previousInvite) {
+      return invite.status === "pending";
+    }
+    return previousInvite.status !== "pending" && invite.status === "pending";
+  });
+}
+
+function buildPushMessagePreview(message) {
+  const originalText = String(message?.originalText || "").trim();
+  if (originalText) {
+    return originalText.length > 80 ? `${originalText.slice(0, 77)}...` : originalText;
+  }
+  if (message?.media?.kind === "image") return "사진을 보냈어요";
+  if (message?.media?.kind === "video") return "영상을 보냈어요";
+  if (message?.media?.kind === "file") return "파일을 보냈어요";
+  return "새 메시지가 도착했어요";
+}
+
+function normalizePushPayload(payload) {
+  return Object.fromEntries(
+    Object.entries(payload || {}).map(([key, value]) => [key, value == null ? "" : String(value)])
+  );
+}
+
+function isInvalidPushTokenError(error) {
+  const code = String(error?.code || error?.errorInfo?.code || "").toLowerCase();
+  return code.includes("registration-token-not-registered") || code.includes("invalid-registration-token");
+}
+
+function getPushTestRoomForUser(userId) {
+  const rooms = (serverState?.rooms || []).filter((room) => room?.status === "active");
+  return rooms.find((room) => deriveRoomParticipantIds(room, serverState?.users || []).includes(userId)) || null;
+}
+
+function getPushTestInviteForUser(userId) {
+  return (serverState?.invites || []).find((invite) => invite.inviteeId === userId && invite.status === "pending") || null;
+}
+
+function buildTestPushPayload(userId, type) {
+  const now = Date.now();
+  if (type === "invite") {
+    const invite = getPushTestInviteForUser(userId);
+    return {
+      type: "invite",
+      inviteId: invite?.id || `test-invite-${now}`,
+      senderId: "system-test",
+      senderName: "TRANSCHAT",
+      previewText: invite?.previewRoomTitle || "테스트 초대 알림입니다.",
+      createdAt: now,
+      title: "새 초대",
+      body: "TRANSCHAT님이 채팅 초대를 보냈어요",
+      tag: invite?.id ? `invite:${invite.id}` : `invite:test:${userId}`,
+      clickPath: "/?pushType=invite",
+    };
+  }
+
+  const room = getPushTestRoomForUser(userId);
+  return {
+    type: "message",
+    roomId: room?.id || "",
+    senderId: "system-test",
+    senderName: "TRANSCHAT",
+    previewText: "테스트 푸시 알림입니다.",
+    createdAt: now,
+    title: "새 메시지",
+    body: "TRANSCHAT: 테스트 푸시 알림입니다.",
+    tag: room?.id ? `room:${room.id}` : `room:test:${userId}`,
+    clickPath: room?.id ? `/?pushType=message&roomId=${encodeURIComponent(room.id)}` : "/",
+  };
+}
+
+async function sendPushToUser(userId, payload) {
+  const tokens = getPushTokensForUser(userId);
+  if (!tokens.length) {
+    return {
+      attempted: 0,
+      delivered: 0,
+    };
+  }
+
+  const messaging = await getFirebaseMessagingClient();
+  if (!messaging) {
+    return {
+      attempted: tokens.length,
+      delivered: 0,
+    };
+  }
+
+  let delivered = 0;
+
+  for (const entry of tokens) {
+    try {
+      await messaging.send({
+        token: entry.token,
+        data: normalizePushPayload(payload),
+        webpush: {
+          headers: {
+            Urgency: "high",
+            TTL: "120",
+          },
+        },
+      });
+      delivered += 1;
+    } catch (error) {
+      console.error("[push-send]", error);
+      if (isInvalidPushTokenError(error)) {
+        removePushToken({ token: entry.token });
+        await savePushTokenState(pushTokenState);
+      }
+    }
+  }
+
+  return {
+    attempted: tokens.length,
+    delivered,
+  };
+}
+
+async function dispatchPushNotifications(previousState, nextState) {
+  const clientConfig = getFirebaseClientConfig();
+  if (!(clientConfig && FIREBASE_VAPID_KEY)) {
+    return;
+  }
+
+  const messageEvents = collectNewUserMessages(previousState, nextState);
+  const inviteEvents = collectNewPendingInvites(previousState, nextState);
+
+  for (const event of messageEvents) {
+    const sender = (nextState?.users || []).find((user) => user.id === event.message.senderId);
+    const recipients = deriveRoomParticipantIds(event.room, nextState?.users || []).filter((userId) => userId !== event.message.senderId);
+    const previewText = buildPushMessagePreview(event.message);
+    for (const recipientId of recipients) {
+      await sendPushToUser(recipientId, {
+        type: "message",
+        roomId: event.room.id,
+        senderId: event.message.senderId,
+        senderName: sender?.name || sender?.loginId || "알 수 없는 사용자",
+        previewText,
+        createdAt: event.message.createdAt,
+        title: "새 메시지",
+        body: `${sender?.name || sender?.loginId || "알 수 없는 사용자"}: ${previewText}`,
+        tag: `room:${event.room.id}`,
+        clickPath: `/?pushType=message&roomId=${encodeURIComponent(event.room.id)}`,
+      });
+    }
+  }
+
+  for (const invite of inviteEvents) {
+    const inviter = (nextState?.users || []).find((user) => user.id === invite.inviterId);
+    await sendPushToUser(invite.inviteeId, {
+      type: "invite",
+      inviteId: invite.id,
+      senderId: invite.inviterId,
+      senderName: inviter?.name || inviter?.loginId || "알 수 없는 사용자",
+      previewText: invite.previewRoomTitle || "",
+      createdAt: invite.createdAt,
+      title: "새 초대",
+      body: `${inviter?.name || inviter?.loginId || "알 수 없는 사용자"}님이 채팅 초대를 보냈어요`,
+      tag: `invite:${invite.id}`,
+      clickPath: "/?pushType=invite",
+    });
+  }
 }
 
 async function handleTypingUpdate(req, res) {
@@ -900,9 +1367,17 @@ function sanitizeSharedState(state) {
       currentRoomId: roomIds.has(user.currentRoomId) ? user.currentRoomId : null,
     })),
     invites: (state.invites || [])
-      .filter((invite) => roomIds.has(invite.roomId) && userIds.has(invite.inviterId) && userIds.has(invite.inviteeId))
+      .filter((invite) => {
+        const hasUsers = userIds.has(invite.inviterId) && userIds.has(invite.inviteeId);
+        if (!hasUsers) return false;
+        if (invite?.type === "connection") return true;
+        return roomIds.has(invite.roomId);
+      })
       .map((invite) => ({
         ...invite,
+        roomId: roomIds.has(invite?.roomId) ? invite.roomId : null,
+        type: invite?.type === "connection" ? "connection" : "room",
+        previewRoomTitle: typeof invite?.previewRoomTitle === "string" ? invite.previewRoomTitle : "",
         status: ["pending", "accepted", "rejected"].includes(invite?.status) ? invite.status : "pending",
         respondedAt: Number(invite?.respondedAt || 0) || null,
         seenByInvitee: Boolean(invite?.seenByInvitee),

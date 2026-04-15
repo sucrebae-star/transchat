@@ -5,7 +5,9 @@
   const AUTO_LOGIN_KEY = "transchat-auto-login-v1";
   const REMEMBERED_LOGIN_ID_KEY = "transchat-remembered-login-id-v1";
   const LANDING_UI_KEY = "transchat-landing-ui-v1";
-  const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY]);
+  const PUSH_TOKEN_CACHE_KEY = "transchat-push-token-v1";
+  const PUSH_TOKEN_USER_KEY = "transchat-push-user-v1";
+  const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY, PUSH_TOKEN_CACHE_KEY, PUSH_TOKEN_USER_KEY]);
   const CONFIG = {
     roomExpireMs: 30 * 60 * 1000,
     passwordAttemptLimit: 5,
@@ -39,6 +41,10 @@
     stateApiPath: "/api/state",
     eventsApiPath: "/api/events",
     typingApiPath: "/api/typing",
+    pushConfigApiPath: "/api/push/config",
+    pushRegisterApiPath: "/api/push/register",
+    pushUnregisterApiPath: "/api/push/unregister",
+    pushTestApiPath: "/api/push/send-test",
     // Private test gate for now; replace with provider-backed auth when Google or magic-link login is added.
     accessGateMode: "whitelist",
   };
@@ -111,6 +117,22 @@
       lastTranslationError: null,
       lastTranslationErrorDetail: null,
       checkedAt: 0,
+    },
+    push: {
+      supported: typeof window !== "undefined" && "Notification" in window && "serviceWorker" in navigator && "PushManager" in window,
+      permission: typeof Notification !== "undefined" ? Notification.permission : "unsupported",
+      config: null,
+      serviceWorkerRegistration: null,
+      messaging: null,
+      token: "",
+      tokenUserId: "",
+      initialized: false,
+      initPromise: null,
+      foregroundBound: false,
+      status: "idle",
+      lastError: "",
+      swMessageBound: false,
+      pendingNavigation: null,
     },
   };
 
@@ -260,6 +282,31 @@
     mediaExpiredCopy: "이 미디어는 업로드 후 24시간이 지나 자동 삭제되었습니다.",
     mediaExpiresIn: "만료: {time}",
     mediaExpiresAfterUpload: "업로드 후 {hours}시간 뒤 자동 삭제",
+    pushSettingsTitle: "푸시 알림",
+    pushEnableButton: "푸시 알림 받기",
+    pushPermissionGranted: "알림 허용됨",
+    pushPermissionDenied: "알림 차단됨",
+    pushPermissionDefault: "알림 미설정",
+    pushPermissionUnsupported: "이 브라우저에서는 미지원",
+    pushPermissionGrantedHelp: "이 기기에서 새 메시지와 새 초대를 받을 수 있습니다.",
+    pushPermissionPendingHelp: "버튼을 눌러 새 메시지와 초대 알림을 받아보세요.",
+    pushPermissionBlockedHelp: "브라우저 설정에서 알림 권한을 직접 허용해야 합니다.",
+    pushRegisterSuccessTitle: "푸시 알림 연결 완료",
+    pushRegisterSuccessCopy: "이 기기에서 새 메시지와 초대를 받아볼 수 있습니다.",
+    pushRegisterFailedTitle: "푸시 알림 연결 실패",
+    pushRegisterFailedCopy: "Firebase 설정값과 브라우저 알림 권한을 확인해 주세요.",
+    pushTokenReady: "권한 허용 · 이 기기 토큰 등록 완료",
+    pushTokenPending: "권한은 허용됐지만 이 기기 토큰 등록이 아직 완료되지 않았습니다.",
+    pushTestMessageButton: "메시지 테스트",
+    pushTestInviteButton: "초대 테스트",
+    pushTestSuccessTitle: "테스트 푸시 전송 완료",
+    pushTestSuccessCopy: "{type} 알림을 이 기기로 전송했습니다.",
+    pushTestFailedTitle: "테스트 푸시 전송 실패",
+    pushTestFailedCopy: "권한, 토큰 등록 상태, Firebase 설정을 다시 확인해 주세요.",
+    pushToastMessageTitle: "새 메시지",
+    pushToastMessageCopy: "{name}: {preview}",
+    pushToastInviteTitle: "새 초대",
+    pushToastInviteCopy: "{name}님이 채팅 초대를 보냈어요",
   });
 
   Object.assign(DICTIONARY.en, {
@@ -273,6 +320,31 @@
     mediaExpiredCopy: "This media was automatically deleted 24 hours after upload.",
     mediaExpiresIn: "{time}",
     mediaExpiresAfterUpload: "Auto-deletes {hours} hours after upload",
+    pushSettingsTitle: "Push notifications",
+    pushEnableButton: "Enable push alerts",
+    pushPermissionGranted: "Notifications allowed",
+    pushPermissionDenied: "Notifications blocked",
+    pushPermissionDefault: "Notifications not set",
+    pushPermissionUnsupported: "Not supported on this browser",
+    pushPermissionGrantedHelp: "This device can receive new messages and invite alerts.",
+    pushPermissionPendingHelp: "Tap the button to receive new message and invite alerts.",
+    pushPermissionBlockedHelp: "Please allow notifications from your browser settings.",
+    pushRegisterSuccessTitle: "Push connected",
+    pushRegisterSuccessCopy: "This device can now receive new messages and invites.",
+    pushRegisterFailedTitle: "Push setup failed",
+    pushRegisterFailedCopy: "Please check your Firebase values and notification permissions.",
+    pushTokenReady: "Permission granted · this device token is registered",
+    pushTokenPending: "Permission is granted, but this device token is not registered yet.",
+    pushTestMessageButton: "Test message",
+    pushTestInviteButton: "Test invite",
+    pushTestSuccessTitle: "Test push sent",
+    pushTestSuccessCopy: "A {type} alert was sent to this device.",
+    pushTestFailedTitle: "Test push failed",
+    pushTestFailedCopy: "Please check notification permission, token registration, and Firebase config.",
+    pushToastMessageTitle: "New message",
+    pushToastMessageCopy: "{name}: {preview}",
+    pushToastInviteTitle: "New invite",
+    pushToastInviteCopy: "{name} sent you a chat invite",
   });
 
   Object.assign(DICTIONARY.vi, {
@@ -286,6 +358,31 @@
     mediaExpiredCopy: "Media nay da tu dong bi xoa sau 24 gio ke tu luc tai len.",
     mediaExpiresIn: "Het han: {time}",
     mediaExpiresAfterUpload: "Tu dong xoa sau {hours} gio ke tu luc tai len",
+    pushSettingsTitle: "Thong bao day",
+    pushEnableButton: "Bat thong bao day",
+    pushPermissionGranted: "Da cho phep thong bao",
+    pushPermissionDenied: "Thong bao da bi chan",
+    pushPermissionDefault: "Chua cai dat thong bao",
+    pushPermissionUnsupported: "Trinh duyet nay khong ho tro",
+    pushPermissionGrantedHelp: "Thiet bi nay co the nhan thong bao tin nhan va loi moi moi.",
+    pushPermissionPendingHelp: "Nhan nut de nhan thong bao tin nhan va loi moi moi.",
+    pushPermissionBlockedHelp: "Hay vao cai dat trinh duyet de cho phep thong bao.",
+    pushRegisterSuccessTitle: "Da ket noi thong bao day",
+    pushRegisterSuccessCopy: "Thiet bi nay da co the nhan tin nhan va loi moi moi.",
+    pushRegisterFailedTitle: "Khong the ket noi thong bao day",
+    pushRegisterFailedCopy: "Hay kiem tra cau hinh Firebase va quyen thong bao.",
+    pushTokenReady: "Da cap quyen · token thiet bi nay da duoc luu",
+    pushTokenPending: "Da cap quyen, nhung token thiet bi nay chua duoc dang ky.",
+    pushTestMessageButton: "Thu tin nhan",
+    pushTestInviteButton: "Thu loi moi",
+    pushTestSuccessTitle: "Da gui thong bao thu",
+    pushTestSuccessCopy: "Da gui thong bao {type} toi thiet bi nay.",
+    pushTestFailedTitle: "Gui thong bao thu that bai",
+    pushTestFailedCopy: "Hay kiem tra quyen thong bao, token va cau hinh Firebase.",
+    pushToastMessageTitle: "Tin nhan moi",
+    pushToastMessageCopy: "{name}: {preview}",
+    pushToastInviteTitle: "Loi moi moi",
+    pushToastInviteCopy: "{name} da gui loi moi tro chuyen",
   });
 
   const LOCALES = {
@@ -1399,6 +1496,7 @@
     translationConceptGeneral: "일반",
     translationConceptFriend: "친구",
     translationConceptLover: "연인",
+    dateYesterday: "어제",
   });
 
   Object.assign(DICTIONARY.en, {
@@ -1408,6 +1506,7 @@
     translationConceptGeneral: "Default",
     translationConceptFriend: "Friend",
     translationConceptLover: "Partner",
+    dateYesterday: "Yesterday",
   });
 
   Object.assign(DICTIONARY.vi, {
@@ -1417,6 +1516,7 @@
     translationConceptGeneral: "Thong thuong",
     translationConceptFriend: "Ban be",
     translationConceptLover: "Nguoi yeu",
+    dateYesterday: "Hom qua",
   });
 
   // Added: plan/pricing copy stays in the central dictionary so the lightweight billing preview remains localizable.
@@ -1648,6 +1748,32 @@
     } catch (error) {
       console.warn("Failed to restore remembered login id", error);
     }
+  }
+
+  function readCachedPushRegistration() {
+    try {
+      return {
+        token: localStorage.getItem(PUSH_TOKEN_CACHE_KEY) || "",
+        userId: localStorage.getItem(PUSH_TOKEN_USER_KEY) || "",
+      };
+    } catch (error) {
+      return { token: "", userId: "" };
+    }
+  }
+
+  function persistCachedPushRegistration(userId, token) {
+    if (!userId || !token) return;
+    localStorage.setItem(PUSH_TOKEN_CACHE_KEY, token);
+    localStorage.setItem(PUSH_TOKEN_USER_KEY, userId);
+    runtime.push.token = token;
+    runtime.push.tokenUserId = userId;
+  }
+
+  function clearCachedPushRegistration() {
+    localStorage.removeItem(PUSH_TOKEN_CACHE_KEY);
+    localStorage.removeItem(PUSH_TOKEN_USER_KEY);
+    runtime.push.token = "";
+    runtime.push.tokenUserId = "";
   }
 
   function createSeedState() {
@@ -2103,9 +2229,17 @@
     }));
     nextState.rooms = rooms;
     nextState.invites = (parsed.invites || [])
-      .filter((invite) => roomIds.has(invite.roomId) && userIds.has(invite.inviterId) && userIds.has(invite.inviteeId))
+      .filter((invite) => {
+        const hasUsers = userIds.has(invite.inviterId) && userIds.has(invite.inviteeId);
+        if (!hasUsers) return false;
+        if (invite?.type === "connection") return true;
+        return roomIds.has(invite.roomId);
+      })
       .map((invite) => ({
         ...invite,
+        roomId: roomIds.has(invite?.roomId) ? invite.roomId : null,
+        type: invite?.type === "connection" ? "connection" : "room",
+        previewRoomTitle: normalizeDisplayText(invite?.previewRoomTitle || ""),
         status: ["pending", "accepted", "rejected"].includes(invite?.status) ? invite.status : "pending",
         respondedAt: Number(invite?.respondedAt || 0) || null,
         seenByInvitee: Boolean(invite?.seenByInvitee),
@@ -3565,6 +3699,34 @@
     }).format(timestamp);
   }
 
+  function formatMessageMetaDate(timestamp) {
+    if (!timestamp) return "??";
+    const now = new Date();
+    const target = new Date(timestamp);
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const targetStart = new Date(target.getFullYear(), target.getMonth(), target.getDate()).getTime();
+    const diffDays = Math.round((todayStart - targetStart) / 86400000);
+
+    if (diffDays <= 0) {
+      return new Intl.DateTimeFormat(getLocale(), {
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(timestamp);
+    }
+
+    if (diffDays === 1) {
+      return t("dateYesterday");
+    }
+
+    const sameYear = target.getFullYear() === now.getFullYear();
+    return new Intl.DateTimeFormat(
+      getLocale(),
+      sameYear
+        ? { month: "long", day: "numeric" }
+        : { year: "numeric", month: "long", day: "numeric" }
+    ).format(timestamp);
+  }
+
   function formatRemaining(ms) {
     const safe = Math.max(0, ms);
     const minutes = Math.floor(safe / 60000);
@@ -3791,8 +3953,25 @@
     return appState.invites.find((invite) => {
       if (invite.status !== "pending") return false;
       if (invite.inviterId !== inviterId || invite.inviteeId !== inviteeId) return false;
-      return appState.rooms.some((room) => room.id === invite.roomId && room.status === "active");
+      if (invite.type === "connection") {
+        return true;
+      }
+      return Boolean(invite.roomId) && appState.rooms.some((room) => room.id === invite.roomId && room.status === "active");
     }) || null;
+  }
+
+  function getInviteDisplayTitle(invite) {
+    if (!invite) return "—";
+    const room = invite.roomId ? appState.rooms.find((item) => item.id === invite.roomId) : null;
+    if (room?.title) {
+      return normalizeDisplayText(room.title);
+    }
+    if (invite.previewRoomTitle) {
+      return normalizeDisplayText(invite.previewRoomTitle);
+    }
+    const inviter = appState.users.find((user) => user.id === invite.inviterId);
+    const invitee = appState.users.find((user) => user.id === invite.inviteeId);
+    return normalizeDisplayText([inviter?.name, invitee?.name].filter(Boolean).join(" - ")) || "—";
   }
 
   function getConnectionActionState(currentUser, friend) {
@@ -3847,23 +4026,47 @@
       return;
     }
 
-    const room = createConnectionInviteRoomAscii(currentUser, friend);
     const invite = {
       id: uid("invite"),
-      roomId: room.id,
+      roomId: null,
       inviterId: currentUser.id,
       inviteeId: friend.id,
+      type: "connection",
+      previewRoomTitle: normalizeDisplayText([currentUser.name, friend.name].join(" - ")),
       status: "pending",
       createdAt: Date.now(),
       respondedAt: null,
       seenByInvitee: false,
     };
     appState.invites.unshift(invite);
-    room.messages.push(systemMessage(uid("sys"), "systemUserInvited", { inviter: currentUser.name, invitee: friend.name }, Date.now()));
-    room.unreadByUser[friend.id] = (room.unreadByUser[friend.id] || 0) + 1;
     persistState();
     pushToast("toastInviteSent", "toastInviteSentCopy", { name: friend.name });
     render();
+  }
+
+  function createAcceptedConnectionRoom(inviter, invitee, createdAt = Date.now()) {
+    const title = normalizeDisplayText([inviter?.name, invitee?.name].filter(Boolean).join(" - "));
+    const room = {
+      id: uid("room"),
+      title,
+      creatorId: inviter.id,
+      password: "",
+      isProtected: false,
+      disableExpiration: isPersistentRoomTitle(title),
+      participants: [inviter.id, invitee.id],
+      accessByUser: { [inviter.id]: true, [invitee.id]: true },
+      unreadByUser: { [inviter.id]: 1, [invitee.id]: 0 },
+      lastMessageAt: createdAt,
+      createdAt,
+      status: "active",
+      expiredAt: null,
+      messages: [
+        systemMessage(uid("sys"), "systemUserJoined", { name: inviter.name }, createdAt),
+        systemMessage(uid("sys"), "systemInviteAccepted", { name: invitee.name }, createdAt),
+      ],
+    };
+    appState.rooms.unshift(room);
+    return room;
   }
 
   function createConnectionInviteRoomStable(currentUser, friend) {
@@ -4690,12 +4893,12 @@
     const displayName = normalizeDisplayText(currentUser?.name || currentUser?.loginId || "");
     return `
       <header class="topbar mobile-topbar">
-        <div class="brand-chip compact">
+        <button class="brand-chip compact brand-chip-button" type="button" data-action="go-connections">
           <div class="brand-mark">T</div>
           <div class="brand-meta">
             <strong>TRANSCHAT</strong>
           </div>
-        </div>
+        </button>
         <button class="profile-chip compact profile-chip-button" type="button" data-action="go-my-info">
           ${renderProfileImage(currentUser, "avatar avatar-image", currentUser.name)}
           <div class="profile-text">
@@ -4925,6 +5128,7 @@
               </select>
             </div>
           </div>
+          ${renderPushSettingsCard(currentUser)}
           <button class="button button-danger logout-inline-button" data-action="logout-current-user">${escapeHtml(t("logoutButton"))}</button>
         </div>
       </section>
@@ -4965,6 +5169,52 @@
               <span>${escapeHtml(t("planResetAt", { time: formatPlanResetTime(summary.nextResetAt) }))}</span>
             </div>
           `}
+      </div>
+    `;
+  }
+
+  function renderPushSettingsCard() {
+    const currentUser = getCurrentUser();
+    const pushStatus = getPushStatusMeta();
+    const permission = getPushPermissionState();
+    const disabled = permission === "unsupported";
+    const tokenRegistered = Boolean(currentUser && runtime.push.token && runtime.push.tokenUserId === currentUser.id);
+    const testDisabled = !currentUser || permission !== "granted" || !tokenRegistered;
+    const registrationStateKey = permission === "granted" ? (tokenRegistered ? "pushTokenReady" : "pushTokenPending") : "";
+    return `
+      <div class="setting-card compact">
+        <strong>${escapeHtml(t("pushSettingsTitle"))}</strong>
+        <span class="helper">${escapeHtml(t(pushStatus.stateKey))}</span>
+        ${registrationStateKey ? `<span class="helper">${escapeHtml(t(registrationStateKey))}</span>` : ""}
+        <div class="profile-edit-actions">
+          <button
+            class="button button-secondary"
+            type="button"
+            data-action="request-push-permission"
+            ${disabled ? "disabled" : ""}
+          >
+            ${escapeHtml(t("pushEnableButton"))}
+          </button>
+          <button
+            class="button button-secondary"
+            type="button"
+            data-action="send-push-test"
+            data-push-type="message"
+            ${testDisabled ? "disabled" : ""}
+          >
+            ${escapeHtml(t("pushTestMessageButton"))}
+          </button>
+          <button
+            class="button button-secondary"
+            type="button"
+            data-action="send-push-test"
+            data-push-type="invite"
+            ${testDisabled ? "disabled" : ""}
+          >
+            ${escapeHtml(t("pushTestInviteButton"))}
+          </button>
+        </div>
+        <span class="helper">${escapeHtml(t(pushStatus.helperKey))}</span>
       </div>
     `;
   }
@@ -5106,6 +5356,7 @@
         <section class="chat-scroll" id="chat-scroll">
           ${renderMessageList(room, currentUser)}
         </section>
+        ${renderTypingIndicators(room, currentUser)}
         <footer class="composer mobile-composer">${renderComposerMobileEnhanced(room)}</footer>
         ${uiState.chatDetailsOpen ? renderChatDetailsMenuMobile(room) : ""}
       </section>
@@ -5206,13 +5457,13 @@
       <main class="shell app-shell">
         <header class="topbar">
           <div class="topbar-left">
-            <div class="brand-chip">
+            <button class="brand-chip brand-chip-button" type="button" data-action="go-connections">
               <div class="brand-mark">T</div>
               <div class="brand-meta">
                 <strong>TRANSCHAT</strong>
                 <span>${escapeHtml(t("topbarStatus"))}</span>
               </div>
-            </div>
+            </button>
           </div>
           <div class="topbar-right">
             ${renderTopbarStatusBadges()}
@@ -5547,6 +5798,7 @@
             </select>
           </div>
         </div>
+        ${renderPushSettingsCard(currentUser)}
         <div class="setting-card">
           <strong>${escapeHtml(t("settingsPreferredLanguage"))}</strong>
           <div class="field" style="margin-top: 12px;">
@@ -5572,8 +5824,7 @@
           ${recent.length
             ? recent.map((invite) => {
                 const invitee = appState.users.find((user) => user.id === invite.inviteeId);
-                const room = appState.rooms.find((item) => item.id === invite.roomId);
-                return `<span>${escapeHtml(invitee?.name || "—")} · ${escapeHtml(normalizeDisplayText(room?.title || "—"))} · ${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`;
+                return `<span>${escapeHtml(invitee?.name || "—")} · ${escapeHtml(getInviteDisplayTitle(invite))} · ${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`;
               }).join("")
             : `<span>${escapeHtml(t("inviteResultEmpty"))}</span>`}
         </div>
@@ -5642,6 +5893,7 @@
         <section class="chat-scroll" id="chat-scroll">
           ${isExpired ? renderExpiredRoom() : renderMessageList(room, currentUser)}
         </section>
+        ${isExpired ? "" : renderTypingIndicators(room, currentUser)}
         ${isExpired ? "" : `<footer class="composer">${renderComposer(room, currentUser)}</footer>`}
         ${room.status === "active" && uiState.chatDetailsOpen ? renderChatDetailsPanel(room) : ""}
       </section>
@@ -5696,13 +5948,11 @@
 
   function renderMessageList(room, currentUser) {
     if (!room.messages.length) {
-      const typingIndicators = renderTypingIndicators(room, currentUser);
       return `
         <div class="empty-card">
           <h3>${escapeHtml(t("noMessagesTitle"))}</h3>
           <p>${escapeHtml(t("noMessagesCopy"))}</p>
         </div>
-        ${typingIndicators}
       `;
     }
 
@@ -5755,39 +6005,30 @@
                 ${showOriginal && visibleOriginal ? `<div class="original-copy">${escapeHtml(visibleOriginal)}</div>` : ""}
               </div>
               <div class="message-footer">
-                <span>${escapeHtml(formatClock(message.createdAt))}</span>
+                <span>${escapeHtml(formatMessageMetaDate(message.createdAt))}</span>
                 ${messageStatus ? `<span>${escapeHtml(t(`status${capitalize(messageStatus)}`))}</span>` : ""}
-                ${translated.pending ? `<span class="tiny-pill pill-warning">${escapeHtml(t("translationPendingBadge"))}</span>` : ""}
-                ${translated.failed ? `<span class="tiny-pill pill-danger">${escapeHtml(t("translationFailedBadge"))}</span>` : ""}
-                ${translated.mocked ? `<span class="tiny-pill pill-warning">${escapeHtml(t("translationMockBadge"))}</span>` : ""}
-                ${translated.disabled ? `<span class="tiny-pill pill-warning">${escapeHtml(t("translationDisabledBadge"))}</span>` : ""}
-                ${message.originalText && translated.translated && !translated.failed && !isMine && !translated.mocked ? `<span class="tiny-pill pill-accent">${escapeHtml(t("translatedBadge"))}</span>` : ""}
+                ${translated.pending ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationPendingBadge"))}" aria-label="${escapeHtml(t("translationPendingBadge"))}">🔄</span>` : ""}
+                ${translated.failed ? `<span class="tiny-pill pill-danger compact-meta-pill" title="${escapeHtml(t("translationFailedBadge"))}" aria-label="${escapeHtml(t("translationFailedBadge"))}">⚠️</span>` : ""}
+                ${translated.mocked ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationMockBadge"))}" aria-label="${escapeHtml(t("translationMockBadge"))}">🧪</span>` : ""}
+                ${translated.disabled ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationDisabledBadge"))}" aria-label="${escapeHtml(t("translationDisabledBadge"))}">⏸️</span>` : ""}
+                ${message.originalText && translated.translated && !translated.failed && !isMine && !translated.mocked ? `<span class="tiny-pill pill-accent compact-meta-pill" title="${escapeHtml(t("translatedBadge"))}" aria-label="${escapeHtml(t("translatedBadge"))}">✅</span>` : ""}
                 ${shouldShowToggle ? `<button class="text-button" data-action="toggle-original" data-message-id="${message.id}">${escapeHtml(showOriginal ? t("hideOriginal") : t("showOriginal"))}</button>` : ""}
               </div>
             </div>
           </div>
         `);
       });
-
-    const typingIndicators = renderTypingIndicators(room, currentUser);
-    return `${parts.join("")}${typingIndicators}`;
+    return parts.join("");
   }
 
   function renderTypingIndicators(room, currentUser) {
     const typingUsers = getActiveTypingUsers(room.id, currentUser.id);
-    if (!typingUsers.length) return "";
-
-    return typingUsers
-      .map((entry) => `
-        <div class="message-row typing">
-          <div class="message-avatar"><div class="avatar">${escapeHtml(initials(entry.name || "?"))}</div></div>
-          <div class="message-stack">
-            <div class="message-sender">${escapeHtml(entry.name || "")}</div>
-            <div class="typing-bubble">${escapeHtml(t("typingIndicator", { name: entry.name || "" }))}</div>
-          </div>
-        </div>
-      `)
-      .join("");
+    const activeTypingUser = typingUsers[0] || null;
+    return `
+      <div class="typing-slot ${activeTypingUser ? "active" : ""}">
+        <div class="typing-bubble compact">${activeTypingUser ? escapeHtml(t("typingIndicator", { name: activeTypingUser.name || "" })) : "&nbsp;"}</div>
+      </div>
+    `;
   }
 
   function renderLinks(links) {
@@ -6271,8 +6512,7 @@
               ? recent
                   .map((invite) => {
                     const invitee = appState.users.find((user) => user.id === invite.inviteeId);
-                    const room = appState.rooms.find((item) => item.id === invite.roomId);
-                    return `<span>${escapeHtml(invitee?.name || "—")} · ${escapeHtml(normalizeDisplayText(room?.title || "—"))} · ${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`;
+                    return `<span>${escapeHtml(invitee?.name || "—")} · ${escapeHtml(getInviteDisplayTitle(invite))} · ${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`;
                   })
                   .join("")
               : `<span>${escapeHtml(t("inviteResultEmpty"))}</span>`}
@@ -7181,6 +7421,20 @@
       render();
       return;
     }
+    if (action === "go-connections") {
+      const currentUser = getCurrentUser();
+      stopTypingForRoom(uiState.activeRoomId);
+      uiState.directoryTab = "friends";
+      uiState.activeRoomId = null;
+      uiState.chatDetailsOpen = false;
+      uiState.attachmentMenuOpen = false;
+      markUserPresence(null);
+      if (currentUser) {
+        persistState();
+      }
+      render();
+      return;
+    }
     if (action === "switch-directory-tab") {
       const nextTab = actionTarget.dataset.tabId;
       const currentUser = getCurrentUser();
@@ -7406,6 +7660,14 @@
     }
     if (action === "save-basic-profile") {
       saveBasicProfile();
+      return;
+    }
+    if (action === "request-push-permission") {
+      void requestPushPermissionAndRegister();
+      return;
+    }
+    if (action === "send-push-test") {
+      void sendPushTestToCurrentUser(actionTarget.dataset.pushType || "message");
       return;
     }
     if (action === "open-profile-preview") {
@@ -8016,6 +8278,8 @@
       pushToast(options.toastKey || "toastEnter", options.toastCopyKey || "toastEnterCopy", { name: getUserDisplayName(user) || user.loginId || user.name });
     }
     render();
+    void registerPushTokenForCurrentUser();
+    flushPendingPushNavigation();
   }
 
   function enterLandingUser() {
@@ -8601,6 +8865,7 @@
   function logoutCurrentUser() {
     const currentUser = getCurrentUser();
     if (!currentUser) return;
+    const logoutUserSnapshot = { id: currentUser.id };
 
     stopTypingForRoom(uiState.activeRoomId);
     const logoutTimestamp = Date.now();
@@ -8645,6 +8910,7 @@
     uiState.previewMedia = null;
     uiState.roomSearch = "";
     persistState();
+    void unregisterPushTokenForUser(logoutUserSnapshot);
     render();
   }
 
@@ -9381,6 +9647,419 @@
     return changed;
   }
 
+  function isPushSupported() {
+    return Boolean(runtime.push.supported && window.firebase && typeof window.firebase.messaging === "function");
+  }
+
+  function getPushPermissionState() {
+    if (!(typeof window !== "undefined" && "Notification" in window && "serviceWorker" in navigator && "PushManager" in window)) {
+      return "unsupported";
+    }
+    return Notification.permission || "default";
+  }
+
+  function syncPushPermissionState(options = {}) {
+    const nextPermission = getPushPermissionState();
+    const changed = runtime.push.permission !== nextPermission;
+    runtime.push.permission = nextPermission;
+    runtime.push.supported = nextPermission !== "unsupported";
+    if (changed && options.render) {
+      renderSafelyDuringInput();
+    }
+    return nextPermission;
+  }
+
+  function getPushStatusMeta() {
+    const permission = syncPushPermissionState();
+    if (permission === "granted") {
+      return {
+        stateKey: "pushPermissionGranted",
+        helperKey: runtime.push.status === "error" ? "pushRegisterFailedCopy" : "pushPermissionGrantedHelp",
+      };
+    }
+    if (permission === "denied") {
+      return {
+        stateKey: "pushPermissionDenied",
+        helperKey: "pushPermissionBlockedHelp",
+      };
+    }
+    if (permission === "unsupported") {
+      return {
+        stateKey: "pushPermissionUnsupported",
+        helperKey: "pushRegisterFailedCopy",
+      };
+    }
+    return {
+      stateKey: "pushPermissionDefault",
+      helperKey: "pushPermissionPendingHelp",
+    };
+  }
+
+  async function fetchPushConfig(options = {}) {
+    if (runtime.push.config && !options.force) {
+      return runtime.push.config;
+    }
+
+    const response = await fetch(CONFIG.pushConfigApiPath, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Push config request failed with ${response.status}`);
+    }
+
+    const payload = await readJsonResponseBody(response);
+    runtime.push.config = payload || null;
+    return runtime.push.config;
+  }
+
+  async function registerPushServiceWorker() {
+    if (runtime.push.serviceWorkerRegistration) {
+      return runtime.push.serviceWorkerRegistration;
+    }
+    const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js", { scope: "/" });
+    runtime.push.serviceWorkerRegistration = registration;
+    return registration;
+  }
+
+  async function ensurePushMessagingClient() {
+    if (!isPushSupported()) {
+      runtime.push.status = "unsupported";
+      return null;
+    }
+
+    if (runtime.push.messaging && runtime.push.serviceWorkerRegistration) {
+      return runtime.push.messaging;
+    }
+
+    if (runtime.push.initPromise) {
+      return runtime.push.initPromise;
+    }
+
+    runtime.push.initPromise = (async () => {
+      const config = await fetchPushConfig();
+      if (!(config?.enabled && config?.webConfig && config?.vapidKey)) {
+        runtime.push.status = "unavailable";
+        runtime.push.lastError = "push_not_configured";
+        return null;
+      }
+
+      const serviceWorkerRegistration = await registerPushServiceWorker();
+      const firebaseApi = window.firebase;
+      if (!(firebaseApi && typeof firebaseApi.initializeApp === "function" && typeof firebaseApi.messaging === "function")) {
+        throw new Error("firebase_messaging_sdk_missing");
+      }
+
+      if (!firebaseApi.apps?.length) {
+        firebaseApi.initializeApp(config.webConfig);
+      }
+
+      runtime.push.serviceWorkerRegistration = serviceWorkerRegistration;
+      runtime.push.messaging = firebaseApi.messaging();
+
+      if (!runtime.push.foregroundBound) {
+        runtime.push.messaging.onMessage((payload) => {
+          handleForegroundPushPayload(payload);
+        });
+        runtime.push.foregroundBound = true;
+      }
+
+      runtime.push.initialized = true;
+      runtime.push.status = "ready";
+      runtime.push.lastError = "";
+      return runtime.push.messaging;
+    })()
+      .catch((error) => {
+        runtime.push.status = "error";
+        runtime.push.lastError = String(error?.message || error || "push_init_failed");
+        console.warn("[push] init failed", runtime.push.lastError);
+        return null;
+      })
+      .finally(() => {
+        runtime.push.initPromise = null;
+        renderSafelyDuringInput();
+      });
+
+    return runtime.push.initPromise;
+  }
+
+  function normalizePushPayload(payload) {
+    const data = payload?.data || payload || {};
+    return {
+      type: String(data?.type || "").trim(),
+      roomId: String(data?.roomId || "").trim(),
+      inviteId: String(data?.inviteId || "").trim(),
+      senderId: String(data?.senderId || "").trim(),
+      senderName: String(data?.senderName || "").trim(),
+      previewText: String(data?.previewText || "").trim(),
+      createdAt: Number(data?.createdAt || 0) || null,
+      title: String(data?.title || "").trim(),
+      body: String(data?.body || "").trim(),
+      clickPath: String(data?.clickPath || "").trim(),
+    };
+  }
+
+  async function registerPushTokenForCurrentUser(options = {}) {
+    const currentUser = getCurrentUser();
+    if (!currentUser) return false;
+
+    const permission = syncPushPermissionState();
+    if (permission !== "granted") {
+      return false;
+    }
+
+    const messaging = await ensurePushMessagingClient();
+    if (!(messaging && runtime.push.serviceWorkerRegistration && runtime.push.config?.vapidKey)) {
+      return false;
+    }
+
+    try {
+      const token = await messaging.getToken({
+        vapidKey: runtime.push.config.vapidKey,
+        serviceWorkerRegistration: runtime.push.serviceWorkerRegistration,
+      });
+
+      if (!token) {
+        runtime.push.status = "error";
+        runtime.push.lastError = "push_token_missing";
+        return false;
+      }
+
+      const cached = readCachedPushRegistration();
+      if (!options.force && cached.token === token && cached.userId === currentUser.id) {
+        persistCachedPushRegistration(currentUser.id, token);
+        runtime.push.status = "registered";
+        return true;
+      }
+
+      const response = await fetch(CONFIG.pushRegisterApiPath, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          token,
+          platform: "web",
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`push_register_failed_${response.status}`);
+      }
+
+      persistCachedPushRegistration(currentUser.id, token);
+      runtime.push.status = "registered";
+      runtime.push.lastError = "";
+      return true;
+    } catch (error) {
+      runtime.push.status = "error";
+      runtime.push.lastError = String(error?.message || error || "push_register_failed");
+      console.warn("[push] register failed", runtime.push.lastError);
+      return false;
+    } finally {
+      renderSafelyDuringInput();
+    }
+  }
+
+  async function unregisterPushTokenForUser(user, options = {}) {
+    const targetUser = user || getCurrentUser();
+    const cached = readCachedPushRegistration();
+    const cachedToken = options.token || cached.token || runtime.push.token;
+    if (!(targetUser?.id && cachedToken)) {
+      clearCachedPushRegistration();
+      runtime.push.status = "idle";
+      return;
+    }
+
+    try {
+      await fetch(CONFIG.pushUnregisterApiPath, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userId: targetUser.id,
+          token: cachedToken,
+        }),
+      });
+    } catch (error) {
+      console.warn("[push] unregister failed", String(error?.message || error || "push_unregister_failed"));
+    } finally {
+      clearCachedPushRegistration();
+      runtime.push.status = "idle";
+      runtime.push.lastError = "";
+      renderSafelyDuringInput();
+    }
+  }
+
+  async function requestPushPermissionAndRegister() {
+    if (!isPushSupported()) {
+      runtime.push.status = "unsupported";
+      renderSafelyDuringInput();
+      return false;
+    }
+
+    const permission = syncPushPermissionState();
+    if (permission === "denied") {
+      renderSafelyDuringInput();
+      return false;
+    }
+
+    const nextPermission = permission === "granted" ? "granted" : await Notification.requestPermission();
+    syncPushPermissionState({ render: true });
+    if (nextPermission !== "granted") {
+      return false;
+    }
+
+    const registered = await registerPushTokenForCurrentUser({ force: true });
+    if (registered) {
+      pushToast("pushRegisterSuccessTitle", "pushRegisterSuccessCopy");
+    } else {
+      pushToast("pushRegisterFailedTitle", "pushRegisterFailedCopy");
+    }
+    return registered;
+  }
+
+  async function sendPushTestToCurrentUser(type = "message") {
+    const currentUser = getCurrentUser();
+    const pushType = type === "invite" ? "invite" : "message";
+    if (!currentUser) {
+      pushToast("pushTestFailedTitle", "pushTestFailedCopy");
+      return false;
+    }
+
+    console.info("[push-test] request", {
+      userId: currentUser.id,
+      pushType,
+      permission: getPushPermissionState(),
+      tokenRegistered: Boolean(runtime.push.token && runtime.push.tokenUserId === currentUser.id),
+    });
+
+    try {
+      if (getPushPermissionState() === "granted" && !(runtime.push.token && runtime.push.tokenUserId === currentUser.id)) {
+        await registerPushTokenForCurrentUser({ force: true });
+      }
+
+      const response = await fetch(CONFIG.pushTestApiPath, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          type: pushType,
+        }),
+      });
+
+      const payload = await readJsonResponseBody(response);
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error || `push_test_failed_${response.status}`);
+      }
+
+      console.info("[push-test] delivered", payload);
+      pushToast("pushTestSuccessTitle", "pushTestSuccessCopy", {
+        type: pushType === "invite" ? t("pushTestInviteButton") : t("pushTestMessageButton"),
+      });
+      return true;
+    } catch (error) {
+      console.warn("[push-test] failed", String(error?.message || error || "push_test_failed"));
+      pushToast("pushTestFailedTitle", "pushTestFailedCopy");
+      return false;
+    }
+  }
+
+  function handleForegroundPushPayload(payload) {
+    const normalized = normalizePushPayload(payload);
+    if (!normalized.type) return;
+
+    console.info("[push] foreground", normalized);
+    if (
+      normalized.type === "message" &&
+      document.visibilityState === "visible" &&
+      uiState.directoryTab === "chat" &&
+      uiState.activeRoomId === normalized.roomId
+    ) {
+      return;
+    }
+
+    if (normalized.type === "invite") {
+      pushToast("pushToastInviteTitle", "pushToastInviteCopy", {
+        name: normalized.senderName || t("systemMessage"),
+      });
+      return;
+    }
+
+    if (normalized.type === "message") {
+      pushToast("pushToastMessageTitle", "pushToastMessageCopy", {
+        name: normalized.senderName || t("systemMessage"),
+        preview: normalized.previewText || t("translationPendingInline"),
+      });
+    }
+  }
+
+  function navigateFromPushPayload(payload) {
+    const normalized = normalizePushPayload(payload);
+    if (!normalized.type) return;
+
+    const currentUser = getCurrentUser();
+    if (!currentUser) {
+      runtime.push.pendingNavigation = normalized;
+      return;
+    }
+
+    if (normalized.type === "message" && normalized.roomId) {
+      const room = appState.rooms.find((entry) => entry.id === normalized.roomId && entry.status === "active");
+      uiState.directoryTab = "chat";
+      uiState.chatDetailsOpen = false;
+      uiState.attachmentMenuOpen = false;
+      uiState.modal = null;
+      uiState.activeRoomId = room?.id || null;
+      if (room) {
+        markAllChatNotificationsSeen(currentUser.id);
+        markUserPresence(room.id);
+      }
+      persistState();
+      render();
+      return;
+    }
+
+    if (normalized.type === "invite") {
+      uiState.directoryTab = "friends";
+      uiState.activeRoomId = null;
+      uiState.chatDetailsOpen = false;
+      uiState.attachmentMenuOpen = false;
+      uiState.modal = null;
+      markIncomingInvitesSeen(currentUser.id);
+      markUserPresence(null);
+      persistState();
+      render();
+    }
+  }
+
+  function consumePushNavigationFromLocation() {
+    const url = new URL(window.location.href);
+    const type = url.searchParams.get("pushType");
+    if (!(type === "message" || type === "invite")) {
+      return;
+    }
+    runtime.push.pendingNavigation = normalizePushPayload({
+      type,
+      roomId: url.searchParams.get("roomId") || "",
+      inviteId: url.searchParams.get("inviteId") || "",
+      clickPath: url.pathname + url.search,
+    });
+    url.searchParams.delete("pushType");
+    url.searchParams.delete("roomId");
+    url.searchParams.delete("inviteId");
+    const nextSearch = url.searchParams.toString();
+    window.history.replaceState({}, "", `${url.pathname}${nextSearch ? `?${nextSearch}` : ""}${url.hash}`);
+  }
+
+  function flushPendingPushNavigation() {
+    if (!runtime.push.pendingNavigation) return;
+    const payload = runtime.push.pendingNavigation;
+    runtime.push.pendingNavigation = null;
+    navigateFromPushPayload(payload);
+  }
+
   async function refreshBackendStatus() {
     if (!shouldUseTranslationBackend()) {
       closeServerEvents();
@@ -9773,6 +10452,8 @@
       roomId: room.id,
       inviterId: currentUser.id,
       inviteeId: invitee.id,
+      type: "room",
+      previewRoomTitle: normalizeDisplayText(room.title),
       status: "pending",
       createdAt: Date.now(),
       respondedAt: null,
@@ -9789,16 +10470,28 @@
 
   function respondInvite(inviteId, response) {
     const invite = appState.invites.find((item) => item.id === inviteId);
-    const room = appState.rooms.find((item) => item.id === invite?.roomId);
     const currentUser = getCurrentUser();
-    if (!invite || !room || !currentUser) return;
+    if (!invite || !currentUser) return;
+    let room = invite.roomId ? appState.rooms.find((item) => item.id === invite.roomId) : null;
     invite.status = response === "accept" ? "accepted" : "rejected";
     invite.respondedAt = Date.now();
     invite.seenByInvitee = true;
     if (response === "accept") {
+      if (invite.type === "connection" && !room) {
+        const inviter = appState.users.find((user) => user.id === invite.inviterId);
+        if (!inviter) {
+          return;
+        }
+        room = createAcceptedConnectionRoom(inviter, currentUser, Date.now());
+        invite.roomId = room.id;
+        invite.previewRoomTitle = room.title;
+      }
+      if (!room) return;
       ensureParticipant(room, currentUser.id);
       room.accessByUser[currentUser.id] = true;
-      room.messages.push(systemMessage(uid("sys"), "systemInviteAccepted", { name: currentUser.name }, Date.now()));
+      if (invite.type !== "connection") {
+        room.messages.push(systemMessage(uid("sys"), "systemInviteAccepted", { name: currentUser.name }, Date.now()));
+      }
       currentUser.currentRoomId = room.id;
       uiState.activeRoomId = room.id;
       uiState.directoryTab = "chat";
@@ -9806,7 +10499,9 @@
       uiState.attachmentMenuOpen = false;
       pushToast("toastInviteAccepted", "toastInviteAcceptedCopy", { name: currentUser.name });
     } else {
-      room.messages.push(systemMessage(uid("sys"), "systemInviteRejected", { name: currentUser.name }, Date.now()));
+      if (room) {
+        room.messages.push(systemMessage(uid("sys"), "systemInviteRejected", { name: currentUser.name }, Date.now()));
+      }
       pushToast("toastInviteRejected", "toastInviteRejectedCopy", { name: currentUser.name });
     }
     syncUserAlertState();
@@ -9816,6 +10511,25 @@
       markUserPresence(room.id);
       scheduleReceiptRefresh({ force: true, delay: 0 });
     }
+  }
+
+  // Keep invite cards usable for connection-only invites that do not create a real room until acceptance.
+  function renderInviteCard(invite) {
+    const inviter = appState.users.find((user) => user.id === invite.inviterId);
+    return `
+      <article class="invite-card">
+        <strong>${escapeHtml(getInviteDisplayTitle(invite))}</strong>
+        <span>${escapeHtml(getUserDisplayName(inviter) || inviter?.loginId || "—")} · ${escapeHtml(formatRelativeTime(invite.createdAt))}</span>
+        <div class="invite-row" style="margin-top: 12px;">
+          ${invite.status === "pending"
+            ? `
+                <button class="button button-primary" data-action="respond-invite" data-invite-id="${invite.id}" data-response="accept">${escapeHtml(t("acceptInvite"))}</button>
+                <button class="button button-danger" data-action="respond-invite" data-invite-id="${invite.id}" data-response="reject">${escapeHtml(t("rejectInvite"))}</button>
+              `
+            : `<span class="status-pill ${invite.status === "accepted" ? "pill-success" : "pill-danger"}">${escapeHtml(invite.status === "accepted" ? t("inviteAccepted") : t("inviteRejected"))}</span>`}
+        </div>
+      </article>
+    `;
   }
 
   function openMessageMedia(messageId) {
@@ -9888,10 +10602,23 @@
     APP_ROOT.addEventListener("compositionend", onRootCompositionEnd);
     APP_ROOT.addEventListener("change", onRootChange);
     APP_ROOT.addEventListener("submit", onRootSubmit);
+    syncPushPermissionState();
+    if ("serviceWorker" in navigator && !runtime.push.swMessageBound) {
+      navigator.serviceWorker.addEventListener("message", (event) => {
+        if (event.data?.type === "transchat-push-click") {
+          runtime.push.pendingNavigation = normalizePushPayload(event.data.payload || {});
+          flushPendingPushNavigation();
+        }
+      });
+      runtime.push.swMessageBound = true;
+    }
     window.addEventListener("resize", syncViewport);
     window.addEventListener("orientationchange", () => {
       syncViewport();
       keepChatBottomVisible(true);
+    });
+    window.addEventListener("focus", () => {
+      syncPushPermissionState({ render: true });
     });
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncViewport);
@@ -9911,11 +10638,13 @@
     });
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) {
+        syncPushPermissionState();
         markUserPresence(uiState.activeRoomId);
         checkRoomExpirations();
         cleanupExpiredChatMedia();
         refreshStorageEstimate();
         scheduleReceiptRefresh({ force: true, delay: 0 });
+        flushPendingPushNavigation();
         render();
         return;
       }
@@ -10061,6 +10790,11 @@
   async function bootApplication() {
     try {
       console.info("[transchat] bootstrap:start");
+      const cachedPushRegistration = readCachedPushRegistration();
+      runtime.push.token = cachedPushRegistration.token;
+      runtime.push.tokenUserId = cachedPushRegistration.userId;
+      syncPushPermissionState();
+      consumePushNavigationFromLocation();
       restoreAutoLoginSession({ clearOnMissing: false });
       const currentUser = getCurrentUser();
       if (currentUser) {
@@ -10081,6 +10815,10 @@
       console.info("[transchat] bootstrap:render");
       render();
       await bootstrapServerState();
+      if (getCurrentUser()) {
+        void registerPushTokenForCurrentUser();
+      }
+      flushPendingPushNavigation();
       console.info("[transchat] bootstrap:complete");
     } catch (error) {
       reportBootstrapError(error, "bootstrap");
