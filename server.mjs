@@ -148,6 +148,7 @@ async function handleTranslate(req, res) {
     const text = String(body?.text || "").trim();
     const sourceLanguage = String(body?.sourceLanguage || "").trim();
     const targetLanguages = Array.isArray(body?.targetLanguages) ? body.targetLanguages : [];
+    const translationConcept = normalizeTranslationConcept(body?.translationConcept);
 
     if (!text || !ALLOWED_LANGUAGES.has(sourceLanguage)) {
       return sendJson(res, 400, { error: "invalid_request" });
@@ -163,6 +164,7 @@ async function handleTranslate(req, res) {
     console.info("[translate] request", {
       sourceLanguage,
       targetLanguages: normalizedTargets,
+      translationConcept,
       length: text.length,
     });
 
@@ -170,6 +172,7 @@ async function handleTranslate(req, res) {
       text,
       sourceLanguage,
       targetLanguages: normalizedTargets,
+      translationConcept,
     });
     lastTranslationError = null;
     lastTranslationErrorDetail = null;
@@ -538,7 +541,7 @@ function normalizeTranslationError(error) {
   return "translation_error";
 }
 
-async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages }) {
+async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages, translationConcept = "general" }) {
   if (!targetLanguages.length) {
     return {
       translations: {},
@@ -552,6 +555,7 @@ async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages
         text,
         sourceLanguage,
         targetLanguage,
+        translationConcept,
       });
       return [
         targetLanguage,
@@ -569,11 +573,12 @@ async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages
   };
 }
 
-async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLanguage }) {
+async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLanguage, translationConcept = "general" }) {
   const cacheKey = JSON.stringify({
     model: OPENAI_MODEL,
     sourceLanguage,
     targetLanguage,
+    translationConcept,
     text,
   });
   const cached = translationCache.get(cacheKey);
@@ -593,6 +598,7 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLang
       text,
       sourceLanguage,
       targetLanguage,
+      translationConcept,
     }),
   };
 
@@ -616,19 +622,36 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLang
   return outputText;
 }
 
-function buildTranslationPrompt({ text, sourceLanguage, targetLanguage }) {
+function buildTranslationPrompt({ text, sourceLanguage, targetLanguage, translationConcept = "general" }) {
   return [
     "You are a realtime chat translator.",
     "Translate the full message into the target language only.",
-    "Do not summarize, shorten, simplify away details, or omit any part of the message.",
-    "Return only the final translated message text with no labels or commentary.",
-    "Make the translation sound natural for a real chat conversation.",
+    "Return only the translated message text.",
+    "Do not summarize, shorten, soften, explain, or add commentary.",
+    "Do not filter or propose alternatives.",
+    `Use this recipient-facing tone: ${describeTranslationConcept(translationConcept)}.`,
     "Preserve the full meaning, tone, sentence count, URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
     `Source language: ${describeLanguage(sourceLanguage)}.`,
     `Target language: ${describeLanguage(targetLanguage)}.`,
     "Message:",
     text,
   ].join("\n");
+}
+
+function normalizeTranslationConcept(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["office", "general", "friend", "lover"].includes(normalized) ? normalized : "general";
+}
+
+function describeTranslationConcept(concept) {
+  return (
+    {
+      office: "professional, work-appropriate, and polite",
+      general: "natural everyday conversation with neutral friendliness",
+      friend: "casual, relaxed, and friendly between close friends",
+      lover: "gentle, warm, and affectionate between romantic partners",
+    }[normalizeTranslationConcept(concept)] || "natural everyday conversation with neutral friendliness"
+  );
 }
 
 function estimateTranslationOutputTokens(text) {

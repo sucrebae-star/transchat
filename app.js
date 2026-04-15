@@ -42,6 +42,12 @@
     // Private test gate for now; replace with provider-backed auth when Google or magic-link login is added.
     accessGateMode: "whitelist",
   };
+  const TRANSLATION_CONCEPTS = Object.freeze([
+    { id: "office", labelKey: "translationConceptOffice" },
+    { id: "general", labelKey: "translationConceptGeneral" },
+    { id: "friend", labelKey: "translationConceptFriend" },
+    { id: "lover", labelKey: "translationConceptLover" },
+  ]);
   // Edit this allowlist during private testing; later move the same rule to authenticated server-side identities.
   const PRIVATE_TEST_ALLOWLIST = new Set(["현태", "배현태", "호아", "hoa"].map((value) => value.trim().toLowerCase()));
 
@@ -65,6 +71,7 @@
     mediaLoadPromises: new Map(),
     mediaDbPromise: null,
     translationTasks: new Map(),
+    translationRequests: new Map(),
     statusTimers: new Map(),
     toastTimers: new Map(),
     typingStopTimers: new Map(),
@@ -1382,6 +1389,34 @@
     translationDisabledBadge: "Da tat dich",
     translationDisabledMode: "Da tat dich",
     translationIssueMode: "Loi dich",
+  });
+
+  // Translation tone labels stay centralized so the composer menu can switch concepts without hardcoded UI copy.
+  Object.assign(DICTIONARY.ko, {
+    translationPendingInline: "번역 중...",
+    translationConceptLabel: "번역 말투",
+    translationConceptOffice: "사무",
+    translationConceptGeneral: "일반",
+    translationConceptFriend: "친구",
+    translationConceptLover: "연인",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    translationPendingInline: "Translating...",
+    translationConceptLabel: "Translation tone",
+    translationConceptOffice: "Office",
+    translationConceptGeneral: "Default",
+    translationConceptFriend: "Friend",
+    translationConceptLover: "Partner",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    translationPendingInline: "Dang dich...",
+    translationConceptLabel: "Sac thai ban dich",
+    translationConceptOffice: "Cong viec",
+    translationConceptGeneral: "Thong thuong",
+    translationConceptFriend: "Ban be",
+    translationConceptLover: "Nguoi yeu",
   });
 
   // Added: plan/pricing copy stays in the central dictionary so the lightweight billing preview remains localizable.
@@ -3415,6 +3450,7 @@
         attachment: null,
         failTranslation: false,
         processing: false,
+        translationConcept: "general",
       };
     }
     return uiState.drafts[roomId];
@@ -3429,6 +3465,19 @@
 
   function getChatLanguageName(code) {
     return LANGUAGE_OPTION_LABELS[code] || CHAT_LANGUAGES[code] || code;
+  }
+
+  function normalizeTranslationConcept(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return TRANSLATION_CONCEPTS.some((entry) => entry.id === normalized) ? normalized : "general";
+  }
+
+  function getTranslationConceptMeta(conceptId) {
+    return TRANSLATION_CONCEPTS.find((entry) => entry.id === normalizeTranslationConcept(conceptId)) || TRANSLATION_CONCEPTS[1];
+  }
+
+  function getTranslationConceptLabel(conceptId) {
+    return t(getTranslationConceptMeta(conceptId).labelKey);
   }
 
   function getUiLanguageName(code) {
@@ -5013,6 +5062,23 @@
     `;
   }
 
+  function renderTranslationConceptOptions(roomId, activeConcept) {
+    return TRANSLATION_CONCEPTS.map((concept) => {
+      const selected = normalizeTranslationConcept(activeConcept) === concept.id;
+      return `
+        <button
+          class="translation-concept-chip ${selected ? "active" : ""}"
+          type="button"
+          data-action="set-translation-concept"
+          data-room-id="${roomId}"
+          data-concept="${concept.id}"
+        >
+          ${escapeHtml(t(concept.labelKey))}
+        </button>
+      `;
+    }).join("");
+  }
+
   // Added: keep the room layout but stabilize the chat header and single-line composer for mobile input/touch handling.
   function renderChatRoomMobileEnhanced(currentUser, room) {
     const participants = deriveRoomParticipantIds(room)
@@ -5073,15 +5139,24 @@
               +
             </button>
             <div class="attachment-menu ${uiState.attachmentMenuOpen ? "open" : ""}">
-              <button class="attach-option" type="button" data-action="trigger-image" data-room-id="${room.id}" aria-label="${escapeHtml(t("addPhoto"))}" title="${escapeHtml(t("addPhoto"))}">
-                ${renderIconSvg("photo")}
-              </button>
-              <button class="attach-option" type="button" data-action="trigger-video" data-room-id="${room.id}" aria-label="${escapeHtml(t("addVideo"))}" title="${escapeHtml(t("addVideo"))}">
-                ${renderIconSvg("video")}
-              </button>
-              <button class="attach-option" type="button" data-action="trigger-file" data-room-id="${room.id}" aria-label="${escapeHtml(t("addFile"))}" title="${escapeHtml(t("addFile"))}">
-                ${renderIconSvg("file")}
-              </button>
+              <div class="attachment-menu-section">
+                <div class="attachment-menu-label">${escapeHtml(t("translationConceptLabel"))}</div>
+                <div class="translation-concept-list">
+                  ${renderTranslationConceptOptions(room.id, draft.translationConcept)}
+                </div>
+              </div>
+              <div class="attachment-menu-divider"></div>
+              <div class="attachment-menu-grid">
+                <button class="attach-option" type="button" data-action="trigger-image" data-room-id="${room.id}" aria-label="${escapeHtml(t("addPhoto"))}" title="${escapeHtml(t("addPhoto"))}">
+                  ${renderIconSvg("photo")}
+                </button>
+                <button class="attach-option" type="button" data-action="trigger-video" data-room-id="${room.id}" aria-label="${escapeHtml(t("addVideo"))}" title="${escapeHtml(t("addVideo"))}">
+                  ${renderIconSvg("video")}
+                </button>
+                <button class="attach-option" type="button" data-action="trigger-file" data-room-id="${room.id}" aria-label="${escapeHtml(t("addFile"))}" title="${escapeHtml(t("addFile"))}">
+                  ${renderIconSvg("file")}
+                </button>
+              </div>
             </div>
           </div>
           <button class="button button-primary send-button" type="button" data-action="send-message" data-room-id="${room.id}" ${draft.processing ? "disabled" : ""}>${escapeHtml(t("sendButton"))}</button>
@@ -5661,8 +5736,12 @@
         const showOriginal = Boolean(uiState.originalVisibility[message.id]);
         const shouldShowToggle = message.originalText && message.originalText !== translated.text && !translated.failed && !translated.pending;
         const messageStatus = isMine ? getOutgoingMessageStatus(room, message, currentUser) : "";
-        const links = detectLinks(translated.text || message.originalText);
-        const visibleText = stripLinks(translated.text || message.originalText);
+        const effectiveDisplayText =
+          translated.pending && !isMine
+            ? t("translationPendingInline")
+            : translated.text || (translated.failed ? message.originalText : "");
+        const links = translated.pending ? [] : detectLinks(effectiveDisplayText || message.originalText);
+        const visibleText = stripLinks(effectiveDisplayText || message.originalText);
         const visibleOriginal = stripLinks(message.originalText);
         parts.push(`
           <div class="message-row ${isMine ? "mine" : ""}" data-diff-key="message:${message.id}">
@@ -5759,7 +5838,7 @@
 
     if (!translation) {
       if (state === "pending" && requestedForCurrentUser) {
-        return { text: message.originalText, failed: false, pending: true, mocked: false, disabled, translated: false };
+        return { text: "", failed: false, pending: true, mocked: false, disabled, translated: false };
       }
       if (mocked && requestedForCurrentUser) {
         return { text: message.originalText, failed: false, pending: false, mocked: true, disabled: false, translated: false };
@@ -5840,7 +5919,10 @@
           liveMessage.senderId,
           liveMessage.sourceLanguage,
           false,
-          [targetLanguage]
+          [targetLanguage],
+          {
+            translationConcept: liveMessage.translationConcept || "general",
+          }
         );
         const nextEntry =
           translationBundle.translations?.[targetLanguage] ||
@@ -7152,6 +7234,14 @@
     }
     if (action === "toggle-attachment-menu") {
       uiState.attachmentMenuOpen = !uiState.attachmentMenuOpen;
+      render();
+      return;
+    }
+    if (action === "set-translation-concept") {
+      const roomId = actionTarget.dataset.roomId;
+      const concept = normalizeTranslationConcept(actionTarget.dataset.concept);
+      if (!roomId) return;
+      setDraft(roomId, { translationConcept: concept });
       render();
       return;
     }
@@ -8612,12 +8702,17 @@
       return;
     }
     const draft = getDraft(roomId);
+    if (draft.processing) {
+      return;
+    }
     const liveText = getComposerValue(roomId);
     if (liveText !== draft.text) {
       setDraft(roomId, { text: liveText });
     }
     const text = liveText.trim();
     const attachment = draft.attachment;
+    const translationConcept = normalizeTranslationConcept(draft.translationConcept);
+    const failTranslation = Boolean(draft.failTranslation);
     if (!text && !attachment) {
       pushToast("toastEmptyDraft", "toastEmptyDraftCopy");
       return;
@@ -8635,14 +8730,31 @@
       return;
     }
     stopTypingForRoom(roomId);
-    setDraft(roomId, { processing: true });
+    const draftSnapshot = {
+      text: liveText,
+      attachment,
+      failTranslation,
+      translationConcept,
+    };
+    setDraft(roomId, {
+      text: "",
+      attachment: null,
+      failTranslation: false,
+      processing: false,
+      translationConcept,
+    });
+    uiState.attachmentMenuOpen = false;
+    render();
     ensureParticipant(room, currentUser.id, false);
     const messageId = uid("msg");
     let storedAttachment = null;
     try {
       storedAttachment = attachment ? await persistDraftAttachmentForMessage(attachment, room.id, messageId) : null;
     } catch (error) {
-      setDraft(roomId, { processing: false });
+      setDraft(roomId, {
+        ...draftSnapshot,
+        processing: false,
+      });
       pushToast("toastMediaStorageFailed", "toastMediaStorageFailedCopy");
       render();
       return;
@@ -8655,9 +8767,10 @@
       currentUser.nativeLanguage,
       {},
       Date.now(),
-      "composing",
+      "sent",
       storedAttachment
     );
+    message.translationConcept = translationConcept;
     const requestedTargetLanguages = text ? getNeededTargetLanguages(room, currentUser.id, currentUser.nativeLanguage) : [];
     message.translationMeta = text
       ? {
@@ -8695,76 +8808,96 @@
       }
     });
     persistState();
-    render();
-
-    if (draft.failTranslation) {
-      pushToast("toastTranslationFailed", "toastTranslationFailedCopy");
-    }
-
-    let translationBundle = {
-      translations: text ? { [currentUser.nativeLanguage]: { text, failed: false } } : {},
-      meta: {
-        provider: "none",
-        model: null,
-        live: false,
-        state: text ? "idle" : "idle",
-        reason: text ? "not-needed" : "empty-message",
-        errorDetail: null,
-        requestedTargets: requestedTargetLanguages,
-        completedAt: Date.now(),
-      },
-    };
-    if (text) {
-      try {
-        translationBundle = await buildTranslations(
-          room,
-          text,
-          currentUser.id,
-          currentUser.nativeLanguage,
-          draft.failTranslation,
-          requestedTargetLanguages
-        );
-      } catch (error) {
-        console.warn("[translation] unexpected client failure", {
-          messageId,
-          sourceLanguage: currentUser.nativeLanguage,
-          requestedTargetLanguages,
-          error: String(error?.message || error),
-        });
-        translationBundle = {
-          translations: {
-            [currentUser.nativeLanguage]: { text, failed: false },
-            ...Object.fromEntries(requestedTargetLanguages.map((language) => [language, { text, failed: true }])),
-          },
-          meta: {
-            provider: "client-error",
-            model: null,
-            live: false,
-            state: "failed",
-            reason: "client_exception",
-            errorDetail: String(error?.message || error || "translation_error"),
-            requestedTargets: requestedTargetLanguages,
-            completedAt: Date.now(),
-          },
-        };
-      }
-    }
-    message.translations = translationBundle.translations;
-    message.translationMeta = {
-      ...translationBundle.meta,
-      pending: false,
-    };
-    message.status = "sent";
-
-    setDraft(roomId, { text: "", attachment: null, failTranslation: false, processing: false });
-    uiState.attachmentMenuOpen = false;
-    persistState();
     scheduleReceiptRefresh({ delay: 90 });
     if (softLimitWarning) {
       pushToast("planPremiumAbuseTitle", "planSoftLimitToast");
     }
+    if (failTranslation) {
+      pushToast("toastTranslationFailed", "toastTranslationFailedCopy");
+    }
     pushToast("toastMessageSent", "toastMessageSentCopy");
     render();
+
+    if (!text) {
+      return;
+    }
+
+    Promise.resolve()
+      .then(async () => {
+        let translationBundle = {
+          translations: { [currentUser.nativeLanguage]: { text, failed: false } },
+          meta: {
+            provider: "none",
+            model: null,
+            live: false,
+            state: "idle",
+            reason: "not-needed",
+            errorDetail: null,
+            requestedTargets: requestedTargetLanguages,
+            completedAt: Date.now(),
+          },
+        };
+
+        try {
+          translationBundle = await buildTranslations(
+            room,
+            text,
+            currentUser.id,
+            currentUser.nativeLanguage,
+            failTranslation,
+            requestedTargetLanguages,
+            {
+              translationConcept,
+            }
+          );
+        } catch (error) {
+          console.warn("[translation] unexpected client failure", {
+            messageId,
+            sourceLanguage: currentUser.nativeLanguage,
+            requestedTargetLanguages,
+            translationConcept,
+            error: String(error?.message || error),
+          });
+          translationBundle = {
+            translations: {
+              [currentUser.nativeLanguage]: { text, failed: false },
+              ...Object.fromEntries(requestedTargetLanguages.map((language) => [language, { text, failed: true }])),
+            },
+            meta: {
+              provider: "client-error",
+              model: null,
+              live: false,
+              state: "failed",
+              reason: "client_exception",
+              errorDetail: String(error?.message || error || "translation_error"),
+              requestedTargets: requestedTargetLanguages,
+              completedAt: Date.now(),
+            },
+          };
+        }
+
+        const liveRoom = appState.rooms.find((entry) => entry.id === roomId);
+        const liveMessage = liveRoom?.messages?.find((entry) => entry.id === messageId);
+        if (!liveRoom || !liveMessage) {
+          return;
+        }
+
+        liveMessage.translations = translationBundle.translations;
+        liveMessage.translationMeta = {
+          ...translationBundle.meta,
+          pending: false,
+        };
+        liveMessage.status = liveMessage.status === "composing" ? "sent" : liveMessage.status || "sent";
+        persistState();
+        renderSafelyDuringInput();
+      })
+      .catch((error) => {
+        console.warn("[translation] send pipeline failed", {
+          roomId,
+          messageId,
+          error: String(error?.message || error),
+        });
+      });
   }
 
   function createBaseTranslationMap(text, sourceLanguage) {
@@ -8805,16 +8938,18 @@
     return [...needed];
   }
 
-  async function buildTranslations(room, text, senderId, fromLanguage, forceFail, requestedTargetLanguages = null) {
+  async function buildTranslations(room, text, senderId, fromLanguage, forceFail, requestedTargetLanguages = null, options = {}) {
     const targetLanguages = Array.isArray(requestedTargetLanguages)
       ? [...new Set(requestedTargetLanguages.filter((language) => language && language !== fromLanguage))]
       : getNeededTargetLanguages(room, senderId, fromLanguage);
     const result = createBaseTranslationMap(text, fromLanguage);
+    const translationConcept = normalizeTranslationConcept(options.translationConcept);
 
     console.info("[translation] request", {
       senderId,
       sourceLanguage: fromLanguage,
       targetLanguages,
+      translationConcept,
       serverReachable: runtime.backend.serverReachable,
       liveTranslationEnabled: runtime.backend.liveTranslationEnabled,
     });
@@ -8854,7 +8989,9 @@
       };
     }
 
-    const liveTranslations = await requestServerTranslations(text, fromLanguage, targetLanguages);
+    const liveTranslations = await requestServerTranslations(text, fromLanguage, targetLanguages, {
+      translationConcept,
+    });
     if (liveTranslations.status === "success") {
       targetLanguages.forEach((targetLanguage) => {
         const entry = liveTranslations.translations?.[targetLanguage];
@@ -8872,6 +9009,7 @@
       console.info("[translation] response", {
         sourceLanguage: fromLanguage,
         targetLanguages,
+        translationConcept,
         provider: liveTranslations.provider,
         model: liveTranslations.model,
         hasFailure,
@@ -8894,6 +9032,7 @@
     console.warn("[translation] fallback", {
       sourceLanguage: fromLanguage,
       targetLanguages,
+      translationConcept,
       reason: liveTranslations.reason,
       errorDetail: liveTranslations.errorDetail || null,
     });
@@ -8922,7 +9061,7 @@
     };
   }
 
-  async function requestServerTranslations(text, sourceLanguage, targetLanguages) {
+  async function requestServerTranslations(text, sourceLanguage, targetLanguages, options = {}) {
     if (!targetLanguages.length) {
       return { status: "skipped", reason: "not-needed", errorDetail: null };
     }
@@ -8931,67 +9070,86 @@
       return { status: "failed", reason: "client_backend_unavailable", errorDetail: "The browser is not connected to the local backend." };
     }
 
-    try {
-      // Later this request can move to a real auth/session-aware Node.js + WebSocket message pipeline.
-      const response = await fetch(CONFIG.translationApiPath, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text,
-          sourceLanguage,
-          targetLanguages,
-        }),
-      });
+    const translationConcept = normalizeTranslationConcept(options.translationConcept);
+    const requestKey = JSON.stringify({
+      sourceLanguage,
+      targetLanguages: [...targetLanguages].sort(),
+      translationConcept,
+      text,
+    });
+    if (runtime.translationRequests.has(requestKey)) {
+      return runtime.translationRequests.get(requestKey);
+    }
 
-      const payload = await readJsonResponseBody(response);
-      if (!response.ok) {
-        const reason = normalizeTranslationFailureReason(payload?.error, response.status);
+    const requestPromise = (async () => {
+      try {
+        // Later this request can move to a real auth/session-aware Node.js + WebSocket message pipeline.
+        const response = await fetch(CONFIG.translationApiPath, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text,
+            sourceLanguage,
+            targetLanguages,
+            translationConcept,
+          }),
+        });
+
+        const payload = await readJsonResponseBody(response);
+        if (!response.ok) {
+          const reason = normalizeTranslationFailureReason(payload?.error, response.status);
+          updateBackendStatus({
+            serverReachable: true,
+            liveTranslationEnabled: false,
+            translationConfigured: payload?.error === "missing_api_key" ? false : runtime.backend.translationConfigured,
+            lastTranslationError: payload?.error || reason,
+            lastTranslationErrorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+            checkedAt: Date.now(),
+          });
+          return {
+            status: "failed",
+            reason,
+            errorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+          };
+        }
+
         updateBackendStatus({
           serverReachable: true,
+          liveTranslationEnabled: true,
+          model: payload?.model || null,
+          translationConfigured: true,
+          lastTranslationError: null,
+          lastTranslationErrorDetail: null,
+          checkedAt: Date.now(),
+        });
+        return {
+          status: "success",
+          translations: payload?.translations || null,
+          provider: "openai",
+          model: payload?.model || null,
+        };
+      } catch (error) {
+        updateBackendStatus({
+          serverReachable: false,
           liveTranslationEnabled: false,
-          translationConfigured: payload?.error === "missing_api_key" ? false : runtime.backend.translationConfigured,
-          lastTranslationError: payload?.error || reason,
-          lastTranslationErrorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+          lastTranslationError: "server_unreachable",
+          lastTranslationErrorDetail: String(error?.message || error || "Server unreachable"),
           checkedAt: Date.now(),
         });
         return {
           status: "failed",
-          reason,
-          errorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+          reason: "server_unreachable",
+          errorDetail: String(error?.message || error || "Server unreachable"),
         };
       }
+    })().finally(() => {
+      runtime.translationRequests.delete(requestKey);
+    });
 
-      updateBackendStatus({
-        serverReachable: true,
-        liveTranslationEnabled: true,
-        model: payload?.model || null,
-        translationConfigured: true,
-        lastTranslationError: null,
-        lastTranslationErrorDetail: null,
-        checkedAt: Date.now(),
-      });
-      return {
-        status: "success",
-        translations: payload?.translations || null,
-        provider: "openai",
-        model: payload?.model || null,
-      };
-    } catch (error) {
-      updateBackendStatus({
-        serverReachable: false,
-        liveTranslationEnabled: false,
-        lastTranslationError: "server_unreachable",
-        lastTranslationErrorDetail: String(error?.message || error || "Server unreachable"),
-        checkedAt: Date.now(),
-      });
-      return {
-        status: "failed",
-        reason: "server_unreachable",
-        errorDetail: String(error?.message || error || "Server unreachable"),
-      };
-    }
+    runtime.translationRequests.set(requestKey, requestPromise);
+    return requestPromise;
   }
 
   async function readJsonResponseBody(response) {

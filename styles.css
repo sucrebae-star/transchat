@@ -2650,6 +2650,60 @@ body[data-theme="dark"] .mobile-composer {
   right: 0;
   bottom: calc(100% + 8px);
   z-index: 8;
+  min-width: 220px;
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.mobile-composer .attachment-menu.open {
+  display: flex;
+}
+
+.attachment-menu-section {
+  display: grid;
+  gap: 8px;
+}
+
+.attachment-menu-label {
+  font-size: 0.72rem;
+  color: var(--text-soft);
+  font-weight: 700;
+}
+
+.translation-concept-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.translation-concept-chip {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-alt);
+  color: var(--text-soft);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.translation-concept-chip.active {
+  color: var(--accent-strong);
+  border-color: rgba(37, 99, 235, 0.22);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.attachment-menu-divider {
+  height: 1px;
+  background: var(--line);
+}
+
+.attachment-menu-grid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .mobile-chat-menu {
