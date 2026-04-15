@@ -1310,7 +1310,7 @@ function sanitizeMessageState(message, allowedUserIds) {
     return message;
   }
 
-  const originalText = normalizeDisplayText(message.originalText);
+  const originalText = normalizeDisplayText(message.originalText || message.text || "");
   const translations = sanitizeTranslations(message.translations, originalText, message.sourceLanguage);
 
   return {

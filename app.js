@@ -2117,7 +2117,7 @@
       return message;
     }
 
-    const originalText = normalizeDisplayText(message.originalText);
+  const originalText = normalizeDisplayText(message.originalText || message.text || "");
     const translations = sanitizeTranslations(message.translations, originalText, message.sourceLanguage);
 
     return {
@@ -6568,11 +6568,48 @@
     `;
   }
 
+  function hasUsableTranslationEntry(entry) {
+    return typeof entry?.text === "string" && entry.text.trim().length > 0;
+  }
+
+  function findStoredTranslationForLanguage(message, language, preferredConcept = "general") {
+    const baseLanguage = getTranslationVariantLanguage(language);
+    if (!baseLanguage) {
+      return { key: "", entry: null };
+    }
+
+    const translations = message?.translations || {};
+    const preferredKey = buildTranslationVariantKey(baseLanguage, preferredConcept);
+    const preferredEntry = translations[preferredKey];
+    if (hasUsableTranslationEntry(preferredEntry) && !preferredEntry.failed) {
+      return { key: preferredKey, entry: preferredEntry };
+    }
+
+    const legacyEntry = translations[baseLanguage];
+    if (hasUsableTranslationEntry(legacyEntry) && !legacyEntry.failed) {
+      return { key: baseLanguage, entry: legacyEntry };
+    }
+
+    const fallbackVariant = Object.entries(translations).find(([key, entry]) => {
+      const variantLanguage = getTranslationVariantLanguage(key);
+      return variantLanguage === baseLanguage && hasUsableTranslationEntry(entry) && !entry.failed;
+    });
+    if (fallbackVariant) {
+      return { key: fallbackVariant[0], entry: fallbackVariant[1] };
+    }
+
+    return { key: "", entry: null };
+  }
+
   function getDisplayTranslation(message, currentUser) {
     if (message.senderId === currentUser.id || !message.originalText) {
+      const hasSuccessfulTarget = Object.entries(message.translations || {}).some(([key, entry]) => {
+        const language = getTranslationVariantLanguage(key);
+        return language && language !== message.sourceLanguage && hasUsableTranslationEntry(entry) && !entry.failed;
+      });
       return {
         text: message.originalText,
-        failed: Boolean(Object.values(message.translations || {}).some((entry) => entry.failed)),
+        failed: !hasSuccessfulTarget && (message.translationMeta?.state === "failed" || message.translationMeta?.state === "partial"),
         pending: false,
         mocked: false,
         disabled: false,
@@ -6587,14 +6624,9 @@
       Array.isArray(message.translationMeta?.requestedTargets) && message.translationMeta.requestedTargets.length
         ? message.translationMeta.requestedTargets
         : Object.keys(message.translations || {}).filter((key) => getTranslationVariantLanguage(key) !== message.sourceLanguage);
-    const hasConceptVariantForCurrentLanguage = Boolean(preferredLanguage) && Object.keys(message.translations || {}).some((key) => {
-      const language = getTranslationVariantLanguage(key);
-      return language === preferredLanguage && key !== preferredLanguage;
-    });
-    const translation = preferredLanguage
-      ? message.translations?.[preferredKey] || (!hasConceptVariantForCurrentLanguage ? message.translations?.[preferredLanguage] : null)
-      : null;
-    const requestedForCurrentUser = Boolean(preferredKey) && (requestedTargets.includes(preferredKey) || (!hasConceptVariantForCurrentLanguage && requestedTargets.includes(preferredLanguage)));
+    const storedTranslation = preferredLanguage ? findStoredTranslationForLanguage(message, preferredLanguage, preferredConcept) : { key: "", entry: null };
+    const translation = storedTranslation.entry;
+    const requestedForCurrentUser = Boolean(preferredLanguage) && requestedTargets.some((target) => getTranslationVariantLanguage(target) === preferredLanguage);
     const state = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
     const disabled = message.translationMeta?.reason === "service_disabled";
     const mocked = message.translationMeta?.provider === "mock";
@@ -6611,9 +6643,6 @@
     }
 
     if (!translation) {
-      if (preferredKey && hasConceptVariantForCurrentLanguage) {
-        return { text: "", failed: false, pending: true, mocked: false, disabled, translated: false };
-      }
       if (state === "pending" && requestedForCurrentUser) {
         return { text: "", failed: false, pending: true, mocked: false, disabled, translated: false };
       }
@@ -6652,7 +6681,8 @@
     const viewerConcept = getUserTranslationConcept(currentUser);
     const targetKey = buildTranslationVariantKey(targetLanguage, viewerConcept);
     if (!targetKey) return;
-    if (message.translations?.[targetKey]?.text) return;
+    const existingTranslation = findStoredTranslationForLanguage(message, targetLanguage, viewerConcept);
+    if (hasUsableTranslationEntry(existingTranslation.entry) && !existingTranslation.entry.failed) return;
 
     const requestedTargets = new Set(Array.isArray(message.translationMeta?.requestedTargets) ? message.translationMeta.requestedTargets : []);
     const translationState = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
@@ -10225,73 +10255,100 @@
     }
 
     const requestPromise = (async () => {
-      try {
-        logEncodingTrace("client-translate-request", text, {
-          sourceLanguage,
-          targetLanguages,
-          translationConcept,
-        });
-        // Later this request can move to a real auth/session-aware Node.js + WebSocket message pipeline.
-        const response = await fetch(CONFIG.translationApiPath, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            text,
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const finalAttempt = attempt === 1;
+        try {
+          logEncodingTrace("client-translate-request", text, {
             sourceLanguage,
             targetLanguages,
             translationConcept,
-            contextSummary: String(options.contextSummary || "").trim(),
-          }),
-        });
+            attempt: attempt + 1,
+          });
+          // Later this request can move to a real auth/session-aware Node.js + WebSocket message pipeline.
+          const response = await fetch(CONFIG.translationApiPath, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              text,
+              sourceLanguage,
+              targetLanguages,
+              translationConcept,
+              contextSummary: String(options.contextSummary || "").trim(),
+            }),
+          });
 
-        const payload = await readJsonResponseBody(response);
-        if (!response.ok) {
-          const reason = normalizeTranslationFailureReason(payload?.error, response.status);
+          const payload = await readJsonResponseBody(response);
+          if (!response.ok) {
+            const reason = normalizeTranslationFailureReason(payload?.error, response.status);
+            if (!finalAttempt && Number(response.status) >= 500) {
+              console.warn("[translation] retry-request", {
+                sourceLanguage,
+                targetLanguages,
+                translationConcept,
+                attempt: attempt + 1,
+                reason,
+              });
+              await new Promise((resolve) => setTimeout(resolve, 180));
+              continue;
+            }
+            updateBackendStatus({
+              serverReachable: true,
+              liveTranslationEnabled: false,
+              translationConfigured: payload?.error === "missing_api_key" ? false : runtime.backend.translationConfigured,
+              lastTranslationError: payload?.error || reason,
+              lastTranslationErrorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+              checkedAt: Date.now(),
+            });
+            return {
+              status: "failed",
+              reason,
+              errorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+            };
+          }
+
           updateBackendStatus({
             serverReachable: true,
+            liveTranslationEnabled: true,
+            model: payload?.model || null,
+            translationConfigured: true,
+            lastTranslationError: null,
+            lastTranslationErrorDetail: null,
+            checkedAt: Date.now(),
+          });
+          return {
+            status: "success",
+            translations: payload?.translations || null,
+            provider: "openai",
+            model: payload?.model || null,
+          };
+        } catch (error) {
+          if (!finalAttempt) {
+            console.warn("[translation] retry-request", {
+              sourceLanguage,
+              targetLanguages,
+              translationConcept,
+              attempt: attempt + 1,
+              reason: "server_unreachable",
+              errorDetail: String(error?.message || error || "Server unreachable"),
+            });
+            await new Promise((resolve) => setTimeout(resolve, 180));
+            continue;
+          }
+          updateBackendStatus({
+            serverReachable: false,
             liveTranslationEnabled: false,
-            translationConfigured: payload?.error === "missing_api_key" ? false : runtime.backend.translationConfigured,
-            lastTranslationError: payload?.error || reason,
-            lastTranslationErrorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+            lastTranslationError: "server_unreachable",
+            lastTranslationErrorDetail: String(error?.message || error || "Server unreachable"),
             checkedAt: Date.now(),
           });
           return {
             status: "failed",
-            reason,
-            errorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+            reason: "server_unreachable",
+            errorDetail: String(error?.message || error || "Server unreachable"),
           };
         }
-
-        updateBackendStatus({
-          serverReachable: true,
-          liveTranslationEnabled: true,
-          model: payload?.model || null,
-          translationConfigured: true,
-          lastTranslationError: null,
-          lastTranslationErrorDetail: null,
-          checkedAt: Date.now(),
-        });
-        return {
-          status: "success",
-          translations: payload?.translations || null,
-          provider: "openai",
-          model: payload?.model || null,
-        };
-      } catch (error) {
-        updateBackendStatus({
-          serverReachable: false,
-          liveTranslationEnabled: false,
-          lastTranslationError: "server_unreachable",
-          lastTranslationErrorDetail: String(error?.message || error || "Server unreachable"),
-          checkedAt: Date.now(),
-        });
-        return {
-          status: "failed",
-          reason: "server_unreachable",
-          errorDetail: String(error?.message || error || "Server unreachable"),
-        };
       }
     })().finally(() => {
       runtime.translationRequests.delete(requestKey);
