@@ -13,8 +13,17 @@ const PUSH_TOKEN_SCHEMA_VERSION = 1;
 const PORT = Number(process.env.PORT || 3000);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_TRANSLATION_MODEL || "gpt-5-mini";
-const FIREBASE_WEB_CONFIG_JSON = process.env.FIREBASE_WEB_CONFIG_JSON || "";
-const FIREBASE_VAPID_KEY = process.env.FIREBASE_VAPID_KEY || "";
+const FIREBASE_WEB_CONFIG_FALLBACK = {
+  apiKey: "AIzaSyB9ZcnjW7n0WVNVg3ELHvSUfnYK_BfK3_0",
+  authDomain: "transchat-push.firebaseapp.com",
+  projectId: "transchat-push",
+  storageBucket: "transchat-push.firebasestorage.app",
+  messagingSenderId: "1060316273156",
+  appId: "1:1060316273156:web:1404f3c390b189a7377351",
+};
+const FIREBASE_VAPID_KEY_FALLBACK = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTtF90lOTYkONeydXEBE_u0_IJQBHx6djF2yftZvhqpz2Ws";
+const FIREBASE_WEB_CONFIG_JSON = process.env.FIREBASE_WEB_CONFIG_JSON || JSON.stringify(FIREBASE_WEB_CONFIG_FALLBACK);
+const FIREBASE_VAPID_KEY = process.env.FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY_FALLBACK;
 const FIREBASE_SERVICE_ACCOUNT_PATH = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "";
 const TYPING_SIGNAL_TTL_MS = 4500;
 const PRESENCE_SIGNAL_TTL_MS = 2 * 60 * 1000;
@@ -295,7 +304,13 @@ async function handlePushSendTest(req, res) {
 
     const payload = buildTestPushPayload(userId, type);
     const result = await sendPushToUser(userId, payload);
-    console.info("[push-test]", { userId, type, attempted: result.attempted, delivered: result.delivered });
+    console.info("[push-test]", {
+      userId,
+      type,
+      attempted: result.attempted,
+      delivered: result.delivered,
+      errors: result.errors || [],
+    });
 
     return sendJson(res, 200, {
       ok: true,
@@ -303,6 +318,8 @@ async function handlePushSendTest(req, res) {
       userId,
       attempted: result.attempted,
       delivered: result.delivered,
+      errors: result.errors || [],
+      reason: result.reason || "",
       roomId: payload.roomId || "",
       inviteId: payload.inviteId || "",
     });
@@ -785,6 +802,8 @@ async function sendPushToUser(userId, payload) {
     return {
       attempted: 0,
       delivered: 0,
+      reason: "no_registered_tokens",
+      errors: [],
     };
   }
 
@@ -793,10 +812,13 @@ async function sendPushToUser(userId, payload) {
     return {
       attempted: tokens.length,
       delivered: 0,
+      reason: "firebase_admin_unavailable",
+      errors: [],
     };
   }
 
   let delivered = 0;
+  const errors = [];
 
   for (const entry of tokens) {
     try {
@@ -813,6 +835,11 @@ async function sendPushToUser(userId, payload) {
       delivered += 1;
     } catch (error) {
       console.error("[push-send]", error);
+      errors.push({
+        code: String(error?.code || error?.errorInfo?.code || "unknown_error"),
+        message: String(error?.message || "Push send failed"),
+        tokenTail: entry.token.slice(-12),
+      });
       if (isInvalidPushTokenError(error)) {
         removePushToken({ token: entry.token });
         await savePushTokenState(pushTokenState);
@@ -823,6 +850,8 @@ async function sendPushToUser(userId, payload) {
   return {
     attempted: tokens.length,
     delivered,
+    reason: delivered > 0 ? "" : errors[0]?.code || "push_send_failed",
+    errors,
   };
 }
 

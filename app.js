@@ -7,6 +7,7 @@
   const LANDING_UI_KEY = "transchat-landing-ui-v1";
   const PUSH_TOKEN_CACHE_KEY = "transchat-push-token-v1";
   const PUSH_TOKEN_USER_KEY = "transchat-push-user-v1";
+  const FCM_VAPID_PUBLIC_KEY = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTtF90lOTYkONeydXEBE_u0_IJQBHx6djF2yftZvhqpz2Ws";
   const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY, PUSH_TOKEN_CACHE_KEY, PUSH_TOKEN_USER_KEY]);
   const CONFIG = {
     roomExpireMs: 30 * 60 * 1000,
@@ -9714,9 +9715,14 @@
     if (runtime.push.serviceWorkerRegistration) {
       return runtime.push.serviceWorkerRegistration;
     }
-    const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js", { scope: "/" });
-    runtime.push.serviceWorkerRegistration = registration;
-    return registration;
+    try {
+      const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+      runtime.push.serviceWorkerRegistration = registration;
+      return registration;
+    } catch (error) {
+      console.error("[push] service worker registration failed", error);
+      throw error;
+    }
   }
 
   async function ensurePushMessagingClient() {
@@ -9735,7 +9741,7 @@
 
     runtime.push.initPromise = (async () => {
       const config = await fetchPushConfig();
-      if (!(config?.enabled && config?.webConfig && config?.vapidKey)) {
+      if (!(config?.enabled && config?.webConfig)) {
         runtime.push.status = "unavailable";
         runtime.push.lastError = "push_not_configured";
         return null;
@@ -9802,19 +9808,23 @@
 
     const permission = syncPushPermissionState();
     if (permission !== "granted") {
+      console.warn("[push] getToken skipped because notification permission is not granted", { permission });
       return false;
     }
 
     const messaging = await ensurePushMessagingClient();
-    if (!(messaging && runtime.push.serviceWorkerRegistration && runtime.push.config?.vapidKey)) {
+    const registration = runtime.push.serviceWorkerRegistration || await registerPushServiceWorker();
+    if (!(messaging && registration)) {
       return false;
     }
 
     try {
       const token = await messaging.getToken({
-        vapidKey: runtime.push.config.vapidKey,
-        serviceWorkerRegistration: runtime.push.serviceWorkerRegistration,
+        vapidKey: FCM_VAPID_PUBLIC_KEY,
+        serviceWorkerRegistration: registration,
       });
+
+      console.log("FCM token:", token);
 
       if (!token) {
         runtime.push.status = "error";
@@ -9850,6 +9860,7 @@
       runtime.push.lastError = "";
       return true;
     } catch (error) {
+      console.error("[push] getToken failed", error);
       runtime.push.status = "error";
       runtime.push.lastError = String(error?.message || error || "push_register_failed");
       console.warn("[push] register failed", runtime.push.lastError);
@@ -9955,6 +9966,9 @@
       }
 
       console.info("[push-test] delivered", payload);
+      if (payload?.delivered > 0 && document.visibilityState === "visible") {
+        showLocalPushTestPreview(pushType, payload);
+      }
       pushToast("pushTestSuccessTitle", "pushTestSuccessCopy", {
         type: pushType === "invite" ? t("pushTestInviteButton") : t("pushTestMessageButton"),
       });
@@ -9964,6 +9978,42 @@
       pushToast("pushTestFailedTitle", "pushTestFailedCopy");
       return false;
     }
+  }
+
+  function showLocalPushTestPreview(type, payload = {}) {
+    const previewPayload =
+      type === "invite"
+        ? {
+            type: "invite",
+            senderName: "TRANSCHAT",
+            previewText: "",
+            title: t("pushToastInviteTitle"),
+            body: t("pushToastInviteCopy", { name: "TRANSCHAT" }),
+            inviteId: payload?.inviteId || "",
+          }
+        : {
+            type: "message",
+            senderName: "TRANSCHAT",
+            previewText: "테스트 푸시 알림입니다.",
+            title: t("pushToastMessageTitle"),
+            body: t("pushToastMessageCopy", { name: "TRANSCHAT", preview: "테스트 푸시 알림입니다." }),
+            roomId: payload?.roomId || "",
+          };
+
+    try {
+      if (getPushPermissionState() === "granted" && typeof Notification !== "undefined") {
+        const notification = new Notification(previewPayload.title, {
+          body: previewPayload.body,
+          tag: `push-test-${type}`,
+        });
+        window.setTimeout(() => notification.close(), 4000);
+        return;
+      }
+    } catch (error) {
+      console.warn("[push-test] local notification preview failed", error);
+    }
+
+    handleForegroundPushPayload(previewPayload);
   }
 
   function handleForegroundPushPayload(payload) {
