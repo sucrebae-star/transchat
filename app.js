@@ -1,11 +1,16 @@
 (function () {
+  const STATE_SCHEMA_VERSION = 2;
   const STORAGE_KEY = "transchat-prototype-state-v1";
   const SESSION_USER_KEY = "transchat-active-user-v1";
+  const AUTO_LOGIN_KEY = "transchat-auto-login-v1";
+  const REMEMBERED_LOGIN_ID_KEY = "transchat-remembered-login-id-v1";
   const LANDING_UI_KEY = "transchat-landing-ui-v1";
+  const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY]);
   const CONFIG = {
     roomExpireMs: 30 * 60 * 1000,
     passwordAttemptLimit: 5,
     passwordLockMs: 90 * 1000,
+    mediaExpireHours: 24,
     freeDailyMessageLimit: 30,
     freeResetHour: 7,
     monthlyPlanPrice: 9900,
@@ -17,6 +22,14 @@
     imageMaxBytes: 10 * 1024 * 1024,
     profileImageMaxBytes: 5 * 1024 * 1024,
     videoMaxBytes: 50 * 1024 * 1024,
+    imageMaxDimension: 1600,
+    videoMaxDimension: 960,
+    videoCompressionEnabled: true,
+    videoTargetBitrate: 1_200_000,
+    videoAudioBitrate: 96_000,
+    mediaCleanupIntervalMs: 5 * 60 * 1000,
+    storageWarningThreshold: 0.82,
+    recentSeenThresholdMinutes: 60,
     allowedImageMimeTypes: ["image/jpeg", "image/png", "image/webp"],
     heartbeatMs: 30 * 1000,
     typingIdleMs: 1600,
@@ -41,11 +54,16 @@
     nativeLanguage: "ko",
     uiLanguage: "ko",
   });
+  const MEDIA_DB_NAME = "transchat-media-v1";
+  const MEDIA_DB_STORE = "chat-media";
 
   const APP_ROOT = document.getElementById("app");
   const runtime = {
     clientId: `client-${Math.random().toString(36).slice(2, 10)}`,
     videoUrls: new Map(),
+    mediaObjectUrls: new Map(),
+    mediaLoadPromises: new Map(),
+    mediaDbPromise: null,
     statusTimers: new Map(),
     toastTimers: new Map(),
     typingStopTimers: new Map(),
@@ -56,6 +74,7 @@
     healthTimer: null,
     serverSyncTimer: null,
     softRenderTimer: null,
+    mediaCleanupTimer: null,
     eventSource: null,
     serverEventsConnected: false,
     compositionActive: false,
@@ -68,6 +87,7 @@
     keyboardOffset: 0,
     preservedScrollPositions: {},
     receiptTimer: null,
+    storageEstimate: null,
     typingSignals: {},
     presenceSignals: {},
     lastTypingSignalAt: {},
@@ -79,6 +99,9 @@
       model: null,
       sharedStateEnabled: false,
       hasServerState: false,
+      translationConfigured: false,
+      lastTranslationError: null,
+      lastTranslationErrorDetail: null,
       checkedAt: 0,
     },
   };
@@ -107,6 +130,7 @@
     landing: {
       name: "",
       password: "",
+      autoLogin: false,
       nativeLanguage: "ko",
       uiLanguage: localStorage.getItem(LANDING_UI_KEY) || "ko",
       nativeAccordionOpen: false,
@@ -169,6 +193,45 @@
 
   const DEFAULT_PROFILE_IMAGE =
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' rx='28' fill='%23eef3fb'/%3E%3Ccircle cx='48' cy='35' r='18' fill='%2398a8c0'/%3E%3Cpath d='M20 82c4-16 16-24 28-24s24 8 28 24' fill='%2398a8c0'/%3E%3C/svg%3E";
+
+  Object.assign(DICTIONARY.ko, {
+    presenceRecentSeen: "최근 접속",
+    presenceHoursAgo: "{count}시간 전 접속",
+    presenceDaysAgo: "{count}일 전 접속",
+    profilePopupLastSeen: "마지막 접속",
+    toastMediaStorageFailed: "미디어 저장에 실패했습니다",
+    toastMediaStorageFailedCopy: "브라우저 저장 공간 또는 미디어 처리 상태를 확인한 뒤 다시 시도해 주세요.",
+    mediaExpiredLabel: "만료된 미디어",
+    mediaExpiredCopy: "이 미디어는 업로드 후 24시간이 지나 자동 삭제되었습니다.",
+    mediaExpiresIn: "만료: {time}",
+    mediaExpiresAfterUpload: "업로드 후 {hours}시간 뒤 자동 삭제",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    presenceRecentSeen: "Recently active",
+    presenceHoursAgo: "Active {count}h ago",
+    presenceDaysAgo: "Active {count}d ago",
+    profilePopupLastSeen: "Last seen",
+    toastMediaStorageFailed: "Media could not be saved",
+    toastMediaStorageFailedCopy: "Please check available browser storage and try again.",
+    mediaExpiredLabel: "Expired media",
+    mediaExpiredCopy: "This media was automatically deleted 24 hours after upload.",
+    mediaExpiresIn: "{time}",
+    mediaExpiresAfterUpload: "Auto-deletes {hours} hours after upload",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    presenceRecentSeen: "Vua moi truy cap",
+    presenceHoursAgo: "Truy cap {count} gio truoc",
+    presenceDaysAgo: "Truy cap {count} ngay truoc",
+    profilePopupLastSeen: "Lan truy cap cuoi",
+    toastMediaStorageFailed: "Khong the luu media",
+    toastMediaStorageFailedCopy: "Hay kiem tra dung luong trinh duyet roi thu lai.",
+    mediaExpiredLabel: "Media da het han",
+    mediaExpiredCopy: "Media nay da tu dong bi xoa sau 24 gio ke tu luc tai len.",
+    mediaExpiresIn: "Het han: {time}",
+    mediaExpiresAfterUpload: "Tu dong xoa sau {hours} gio ke tu luc tai len",
+  });
 
   const LOCALES = {
     ko: "ko-KR",
@@ -1238,6 +1301,30 @@
     profilePopupEmpty: "Chua cai dat",
   });
 
+  Object.assign(DICTIONARY.ko, {
+    authAutoLoginLabel: "자동로그인",
+    translationMockBadge: "모의 번역",
+    translationDisabledBadge: "번역 꺼짐",
+    translationDisabledMode: "번역 꺼짐",
+    translationIssueMode: "번역 오류",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    authAutoLoginLabel: "Auto login",
+    translationMockBadge: "Mock translation",
+    translationDisabledBadge: "Translation off",
+    translationDisabledMode: "Translation off",
+    translationIssueMode: "Translation issue",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    authAutoLoginLabel: "Tu dong dang nhap",
+    translationMockBadge: "Dich gia lap",
+    translationDisabledBadge: "Da tat dich",
+    translationDisabledMode: "Da tat dich",
+    translationIssueMode: "Loi dich",
+  });
+
   // Added: plan/pricing copy stays in the central dictionary so the lightweight billing preview remains localizable.
   Object.assign(DICTIONARY.ko, {
     planSectionTitle: "현재 이용중인 플랜",
@@ -1411,6 +1498,8 @@
   });
 
   function loadState() {
+    cleanupLegacyBrowserStorage();
+    hydrateRememberedLandingState();
     const parsed = readPersistedState();
     if (parsed) return parsed;
 
@@ -1433,11 +1522,36 @@
   }
 
   function normalizeLoadedState(parsed) {
-    if (!(parsed && parsed.version === 1)) {
+    if (!(parsed && [1, STATE_SCHEMA_VERSION].includes(Number(parsed.version || 0)))) {
       return null;
     }
 
     return sanitizeAppState(parsed);
+  }
+
+  function cleanupLegacyBrowserStorage() {
+    try {
+      const keysToRemove = [];
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (!key || !key.startsWith("transchat-") || KNOWN_LOCAL_STORAGE_KEYS.has(key)) continue;
+        keysToRemove.push(key);
+      }
+      keysToRemove.forEach((key) => localStorage.removeItem(key));
+    } catch (error) {
+      console.warn("Failed to clean legacy browser storage", error);
+    }
+  }
+
+  function hydrateRememberedLandingState() {
+    try {
+      const rememberedLoginId = localStorage.getItem(REMEMBERED_LOGIN_ID_KEY);
+      if (rememberedLoginId && !uiState.landing.name) {
+        uiState.landing.name = rememberedLoginId;
+      }
+    } catch (error) {
+      console.warn("Failed to restore remembered login id", error);
+    }
   }
 
   function createSeedState() {
@@ -1533,7 +1647,7 @@
     ];
 
     return {
-      version: 1,
+      version: STATE_SCHEMA_VERSION,
       settings: {
         theme: "system",
       },
@@ -1689,11 +1803,86 @@
       return message;
     }
 
+    const translations = sanitizeTranslations(message.translations, message.originalText, message.sourceLanguage);
+
     return {
       ...message,
       status: ["composing", "sent", "delivered", "read"].includes(message.status) ? message.status : "sent",
+      media: sanitizeMediaState(message.media),
       deliveredTo: filterRecordByAllowedKeys(message.deliveredTo, allowedUserIds),
       readBy: filterRecordByAllowedKeys(message.readBy, allowedUserIds),
+      translations,
+      translationMeta: sanitizeTranslationMeta(message.translationMeta, translations, message.sourceLanguage),
+    };
+  }
+
+  function sanitizeTranslations(translations, originalText, sourceLanguage) {
+    return Object.fromEntries(
+      Object.entries(translations || {})
+        .filter(([language]) => Object.prototype.hasOwnProperty.call(CHAT_LANGUAGES, language))
+        .map(([language, entry]) => {
+          const text = typeof entry?.text === "string" ? entry.text : "";
+          const failed = Boolean(entry?.failed);
+          const looksLikeLegacyFallback = language !== sourceLanguage && !failed && text === String(originalText || "");
+          if (!text && !failed) return null;
+          if (looksLikeLegacyFallback) return null;
+          return [
+            language,
+            {
+              text: text || String(originalText || ""),
+              failed,
+            },
+          ];
+        })
+        .filter(Boolean)
+    );
+  }
+
+  function sanitizeTranslationMeta(meta, translations, sourceLanguage) {
+    const requestedTargets = [...new Set(
+      (Array.isArray(meta?.requestedTargets) ? meta.requestedTargets : Object.keys(translations || {}))
+        .map((language) => String(language || "").trim())
+        .filter((language) => Object.prototype.hasOwnProperty.call(CHAT_LANGUAGES, language) && language !== sourceLanguage)
+    )];
+    const provider = typeof meta?.provider === "string" ? meta.provider : "none";
+    const live = Boolean(meta?.live);
+    const state =
+      typeof meta?.state === "string"
+        ? meta.state
+        : meta?.pending
+          ? "pending"
+          : provider === "mock"
+            ? "mock"
+            : provider === "none" && !requestedTargets.length
+              ? "idle"
+              : "success";
+
+    return {
+      provider,
+      model: meta?.model || null,
+      live,
+      pending: state === "pending",
+      state,
+      reason: typeof meta?.reason === "string" ? meta.reason : null,
+      errorDetail: typeof meta?.errorDetail === "string" ? meta.errorDetail : null,
+      requestedTargets,
+      completedAt: Number(meta?.completedAt || 0) || null,
+    };
+  }
+
+  function sanitizeMediaState(media) {
+    if (!media || !isChatMediaKind(media.kind)) {
+      return media || null;
+    }
+
+    return {
+      ...media,
+      mediaId: String(media.mediaId || "").trim() || null,
+      mimeType: String(media.mimeType || "").trim(),
+      uploadedAt: Number(media.uploadedAt || Date.now()),
+      expiresAt: Number(media.expiresAt || 0) || null,
+      expired: Boolean(media.expired) || isMediaExpired(media),
+      storage: media.storage === "indexeddb" ? "indexeddb" : media.storage === "draft" ? "draft" : media.storage,
     };
   }
 
@@ -1708,7 +1897,7 @@
 
   function createInitialState() {
     return {
-      version: 1,
+      version: STATE_SCHEMA_VERSION,
       settings: {
         theme: "system",
       },
@@ -1728,6 +1917,7 @@
     const deletedRoomIds = new Set(Object.keys(deletedRooms));
     const nextState = {
       ...parsed,
+      version: STATE_SCHEMA_VERSION,
       settings: {
         theme: parsed?.settings?.theme || "system",
       },
@@ -1783,6 +1973,7 @@
               ? normalizeRecoveryAnswer(user.recoveryAnswer)
               : normalizeRecoveryAnswer(user?.name),
           joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
+          lastSeenAt: Number(user?.lastSeenAt || user?.lastLoginAt || user?.joinedAt || user?.createdAt || Date.now()),
           lastLoginAt: Number(user?.lastLoginAt || 0) || null,
           loginState: user?.loginState === "online" ? "online" : "offline",
           hasUnreadInvites: Boolean(user?.hasUnreadInvites),
@@ -1914,6 +2105,7 @@
     const currentUser = getCurrentUser();
     if (!currentUser) {
       if (getActiveUserId()) {
+        clearAutoLoginState();
         setActiveUserId(null);
       }
       uiState.activeRoomId = null;
@@ -1936,31 +2128,94 @@
   function applyPersistedState() {
     const persisted = readPersistedState();
     if (!persisted) return;
-    applyStateSnapshot(persisted);
+    applyStateSnapshot(persisted, { source: "storage", skipPersist: true });
   }
 
-  function shouldPreserveLocalActiveUser(nextState) {
+  function reconcileServerSnapshot(nextState) {
     const activeUserId = getActiveUserId();
-    if (!activeUserId) return false;
+    if (!activeUserId) {
+      return { state: nextState, mergedLocalActiveUser: false };
+    }
+
+    if ((nextState.users || []).some((user) => user.id === activeUserId)) {
+      return { state: nextState, mergedLocalActiveUser: false };
+    }
+
+    if (nextState.deletedUsers?.[activeUserId]) {
+      clearAutoLoginState();
+      setActiveUserId(null);
+      return { state: nextState, mergedLocalActiveUser: false };
+    }
 
     const localCurrentUser = appState.users.find((user) => user.id === activeUserId);
-    if (!localCurrentUser) return false;
+    if (!localCurrentUser) {
+      return { state: nextState, mergedLocalActiveUser: false };
+    }
 
-    return !(nextState.users || []).some((user) => user.id === activeUserId);
+    const mergedState = sanitizeAppState({
+      ...nextState,
+      version: STATE_SCHEMA_VERSION,
+      users: [...(nextState.users || []), localCurrentUser],
+      updatedAt: Math.max(getStateTimestamp(nextState), Number(localCurrentUser.lastSeenAt || 0), Date.now()),
+    });
+
+    return {
+      state: mergedState || nextState,
+      mergedLocalActiveUser: true,
+    };
+  }
+
+  function syncPresenceSignalsWithAppState() {
+    const knownUserIds = new Set((appState.users || []).map((user) => user.id));
+    Object.keys(runtime.presenceSignals).forEach((userId) => {
+      if (!knownUserIds.has(userId)) {
+        delete runtime.presenceSignals[userId];
+      }
+    });
+
+    (appState.users || []).forEach((user) => {
+      const existingSignal = runtime.presenceSignals[user.id];
+      if (user.loginState === "offline") {
+        runtime.presenceSignals[user.id] = {
+          userId: user.id,
+          currentRoomId: null,
+          lastSeenAt: Number(user.lastSeenAt || existingSignal?.lastSeenAt || Date.now()),
+          loginState: "offline",
+        };
+        return;
+      }
+
+      if (!existingSignal) return;
+      runtime.presenceSignals[user.id] = {
+        ...existingSignal,
+        currentRoomId: user.currentRoomId || existingSignal.currentRoomId || null,
+        lastSeenAt: Math.max(Number(existingSignal.lastSeenAt || 0), Number(user.lastSeenAt || 0)),
+        loginState: user.loginState === "online" ? "online" : existingSignal.loginState || "offline",
+      };
+    });
   }
 
   function applyStateSnapshot(nextState, options = {}) {
     const previousActiveRoom = appState.rooms.find((room) => room.id === uiState.activeRoomId) || null;
-    if (options.source === "server" && shouldPreserveLocalActiveUser(nextState)) {
-      scheduleServerStateSync();
-      return false;
+    let snapshot = nextState;
+    let mergedLocalActiveUser = false;
+    if (options.source === "server") {
+      const reconciled = reconcileServerSnapshot(nextState);
+      snapshot = reconciled.state;
+      mergedLocalActiveUser = reconciled.mergedLocalActiveUser;
     }
 
-    appState = nextState;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+    appState = snapshot;
+    if (!options.skipPersist) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+    }
+    syncPresenceSignalsWithAppState();
     syncUiWithCurrentUserState();
     if (previousActiveRoom && !appState.rooms.some((room) => room.id === previousActiveRoom.id)) {
       pushToast("toastRoomDeleted", "toastRoomDeletedCopy", { title: previousActiveRoom.title });
+    }
+    if (mergedLocalActiveUser) {
+      scheduleServerStateSync();
     }
     if (options.source === "server" && shouldDeferNonCriticalRender()) {
       renderSafelyDuringInput();
@@ -2036,15 +2291,24 @@
 
       if (!serverIsEmpty && getStateTimestamp(serverState) >= getStateTimestamp(appState)) {
         applyStateSnapshot(serverState, { source: "server" });
+        if (!getCurrentUser()) {
+          restoreAutoLoginSession();
+        }
         return;
       }
 
       if (serverIsEmpty && !localHasData) {
         applyStateSnapshot(serverState, { source: "server" });
+        if (!getCurrentUser()) {
+          restoreAutoLoginSession();
+        }
         return;
       }
     }
 
+    if (!getCurrentUser()) {
+      restoreAutoLoginSession();
+    }
     scheduleServerStateSync();
   }
 
@@ -2058,6 +2322,76 @@
     } else {
       sessionStorage.removeItem(SESSION_USER_KEY);
     }
+  }
+
+  function persistAutoLoginState(user) {
+    if (!user?.id) return;
+    const payload = {
+      version: STATE_SCHEMA_VERSION,
+      userId: user.id,
+      loginId: user.loginId || user.name,
+      savedAt: Date.now(),
+    };
+    localStorage.setItem(AUTO_LOGIN_KEY, JSON.stringify(payload));
+    localStorage.setItem(REMEMBERED_LOGIN_ID_KEY, payload.loginId);
+  }
+
+  function clearAutoLoginState(options = {}) {
+    localStorage.removeItem(AUTO_LOGIN_KEY);
+    if (options.keepRememberedId) return;
+    localStorage.removeItem(REMEMBERED_LOGIN_ID_KEY);
+  }
+
+  function syncAutoLoginPreference(user, shouldRemember) {
+    if (shouldRemember) {
+      persistAutoLoginState(user);
+      return;
+    }
+    clearAutoLoginState();
+  }
+
+  function readAutoLoginState() {
+    const raw = localStorage.getItem(AUTO_LOGIN_KEY);
+    if (!raw) return null;
+
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        userId: String(parsed?.userId || "").trim(),
+        loginId: normalizeAccountId(parsed?.loginId || ""),
+      };
+    } catch (error) {
+      console.warn("Failed to parse auto login state", error);
+      clearAutoLoginState();
+      return null;
+    }
+  }
+
+  function restoreAutoLoginSession(options = {}) {
+    if (getActiveUserId()) return false;
+    const remembered = readAutoLoginState();
+    if (!remembered?.userId && !remembered?.loginId) return false;
+
+    const user =
+      appState.users.find((item) => item.id === remembered.userId) ||
+      appState.users.find((item) => normalizeAccountId(item.loginId || item.name) === remembered.loginId) ||
+      null;
+
+    if (!user || appState.deletedUsers?.[user.id] || (!isAdminUser(user) && !isAllowedPrivateTester(user.name))) {
+      if (options.clearOnMissing !== false) {
+        clearAutoLoginState();
+      }
+      return false;
+    }
+
+    uiState.landing.autoLogin = true;
+    uiState.landing.uiLanguage = user.uiLanguage || uiState.landing.uiLanguage || "ko";
+    completeLandingLogin(user, {
+      toastKey: false,
+      preserveStoredUiLanguage: true,
+      autoLogin: true,
+    });
+    return true;
   }
 
   function getCurrentUser() {
@@ -2503,6 +2837,350 @@
     return dataUrl;
   }
 
+  async function loadImageForCanvas(file) {
+    if (typeof createImageBitmap === "function") {
+      const bitmap = await createImageBitmap(file);
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        cleanup() {
+          bitmap.close();
+        },
+      };
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    const image = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error("image_load_failed"));
+      element.src = objectUrl;
+    });
+    return {
+      source: image,
+      width: image.naturalWidth || image.width,
+      height: image.naturalHeight || image.height,
+      cleanup() {
+        URL.revokeObjectURL(objectUrl);
+      },
+    };
+  }
+
+  function getMediaExpireMs() {
+    return CONFIG.mediaExpireHours * 60 * 60 * 1000;
+  }
+
+  function buildMediaExpiry(uploadedAt = Date.now()) {
+    return {
+      uploadedAt,
+      expiresAt: uploadedAt + getMediaExpireMs(),
+    };
+  }
+
+  function isChatMediaKind(kind) {
+    return kind === "image" || kind === "video";
+  }
+
+  function isExpirableChatMedia(media) {
+    return Boolean(media && isChatMediaKind(media.kind));
+  }
+
+  function isMediaExpired(media, now = Date.now()) {
+    if (!isExpirableChatMedia(media)) return false;
+    if (media.expired) return true;
+    const expiresAt = Number(media.expiresAt || 0);
+    return Boolean(expiresAt && now >= expiresAt);
+  }
+
+  function getMediaExpiryLabel(expiresAt) {
+    const diffMs = Math.max(0, Number(expiresAt || Date.now()) - Date.now());
+    const diffMinutes = Math.ceil(diffMs / (60 * 1000));
+    const formatter = typeof Intl !== "undefined" && typeof Intl.RelativeTimeFormat === "function"
+      ? new Intl.RelativeTimeFormat(getLocale(), { numeric: "auto" })
+      : null;
+    if (diffMinutes < 60) {
+      return formatter ? formatter.format(Math.max(1, diffMinutes), "minute") : formatRemaining(diffMs);
+    }
+    const diffHours = Math.ceil(diffMinutes / 60);
+    if (diffHours < 24) {
+      return formatter ? formatter.format(diffHours, "hour") : `${diffHours}h`;
+    }
+    const diffDays = Math.ceil(diffHours / 24);
+    return formatter ? formatter.format(diffDays, "day") : `${diffDays}d`;
+  }
+
+  function blobToObjectUrl(blob) {
+    return blob instanceof Blob ? URL.createObjectURL(blob) : "";
+  }
+
+  function canvasToBlob(canvas, type, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (blob) {
+            resolve(blob);
+            return;
+          }
+          reject(new Error("canvas_blob_failed"));
+        },
+        type,
+        quality
+      );
+    });
+  }
+
+  async function openChatMediaDb() {
+    if (runtime.mediaDbPromise) {
+      return runtime.mediaDbPromise;
+    }
+
+    runtime.mediaDbPromise = new Promise((resolve, reject) => {
+      if (!("indexedDB" in window)) {
+        reject(new Error("indexeddb_unavailable"));
+        return;
+      }
+
+      const request = indexedDB.open(MEDIA_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        const store = database.objectStoreNames.contains(MEDIA_DB_STORE)
+          ? request.transaction.objectStore(MEDIA_DB_STORE)
+          : database.createObjectStore(MEDIA_DB_STORE, { keyPath: "id" });
+
+        if (!store.indexNames.contains("expiresAt")) {
+          store.createIndex("expiresAt", "expiresAt", { unique: false });
+        }
+        if (!store.indexNames.contains("roomId")) {
+          store.createIndex("roomId", "roomId", { unique: false });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("indexeddb_open_failed"));
+    });
+
+    return runtime.mediaDbPromise;
+  }
+
+  async function runMediaStore(mode, task) {
+    const database = await openChatMediaDb();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(MEDIA_DB_STORE, mode);
+      const store = transaction.objectStore(MEDIA_DB_STORE);
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        fn(value);
+      };
+
+      transaction.oncomplete = () => finish(resolve);
+      transaction.onerror = () => finish(reject, transaction.error || new Error("indexeddb_transaction_failed"));
+      transaction.onabort = () => finish(reject, transaction.error || new Error("indexeddb_transaction_aborted"));
+
+      try {
+        const result = task(store, resolve, reject);
+        if (result && typeof result.onsuccess === "function") {
+          result.onsuccess = () => finish(resolve, result.result);
+          result.onerror = () => finish(reject, result.error || new Error("indexeddb_request_failed"));
+        }
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
+  }
+
+  async function writeChatMediaRecord(record) {
+    if (!record?.id || !(record.blob instanceof Blob)) {
+      throw new Error("invalid_media_record");
+    }
+
+    await refreshStorageEstimate(record.fileSize || record.blob.size || 0);
+    await runMediaStore("readwrite", (store) => store.put(record));
+    await refreshStorageEstimate();
+    return record;
+  }
+
+  async function readChatMediaRecord(mediaId) {
+    if (!mediaId) return null;
+    return runMediaStore("readonly", (store) => store.get(mediaId));
+  }
+
+  async function deleteChatMediaRecord(mediaId) {
+    if (!mediaId) return;
+    revokeCachedMediaUrl(mediaId);
+    await runMediaStore("readwrite", (store, resolve) => {
+      const request = store.delete(mediaId);
+      request.onsuccess = () => resolve();
+      request.onerror = () => resolve();
+      return request;
+    });
+    await refreshStorageEstimate();
+  }
+
+  async function deleteChatMediaRecords(mediaIds) {
+    const uniqueIds = [...new Set((mediaIds || []).filter(Boolean))];
+    if (!uniqueIds.length) return;
+    uniqueIds.forEach((mediaId) => revokeCachedMediaUrl(mediaId));
+    await runMediaStore("readwrite", (store) => {
+      uniqueIds.forEach((mediaId) => store.delete(mediaId));
+    });
+    await refreshStorageEstimate();
+  }
+
+  async function listExpiredChatMediaIds(now = Date.now()) {
+    try {
+      return await runMediaStore("readonly", (store, resolve) => {
+        if (!store.indexNames.contains("expiresAt")) {
+          resolve([]);
+          return;
+        }
+
+        const request = store.index("expiresAt").getAll(IDBKeyRange.upperBound(now));
+        request.onsuccess = () => {
+          resolve(
+            (request.result || [])
+              .filter((item) => Number(item?.expiresAt || 0) <= now)
+              .map((item) => item.id)
+          );
+        };
+        request.onerror = () => resolve([]);
+        return request;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async function estimateStorageUsage(extraBytes = 0) {
+    if (!navigator.storage?.estimate) return null;
+    try {
+      const estimate = await navigator.storage.estimate();
+      const usage = Number(estimate?.usage || 0);
+      const quota = Number(estimate?.quota || 0);
+      const projectedUsage = usage + Number(extraBytes || 0);
+      return {
+        usage,
+        quota,
+        projectedUsage,
+        thresholdExceeded: quota > 0 ? projectedUsage / quota >= CONFIG.storageWarningThreshold : false,
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function refreshStorageEstimate(extraBytes = 0) {
+    runtime.storageEstimate = await estimateStorageUsage(extraBytes);
+    return runtime.storageEstimate;
+  }
+
+  function cacheMediaObjectUrl(mediaId, objectUrl) {
+    if (!mediaId || !objectUrl) return "";
+    revokeCachedMediaUrl(mediaId);
+    runtime.mediaObjectUrls.set(mediaId, objectUrl);
+    return objectUrl;
+  }
+
+  function revokeCachedMediaUrl(mediaId) {
+    const objectUrl = runtime.mediaObjectUrls.get(mediaId);
+    if (!objectUrl) return;
+    URL.revokeObjectURL(objectUrl);
+    runtime.mediaObjectUrls.delete(mediaId);
+  }
+
+  async function ensureIndexedMediaLoaded(media) {
+    if (!media?.mediaId || media.storage !== "indexeddb" || isMediaExpired(media)) {
+      return "";
+    }
+    const cached = runtime.mediaObjectUrls.get(media.mediaId);
+    if (cached) {
+      return cached;
+    }
+    if (runtime.mediaLoadPromises.has(media.mediaId)) {
+      return runtime.mediaLoadPromises.get(media.mediaId);
+    }
+
+    const loadPromise = (async () => {
+      const record = await readChatMediaRecord(media.mediaId);
+      if (!record?.blob) return "";
+      if (Number(record.expiresAt || 0) <= Date.now()) {
+        await deleteChatMediaRecord(media.mediaId);
+        return "";
+      }
+      return cacheMediaObjectUrl(media.mediaId, blobToObjectUrl(record.blob));
+    })()
+      .catch(() => "")
+      .finally(() => {
+        runtime.mediaLoadPromises.delete(media.mediaId);
+        renderSafelyDuringInput(90);
+      });
+
+    runtime.mediaLoadPromises.set(media.mediaId, loadPromise);
+    return loadPromise;
+  }
+
+  function collectMediaIdsFromMessages(messages) {
+    return (messages || [])
+      .map((message) => message?.media?.mediaId)
+      .filter(Boolean);
+  }
+
+  async function cleanupExpiredChatMedia(options = {}) {
+    const now = Date.now();
+    const expiredIds = new Set(await listExpiredChatMediaIds(now));
+    let changed = false;
+
+    appState.rooms.forEach((room) => {
+      room.messages = (room.messages || []).map((message) => {
+        if (!message?.media || !isExpirableChatMedia(message.media)) {
+          return message;
+        }
+        const mediaId = message.media.mediaId;
+        if (!isMediaExpired(message.media, now) && !expiredIds.has(mediaId)) {
+          return message;
+        }
+        if (message.media.expired) {
+          expiredIds.add(mediaId);
+          return message;
+        }
+        changed = true;
+        expiredIds.add(mediaId);
+        return {
+          ...message,
+          media: {
+            ...message.media,
+            expired: true,
+            deletedAt: now,
+          },
+        };
+      });
+    });
+
+    if (expiredIds.size) {
+      await deleteChatMediaRecords([...expiredIds]);
+    }
+
+    if (changed && options.persist !== false) {
+      persistState();
+      if (shouldDeferNonCriticalRender()) {
+        renderSafelyDuringInput();
+      } else {
+        render();
+      }
+    }
+
+    return changed;
+  }
+
+  function scheduleMediaDeletion(mediaIds) {
+    const ids = [...new Set((mediaIds || []).filter(Boolean))];
+    if (!ids.length) return;
+    deleteChatMediaRecords(ids).catch(() => {
+      // Media cleanup is best-effort in the prototype; missing blobs should not block room or account deletion.
+    });
+  }
+
   function renderProfileImage(imageOrUser, className, altText = "profile") {
     const source =
       typeof imageOrUser === "string" ? imageOrUser || DEFAULT_PROFILE_IMAGE : getUserProfileImage(imageOrUser);
@@ -2596,6 +3274,22 @@
       URL.revokeObjectURL(url);
       runtime.videoUrls.delete(runtimeId);
     }
+  }
+
+  function releaseDraftAttachment(attachment, options = {}) {
+    if (!attachment) return;
+    if (attachment.kind === "video" && attachment.runtimeId) {
+      revokeRuntimeVideo(attachment.runtimeId);
+    }
+    if (!options.preserveObjectUrl && attachment.objectUrl) {
+      URL.revokeObjectURL(attachment.objectUrl);
+    }
+  }
+
+  function adoptDraftMediaObjectUrl(attachment, mediaId) {
+    if (!attachment?.objectUrl || !mediaId) return;
+    cacheMediaObjectUrl(mediaId, attachment.objectUrl);
+    delete attachment.objectUrl;
   }
 
   function formatRelativeTime(timestamp) {
@@ -2745,21 +3439,65 @@
     return record === true || Boolean(record?.unlocked);
   }
 
+  function formatLastSeenLabel(timestamp) {
+    const lastSeenAt = Number(timestamp || 0);
+    if (!lastSeenAt) return t("presenceOffline");
+    const diffMs = Math.max(0, Date.now() - lastSeenAt);
+    const diffMinutes = Math.floor(diffMs / (60 * 1000));
+    if (diffMinutes < CONFIG.recentSeenThresholdMinutes) {
+      return t("presenceRecentSeen");
+    }
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) {
+      return t("presenceHoursAgo", { count: Math.max(1, diffHours) });
+    }
+    const diffDays = Math.floor(diffHours / 24);
+    return t("presenceDaysAgo", { count: Math.max(1, diffDays) });
+  }
+
+  function renderPresenceLabel(presence, options = {}) {
+    if (!presence) return "";
+    const roomNote = presence.inRoom ? `<span class="presence-room-note">${escapeHtml(t("presenceInRoom"))}</span>` : "";
+    return `
+      <span class="presence-inline ${options.compact ? "compact" : ""}">
+        <span class="presence-dot ${presence.kind}"></span>
+        <span>${escapeHtml(presence.label)}</span>
+        ${roomNote}
+      </span>
+    `;
+  }
+
   function getPresence(user, roomId) {
     const livePresence = runtime.presenceSignals[user.id];
     const lastSeenAt = Number(livePresence?.lastSeenAt || user.lastSeenAt || 0);
-    const currentRoomId = livePresence?.currentRoomId ?? user.currentRoomId;
+    const effectiveRoomId = livePresence?.loginState === "offline" ? null : livePresence?.currentRoomId || user.currentRoomId || null;
     const recentlyActive = Date.now() - lastSeenAt < 2 * 60 * 1000;
-    if (recentlyActive && roomId && currentRoomId === roomId) {
-      return { kind: "in-room", label: t("presenceInRoom") };
+    const explicitLoginState =
+      livePresence?.loginState === "offline" || user.loginState === "offline"
+        ? "offline"
+        : livePresence?.loginState === "online" || user.loginState === "online"
+          ? "online"
+          : null;
+    const inRoom = Boolean(roomId && effectiveRoomId && roomId === effectiveRoomId);
+
+    if (explicitLoginState === "online" && recentlyActive) {
+      return { kind: "online", label: t("presenceOnline"), lastSeenAt, roomId: effectiveRoomId, inRoom };
     }
-    if (recentlyActive && currentRoomId) {
-      return { kind: "in-room", label: t("presenceInRoom") };
+
+    if (explicitLoginState === "offline") {
+      return { kind: "offline", label: formatLastSeenLabel(lastSeenAt), lastSeenAt, roomId: null, inRoom: false };
     }
+
     if (recentlyActive) {
-      return { kind: "online", label: t("presenceOnline") };
+      return { kind: "online", label: t("presenceOnline"), lastSeenAt, roomId: effectiveRoomId, inRoom };
     }
-    return { kind: "offline", label: t("presenceOffline") };
+    return {
+      kind: "offline",
+      label: formatLastSeenLabel(lastSeenAt),
+      lastSeenAt,
+      roomId: effectiveRoomId,
+      inRoom: false,
+    };
   }
 
   function shouldDeferNonCriticalRender() {
@@ -3445,6 +4183,16 @@
               autocomplete="current-password"
             />
           </div>
+          <label class="landing-checkbox-row" for="entry-auto-login">
+            <input
+              id="entry-auto-login"
+              name="autoLogin"
+              type="checkbox"
+              data-input="landing-auto-login"
+              ${uiState.landing.autoLogin ? "checked" : ""}
+            />
+            <span>${escapeHtml(t("authAutoLoginLabel"))}</span>
+          </label>
           <div class="landing-auth-actions">
             <button class="button button-primary landing-auth-button" type="submit">${escapeHtml(t("loginButton"))}</button>
           </div>
@@ -3834,7 +4582,7 @@
           <strong>${escapeHtml(displayName)}</strong>
         </button>
         <div class="friend-row-tail">
-          <span class="friend-inline-presence ${presence.kind}">${escapeHtml(presence.label)}</span>
+          <span class="friend-inline-presence ${presence.kind}">${renderPresenceLabel(presence, { compact: true })}</span>
           ${currentUser ? renderConnectionActionV2(friend, currentUser) : `<span class="tiny-status ${presence.kind}">${escapeHtml(presence.label)}</span>`}
           ${canDeleteUser
             ? `<button class="connection-icon-button admin-delete-user-button" type="button" data-action="admin-delete-user" data-user-id="${friend.id}" aria-label="${escapeHtml(t("adminDeleteUserButton"))}" title="${escapeHtml(t("adminDeleteUserButton"))}">×</button>`
@@ -4208,19 +4956,21 @@
   function renderTopbarStatusBadges() {
     const status = runtime.backend;
     const syncReady = Boolean(runtime.serverEventsConnected || runtime.syncChannel);
-    const translationLabel = status.liveTranslationEnabled
-      ? `${t("translationLiveMode")}${status.model ? ` · ${status.model}` : ""}`
-      : t("translationFallbackMode");
     const displayTranslationLabel = status.liveTranslationEnabled
       ? `${t("translationLiveMode")}${status.model ? ` · ${status.model}` : ""}`
-      : t("translationFallbackMode");
+      : status.serverReachable && status.translationConfigured === false
+        ? t("translationDisabledMode")
+        : status.serverReachable && status.lastTranslationError
+          ? t("translationIssueMode")
+          : t("translationFallbackMode");
+    const translationTitle = status.lastTranslationErrorDetail || displayTranslationLabel;
 
     return `
       <div class="status-cluster">
         <span class="status-pill ${status.serverReachable ? "pill-success" : "pill-warning"}">${escapeHtml(
           status.serverReachable ? t("serverOnline") : t("serverOffline")
         )}</span>
-        <span class="status-pill ${status.liveTranslationEnabled ? "pill-accent" : "pill-warning"}">${escapeHtml(displayTranslationLabel)}</span>
+        <span class="status-pill ${status.liveTranslationEnabled ? "pill-accent" : "pill-warning"}" title="${escapeHtml(translationTitle)}">${escapeHtml(displayTranslationLabel)}</span>
         <span class="status-pill ${syncReady ? "pill-success" : "pill-warning"}">${escapeHtml(
           syncReady ? t("syncRealtime") : t("syncBasic")
         )}</span>
@@ -4469,9 +5219,8 @@
           <span>${escapeHtml(getChatLanguageName(friend.nativeLanguage))} · ${escapeHtml(getChatLanguageName(friend.preferredChatLanguage || friend.nativeLanguage))}</span>
         </div>
         <div class="button-row">
-          <span class="status-pill ${presence.kind === "in-room" ? "pill-accent" : presence.kind === "online" ? "pill-success" : ""}">
-            <span class="presence-dot ${presence.kind}"></span>
-            ${escapeHtml(presence.label)}
+          <span class="status-pill ${presence.kind === "online" ? "pill-success" : ""}">
+            ${renderPresenceLabel(presence)}
           </span>
           <button
             class="button button-secondary"
@@ -4721,7 +5470,9 @@
                 ${messageStatus ? `<span>${escapeHtml(t(`status${capitalize(messageStatus)}`))}</span>` : ""}
                 ${translated.pending ? `<span class="tiny-pill pill-warning">${escapeHtml(t("translationPendingBadge"))}</span>` : ""}
                 ${translated.failed ? `<span class="tiny-pill pill-danger">${escapeHtml(t("translationFailedBadge"))}</span>` : ""}
-                ${message.originalText && !translated.failed && !isMine && translated.text !== message.originalText ? `<span class="tiny-pill pill-accent">${escapeHtml(t("translatedBadge"))}</span>` : ""}
+                ${translated.mocked ? `<span class="tiny-pill pill-warning">${escapeHtml(t("translationMockBadge"))}</span>` : ""}
+                ${translated.disabled ? `<span class="tiny-pill pill-warning">${escapeHtml(t("translationDisabledBadge"))}</span>` : ""}
+                ${message.originalText && translated.translated && !translated.failed && !isMine && !translated.mocked ? `<span class="tiny-pill pill-accent">${escapeHtml(t("translatedBadge"))}</span>` : ""}
                 ${shouldShowToggle ? `<button class="text-button" data-action="toggle-original" data-message-id="${message.id}">${escapeHtml(showOriginal ? t("hideOriginal") : t("showOriginal"))}</button>` : ""}
               </div>
             </div>
@@ -4768,22 +5519,53 @@
         text: message.originalText,
         failed: Boolean(Object.values(message.translations || {}).some((entry) => entry.failed)),
         pending: false,
+        mocked: false,
+        disabled: false,
+        translated: false,
       };
     }
-    const preferredLanguage = currentUser.preferredChatLanguage || currentUser.nativeLanguage;
-    const translation =
-      message.translations?.[preferredLanguage] ||
-      message.translations?.[currentUser.nativeLanguage];
-    if (!translation) {
-      if (message.translationMeta?.pending) {
-        return { text: message.originalText, failed: false, pending: true };
-      }
-      return { text: message.originalText, failed: true, pending: false };
+
+    const fallbackLanguage = currentUser.nativeLanguage || message.sourceLanguage;
+    const preferredLanguages = [...new Set([currentUser.preferredChatLanguage, fallbackLanguage].filter(Boolean))];
+    const requestedTargets =
+      Array.isArray(message.translationMeta?.requestedTargets) && message.translationMeta.requestedTargets.length
+        ? message.translationMeta.requestedTargets
+        : Object.keys(message.translations || {}).filter((language) => language !== message.sourceLanguage);
+    const preferredLanguage = preferredLanguages.find((language) => language && language !== message.sourceLanguage) || null;
+    const translation = preferredLanguage ? message.translations?.[preferredLanguage] : null;
+    const requestedForCurrentUser = Boolean(preferredLanguage) && requestedTargets.includes(preferredLanguage);
+    const state = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
+    const disabled = message.translationMeta?.reason === "service_disabled";
+    const mocked = message.translationMeta?.provider === "mock";
+
+    if (!preferredLanguage) {
+      return {
+        text: message.originalText,
+        failed: false,
+        pending: false,
+        mocked: false,
+        disabled: false,
+        translated: false,
+      };
     }
+
+    if (!translation) {
+      if (state === "pending" && requestedForCurrentUser) {
+        return { text: message.originalText, failed: false, pending: true, mocked: false, disabled, translated: false };
+      }
+      if ((state === "failed" || state === "partial") && requestedForCurrentUser) {
+        return { text: message.originalText, failed: true, pending: false, mocked: false, disabled, translated: false };
+      }
+      return { text: message.originalText, failed: false, pending: false, mocked: false, disabled: false, translated: false };
+    }
+
     return {
       text: translation.text || message.originalText,
-      failed: translation.failed,
-      pending: false,
+      failed: Boolean(translation.failed),
+      pending: state === "pending" && !translation.text,
+      mocked: mocked && !translation.failed && (translation.text || message.originalText) !== message.originalText,
+      disabled: disabled && !(translation.text && translation.text !== message.originalText),
+      translated: Boolean(translation.text) && translation.text !== message.originalText,
     };
   }
 
@@ -4891,9 +5673,15 @@
   }
 
   function renderMedia(media, messageId) {
+    if (isMediaExpired(media)) {
+      return renderExpiredMediaCard(media);
+    }
+
     const source = resolveMediaSource(media);
     if (media.kind === "image") {
-      return `<div class="media-card"><button class="media-thumb" data-action="open-media" data-message-id="${messageId}"><img src="${source}" alt="${escapeHtml(media.name || "image")}" /></button></div>`;
+      return source
+        ? `<div class="media-card"><button class="media-thumb" data-action="open-media" data-message-id="${messageId}"><img src="${source}" alt="${escapeHtml(media.name || "image")}" /></button></div>`
+        : renderPendingMediaCard(media);
     }
     if (media.kind === "file") {
       return `
@@ -4915,7 +5703,7 @@
           <div class="video-meta">
             <strong>${escapeHtml(media.name || "video")}</strong>
             <span>${escapeHtml(formatBytes(media.size || 0))}</span>
-            <span>${escapeHtml(t("videoSessionOnly"))}</span>
+            <span>${escapeHtml(media.expiresAt ? t("mediaExpiresIn", { time: getMediaExpiryLabel(media.expiresAt) }) : t("videoSessionOnly"))}</span>
           </div>
           <div class="button-row">
             <button class="button button-secondary" data-action="open-media" data-message-id="${messageId}">${escapeHtml(t("mediaPreview"))}</button>
@@ -4927,9 +5715,44 @@
 
   function resolveMediaSource(media) {
     if (!media) return "";
+    if (isMediaExpired(media)) return "";
+    if (media.storage === "draft") return media.objectUrl || "";
     if (media.storage === "inline") return media.previewUrl;
     if (media.storage === "runtime") return runtime.videoUrls.get(media.runtimeId) || "";
+    if (media.storage === "indexeddb" && media.mediaId) {
+      const cached = runtime.mediaObjectUrls.get(media.mediaId);
+      if (cached) return cached;
+      ensureIndexedMediaLoaded(media);
+      return "";
+    }
     return media.previewUrl || "";
+  }
+
+  function renderExpiredMediaCard(media) {
+    return `
+      <div class="media-card">
+        <div class="video-card media-expired-card">
+          <div class="video-meta">
+            <strong>${escapeHtml(t("mediaExpiredLabel"))}</strong>
+            <span>${escapeHtml(t("mediaExpiredCopy"))}</span>
+            <span>${escapeHtml(media?.name || "")}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderPendingMediaCard(media) {
+    return `
+      <div class="media-card">
+        <div class="video-card">
+          <div class="video-meta">
+            <strong>${escapeHtml(media?.name || t("previewNotReady"))}</strong>
+            <span>${escapeHtml(t("previewNotReadyCopy"))}</span>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   function renderComposer(room, currentUser) {
@@ -4984,6 +5807,28 @@
                 : t("attachmentFileReady")
           )}</strong>
           <div class="helper">${escapeHtml(attachment.name)} · ${escapeHtml(formatBytes(attachment.size))}</div>
+        </div>
+        <div class="button-row">
+          ${attachment.kind !== "file" ? `<button class="button button-secondary" data-action="preview-draft-media">${escapeHtml(t("mediaPreview"))}</button>` : ""}
+          <button class="button button-danger" data-action="remove-attachment">${escapeHtml(t("removeAttachment"))}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderAttachmentPreview(attachment) {
+    const statusLabel =
+      attachment.kind === "image"
+        ? t("attachmentImageReady")
+        : attachment.kind === "video"
+          ? t("attachmentVideoReady")
+          : t("attachmentFileReady");
+    return `
+      <div class="attachment-preview">
+        <div>
+          <strong>${escapeHtml(statusLabel)}</strong>
+          <div class="helper">${escapeHtml(attachment.name)} · ${escapeHtml(formatBytes(attachment.size))}</div>
+          ${attachment.kind !== "file" ? `<div class="helper">${escapeHtml(t("mediaExpiresAfterUpload", { hours: CONFIG.mediaExpireHours }))}</div>` : ""}
         </div>
         <div class="button-row">
           ${attachment.kind !== "file" ? `<button class="button button-secondary" data-action="preview-draft-media">${escapeHtml(t("mediaPreview"))}</button>` : ""}
@@ -5079,9 +5924,8 @@
             <strong>${escapeHtml(participant.name)}</strong>
             <span>${escapeHtml(getChatLanguageName(participant.nativeLanguage))}</span>
           </div>
-          <span class="status-pill ${presence.kind === "in-room" ? "pill-accent" : presence.kind === "online" ? "pill-success" : ""}">
-            <span class="presence-dot ${presence.kind}"></span>
-            ${escapeHtml(presence.label)}
+          <span class="status-pill ${presence.kind === "online" ? "pill-success" : ""}">
+            ${renderPresenceLabel(presence)}
           </span>
         </div>
       </article>
@@ -5382,6 +6226,20 @@
   function renderMediaModal() {
     const media = uiState.previewMedia;
     if (!media) return "";
+    if (isMediaExpired(media)) {
+      return `
+        <section class="modal">
+          <div class="modal-header">
+            <h3>${escapeHtml(t("mediaModalTitle"))}</h3>
+            <p>${escapeHtml(media.name || "")}</p>
+          </div>
+          <div class="modal-body">${renderExpiredMediaCard(media)}</div>
+          <div class="modal-footer">
+            <button class="button button-secondary" data-action="close-modal">${escapeHtml(t("mediaModalClose"))}</button>
+          </div>
+        </section>
+      `;
+    }
     const source = resolveMediaSource(media);
     const content =
       media.kind === "image" && source
@@ -5466,6 +6324,121 @@
               <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupId"))}</span><strong>${escapeHtml(friend.loginId || "")}</strong></div>
               <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupGender"))}</span><strong>${escapeHtml(genderLabel)}</strong></div>
               <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupAge"))}</span><strong>${escapeHtml(friend.age || t("profilePopupEmpty"))}</strong></div>
+            `}
+        </div>
+        <div class="modal-footer">
+          ${canAdminEdit ? `<button class="button button-primary" data-action="save-admin-profile" data-user-id="${friend.id}">${escapeHtml(t("adminProfileSaveButton"))}</button>` : ""}
+          <button class="button button-secondary" data-action="close-modal">${escapeHtml(t("settingsClose"))}</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderFriendCard(friend) {
+    const activeRoom = appState.rooms.find((room) => room.id === uiState.activeRoomId && room.status === "active");
+    const alreadyInRoom = activeRoom ? deriveRoomParticipantIds(activeRoom).includes(friend.id) : false;
+    const pendingInvite = activeRoom
+      ? appState.invites.some((invite) => invite.roomId === activeRoom.id && invite.inviteeId === friend.id && invite.status === "pending")
+      : false;
+    const presence = getPresence(friend, activeRoom?.id || friend.currentRoomId || null);
+    return `
+      <article class="friend-card">
+        <div>
+          <strong>${escapeHtml(friend.name)}</strong>
+          <span>${escapeHtml(getChatLanguageName(friend.nativeLanguage))} · ${escapeHtml(presence.label)}</span>
+        </div>
+        <div class="button-row">
+          <span class="status-pill ${presence.kind === "online" ? "pill-success" : ""}">
+            ${renderPresenceLabel(presence)}
+          </span>
+          <button
+            class="button button-secondary"
+            data-action="quick-invite"
+            data-friend-name="${escapeHtml(friend.name)}"
+            ${!activeRoom || alreadyInRoom || pendingInvite ? "disabled" : ""}
+          >
+            ${escapeHtml(t("friendInviteButton"))}
+          </button>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderParticipantCard(participant, roomId) {
+    const presence = getPresence(participant, roomId);
+    return `
+      <article class="participant-card">
+        <div class="participant-row">
+          <div>
+            <strong>${escapeHtml(participant.name)}</strong>
+            <span>${escapeHtml(getChatLanguageName(participant.nativeLanguage))}</span>
+          </div>
+          <span class="status-pill ${presence.kind === "online" ? "pill-success" : ""}">
+            ${renderPresenceLabel(presence)}
+          </span>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderProfilePreviewModal() {
+    const friend = appState.users.find((user) => user.id === uiState.modal?.data?.userId);
+    if (!friend) return "";
+    const currentUser = getCurrentUser();
+    const canAdminEdit = isAdminUser(currentUser) && !isAdminUser(friend);
+    const displayName = getUserDisplayName(friend) || friend.loginId || friend.name;
+    const genderLabel =
+      friend.gender === "male"
+        ? t("authGenderMale")
+        : friend.gender === "female"
+          ? t("authGenderFemale")
+          : t("profilePopupEmpty");
+    const presence = getPresence(friend, friend.currentRoomId || null);
+    const modalData = uiState.modal?.data || {};
+    return `
+      <section class="modal">
+        <div class="modal-header">
+          <h3>${escapeHtml(canAdminEdit ? t("adminProfileEditTitle") : t("profilePopupTitle"))}</h3>
+          <p>${escapeHtml(displayName)}</p>
+        </div>
+        <div class="modal-body profile-preview-grid">
+          ${canAdminEdit
+            ? `
+              <div class="field compact-field">
+                <label for="admin-profile-name">${escapeHtml(t("profilePopupName"))}</label>
+                <input id="admin-profile-name" data-input="admin-profile-name" type="text" maxlength="24" value="${escapeHtml(modalData.editName ?? friend.name ?? "")}" autocomplete="off" />
+              </div>
+              <div class="field compact-field">
+                <label>${escapeHtml(t("profilePopupId"))}</label>
+                <div class="profile-static-value">${escapeHtml(friend.loginId || "")}</div>
+              </div>
+              <div class="field compact-field">
+                <label for="admin-profile-gender">${escapeHtml(t("profilePopupGender"))}</label>
+                <select id="admin-profile-gender" data-input="admin-profile-gender">
+                  <option value="">${escapeHtml(t("profilePopupEmpty"))}</option>
+                  <option value="male" ${(modalData.editGender ?? friend.gender) === "male" ? "selected" : ""}>${escapeHtml(t("authGenderMale"))}</option>
+                  <option value="female" ${(modalData.editGender ?? friend.gender) === "female" ? "selected" : ""}>${escapeHtml(t("authGenderFemale"))}</option>
+                </select>
+              </div>
+              <div class="field compact-field">
+                <label for="admin-profile-age">${escapeHtml(t("profilePopupAge"))}</label>
+                <input id="admin-profile-age" data-input="admin-profile-age" type="number" min="0" max="120" inputmode="numeric" value="${escapeHtml(String(modalData.editAge ?? friend.age ?? ""))}" autocomplete="off" />
+              </div>
+              <div class="field compact-field">
+                <label for="admin-profile-password">${escapeHtml(t("adminProfilePasswordLabel"))}</label>
+                <input id="admin-profile-password" data-input="admin-profile-password" type="text" value="${escapeHtml(modalData.editPassword ?? friend.password ?? "")}" autocomplete="off" />
+              </div>
+              <div class="field compact-field">
+                <label>${escapeHtml(t("profilePopupLastSeen"))}</label>
+                <div class="profile-static-value">${renderPresenceLabel(presence)}</div>
+              </div>
+            `
+            : `
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupName"))}</span><strong>${escapeHtml(friend.name || t("profilePopupEmpty"))}</strong></div>
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupId"))}</span><strong>${escapeHtml(friend.loginId || "")}</strong></div>
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupGender"))}</span><strong>${escapeHtml(genderLabel)}</strong></div>
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupAge"))}</span><strong>${escapeHtml(friend.age || t("profilePopupEmpty"))}</strong></div>
+              <div class="profile-preview-item"><span>${escapeHtml(t("profilePopupLastSeen"))}</span><strong>${renderPresenceLabel(presence)}</strong></div>
             `}
         </div>
         <div class="modal-footer">
@@ -5970,9 +6943,7 @@
       const roomId = uiState.activeRoomId;
       if (roomId) {
         const attachment = getDraft(roomId).attachment;
-        if (attachment?.kind === "video" && attachment.runtimeId) {
-          revokeRuntimeVideo(attachment.runtimeId);
-        }
+        releaseDraftAttachment(attachment);
         setDraft(roomId, { attachment: null });
         uiState.attachmentMenuOpen = false;
         pushToast("toastAttachmentRemoved", "toastAttachmentRemovedCopy");
@@ -6128,6 +7099,10 @@
 
   function onRootInput(event) {
     const target = event.target;
+    if (target instanceof HTMLInputElement && target.dataset.input === "landing-auto-login") {
+      uiState.landing.autoLogin = target.checked;
+      return;
+    }
     if (target instanceof HTMLInputElement && target.name === "name" && target.closest('[data-form="landing"]')) {
       uiState.landing.name = target.value;
       uiState.landing.error = "";
@@ -6239,6 +7214,10 @@
 
   async function onRootChange(event) {
     const target = event.target;
+    if (target instanceof HTMLInputElement && target.dataset.input === "landing-auto-login") {
+      uiState.landing.autoLogin = target.checked;
+      return;
+    }
     if (target.matches('select[name="nativeLanguage"]')) {
       uiState.landing.nativeLanguage = target.value;
       return;
@@ -6454,6 +7433,7 @@
       const formData = new FormData(form);
       uiState.landing.name = String(formData.get("name") || "").trim();
       uiState.landing.password = String(formData.get("password") || "");
+      uiState.landing.autoLogin = Boolean(formData.get("autoLogin"));
       enterLandingUser();
       return;
     }
@@ -6565,11 +7545,13 @@
     if (!user) return;
     const now = Date.now();
     const defaultLanguage = uiState.landing.uiLanguage === "vi" ? "vi" : "ko";
+    const nextUiLanguage = options.preserveStoredUiLanguage ? user.uiLanguage || uiState.landing.uiLanguage || "ko" : uiState.landing.uiLanguage;
+    const shouldRemember = options.autoLogin ?? uiState.landing.autoLogin;
 
     applySpecialUserFlags(user);
     user.name = normalizeDisplayText(user.name).trim();
     user.loginId = normalizeAccountId(user.loginId || user.name);
-    user.uiLanguage = uiState.landing.uiLanguage;
+    user.uiLanguage = nextUiLanguage;
     user.nativeLanguage = user.nativeLanguage || defaultLanguage;
     user.preferredChatLanguage = user.preferredChatLanguage || user.nativeLanguage;
     if (options.useLandingProfile && uiState.landing.profileImage) {
@@ -6587,6 +7569,7 @@
     user.loginState = "online";
 
     setActiveUserId(user.id);
+    syncAutoLoginPreference(user, shouldRemember);
     localStorage.setItem(LANDING_UI_KEY, user.uiLanguage);
     uiState.activeRoomId = user.currentRoomId || null;
     uiState.directoryTab = "chat";
@@ -6595,6 +7578,7 @@
     uiState.mobileRoomsOpen = false;
     uiState.landing.name = user.loginId || user.name;
     uiState.landing.password = "";
+    uiState.landing.autoLogin = shouldRemember;
     uiState.landing.nativeAccordionOpen = false;
     uiState.landing.profileImage = null;
     uiState.landing.error = "";
@@ -6804,8 +7788,36 @@
       userId: currentUser.id,
       currentRoomId: effectiveRoomId,
       lastSeenAt: now,
+      loginState: "online",
     };
-    sendPresenceSignal(effectiveRoomId);
+    persistPresenceSnapshotIfNeeded(now);
+    sendPresenceSignal(effectiveRoomId, { loginState: "online", lastSeenAt: now });
+  }
+
+  function persistPresenceSnapshotIfNeeded(timestamp = Date.now(), options = {}) {
+    const currentUser = getCurrentUser();
+    if (!currentUser) return;
+    if (!options.force && timestamp - runtime.lastPresencePersistAt < CONFIG.heartbeatMs) {
+      return;
+    }
+    runtime.lastPresencePersistAt = timestamp;
+    currentUser.lastSeenAt = timestamp;
+    if (options.offline) {
+      currentUser.loginState = "offline";
+      currentUser.currentRoomId = null;
+    } else {
+      currentUser.loginState = "online";
+      if (Object.prototype.hasOwnProperty.call(options, "roomId")) {
+        currentUser.currentRoomId = options.roomId || null;
+      }
+    }
+    runtime.presenceSignals[currentUser.id] = {
+      userId: currentUser.id,
+      currentRoomId: currentUser.currentRoomId || null,
+      lastSeenAt: timestamp,
+      loginState: currentUser.loginState,
+    };
+    persistState();
   }
 
   function switchUser(userId) {
@@ -6840,6 +7852,7 @@
     Array.from(runtime.videoUrls.keys()).forEach((runtimeId) => revokeRuntimeVideo(runtimeId));
     appState = createInitialState();
     sessionStorage.removeItem(SESSION_USER_KEY);
+    clearAutoLoginState();
     uiState.activeRoomId = null;
     uiState.modal = null;
     uiState.drawer = null;
@@ -7055,13 +8068,18 @@
   function deleteRoom(roomId) {
     const room = appState.rooms.find((item) => item.id === roomId);
     if (!room) return;
+    const mediaIds = collectMediaIdsFromMessages(room.messages);
 
-    // Policy alignment: inline media previews live only inside room state and are revoked when the room is deleted or expires.
+    // Policy alignment: room deletion must clean both message metadata and stored chat media blobs together.
     room.messages.forEach((message) => {
+      if (message.media?.mediaId) {
+        revokeCachedMediaUrl(message.media.mediaId);
+      }
       if (message.media?.kind === "video" && message.media.runtimeId) {
         revokeRuntimeVideo(message.media.runtimeId);
       }
     });
+    scheduleMediaDeletion(mediaIds);
 
     stopTypingForRoom(roomId);
     delete runtime.typingSignals[roomId];
@@ -7093,6 +8111,7 @@
     const user = appState.users.find((item) => item.id === userId);
     if (!user) return;
     if (isAdminUser(user)) return;
+    const mediaIdsToDelete = [];
 
     const ownedRoomIds = appState.rooms.filter((room) => room.creatorId === userId).map((room) => room.id);
     ownedRoomIds.forEach((roomId) => deleteRoom(roomId));
@@ -7103,6 +8122,10 @@
       }
       room.messages = (room.messages || []).filter((message) => {
         if (message?.senderId !== userId) return true;
+        if (message.media?.mediaId) {
+          mediaIdsToDelete.push(message.media.mediaId);
+          revokeCachedMediaUrl(message.media.mediaId);
+        }
         if (message.media?.kind === "video" && message.media.runtimeId) {
           revokeRuntimeVideo(message.media.runtimeId);
         }
@@ -7125,6 +8148,7 @@
       );
     });
     appState.rooms = appState.rooms.filter((room) => (room.participants || []).length > 0);
+    scheduleMediaDeletion(mediaIdsToDelete);
 
     Object.keys(runtime.typingSignals).forEach((roomId) => {
       if (!runtime.typingSignals[roomId]) return;
@@ -7159,13 +8183,23 @@
     if (!currentUser) return;
 
     stopTypingForRoom(uiState.activeRoomId);
+    const logoutTimestamp = Date.now();
     currentUser.loginState = "offline";
     currentUser.currentRoomId = null;
-    currentUser.lastSeenAt = Date.now();
-    delete runtime.presenceSignals[currentUser.id];
+    currentUser.lastSeenAt = logoutTimestamp;
+    runtime.presenceSignals[currentUser.id] = {
+      userId: currentUser.id,
+      currentRoomId: null,
+      lastSeenAt: logoutTimestamp,
+      loginState: "offline",
+    };
+    persistPresenceSnapshotIfNeeded(logoutTimestamp, { force: true, offline: true });
+    sendPresenceSignal(null, { loginState: "offline", lastSeenAt: logoutTimestamp, force: true });
+    clearAutoLoginState();
     localStorage.setItem(LANDING_UI_KEY, currentUser.uiLanguage || uiState.landing.uiLanguage || "ko");
     uiState.landing.name = "";
     uiState.landing.password = "";
+    uiState.landing.autoLogin = false;
     uiState.landing.nativeLanguage = currentUser.nativeLanguage || "ko";
     uiState.landing.uiLanguage = currentUser.uiLanguage || uiState.landing.uiLanguage || "ko";
     uiState.landing.nativeAccordionOpen = false;
@@ -7194,16 +8228,8 @@
     render();
   }
 
-  function normalizeAttachmentForMessage(attachment) {
-    if (attachment.kind === "image") {
-      return {
-        kind: "image",
-        name: attachment.name,
-        size: attachment.size,
-        previewUrl: attachment.previewUrl,
-        storage: "inline",
-      };
-    }
+  async function persistDraftAttachmentForMessage(attachment, roomId, messageId) {
+    if (!attachment) return null;
     if (attachment.kind === "file") {
       return {
         kind: "file",
@@ -7212,12 +8238,37 @@
         mimeType: attachment.mimeType || "",
       };
     }
+
+    const { uploadedAt, expiresAt } = buildMediaExpiry();
+    const mediaId = attachment.mediaId || uid("media");
+    const blob = attachment.blob instanceof Blob ? attachment.blob : null;
+    if (!blob) {
+      throw new Error("draft_media_blob_missing");
+    }
+
+    await writeChatMediaRecord({
+      id: mediaId,
+      roomId,
+      messageId,
+      mediaType: attachment.kind,
+      mimeType: attachment.mimeType || blob.type || "",
+      fileSize: attachment.size || blob.size,
+      uploadedAt,
+      expiresAt,
+      blob,
+    });
+    adoptDraftMediaObjectUrl(attachment, mediaId);
+
     return {
-      kind: "video",
+      kind: attachment.kind,
       name: attachment.name,
-      size: attachment.size,
-      storage: "runtime",
-      runtimeId: attachment.runtimeId,
+      size: blob.size,
+      mimeType: attachment.mimeType || blob.type || "",
+      storage: "indexeddb",
+      mediaId,
+      uploadedAt,
+      expiresAt,
+      expired: false,
     };
   }
 
@@ -7256,20 +8307,51 @@
     stopTypingForRoom(roomId);
     setDraft(roomId, { processing: true });
     ensureParticipant(room, currentUser.id, false);
+    const messageId = uid("msg");
+    let storedAttachment = null;
+    try {
+      storedAttachment = attachment ? await persistDraftAttachmentForMessage(attachment, room.id, messageId) : null;
+    } catch (error) {
+      setDraft(roomId, { processing: false });
+      pushToast("toastMediaStorageFailed", "toastMediaStorageFailedCopy");
+      render();
+      return;
+    }
 
     const message = userMessage(
-      uid("msg"),
+      messageId,
       currentUser.id,
       text,
       currentUser.nativeLanguage,
       {},
       Date.now(),
       "composing",
-      attachment ? normalizeAttachmentForMessage(attachment) : null
+      storedAttachment
     );
+    const requestedTargetLanguages = text ? getNeededTargetLanguages(room, currentUser.id, currentUser.nativeLanguage) : [];
     message.translationMeta = text
-      ? { provider: "pending", model: runtime.backend.model || null, live: runtime.backend.liveTranslationEnabled, pending: true }
-      : { provider: "none", model: null, live: false, pending: false };
+      ? {
+          provider: "pending",
+          model: runtime.backend.model || null,
+          live: runtime.backend.liveTranslationEnabled,
+          pending: true,
+          state: "pending",
+          reason: null,
+          errorDetail: null,
+          requestedTargets: requestedTargetLanguages,
+          completedAt: null,
+        }
+      : {
+          provider: "none",
+          model: null,
+          live: false,
+          pending: false,
+          state: "idle",
+          reason: "not-needed",
+          errorDetail: null,
+          requestedTargets: [],
+          completedAt: Date.now(),
+        };
     room.messages.push(message);
     room.lastMessageAt = Date.now();
     currentUser.currentRoomId = room.id;
@@ -7289,16 +8371,54 @@
       pushToast("toastTranslationFailed", "toastTranslationFailedCopy");
     }
 
-    const translationBundle = text
-      ? await buildTranslations(room, text, currentUser.id, currentUser.nativeLanguage, draft.failTranslation)
-      : {
+    let translationBundle = {
+      translations: text ? { [currentUser.nativeLanguage]: { text, failed: false } } : {},
+      meta: {
+        provider: "none",
+        model: null,
+        live: false,
+        state: text ? "idle" : "idle",
+        reason: text ? "not-needed" : "empty-message",
+        errorDetail: null,
+        requestedTargets: requestedTargetLanguages,
+        completedAt: Date.now(),
+      },
+    };
+    if (text) {
+      try {
+        translationBundle = await buildTranslations(
+          room,
+          text,
+          currentUser.id,
+          currentUser.nativeLanguage,
+          draft.failTranslation,
+          requestedTargetLanguages
+        );
+      } catch (error) {
+        console.warn("[translation] unexpected client failure", {
+          messageId,
+          sourceLanguage: currentUser.nativeLanguage,
+          requestedTargetLanguages,
+          error: String(error?.message || error),
+        });
+        translationBundle = {
           translations: {
-            ko: { text: "", failed: false },
-            en: { text: "", failed: false },
-            vi: { text: "", failed: false },
+            [currentUser.nativeLanguage]: { text, failed: false },
+            ...Object.fromEntries(requestedTargetLanguages.map((language) => [language, { text, failed: true }])),
           },
-          meta: { provider: "none", model: null, live: false },
+          meta: {
+            provider: "client-error",
+            model: null,
+            live: false,
+            state: "failed",
+            reason: "client_exception",
+            errorDetail: String(error?.message || error || "translation_error"),
+            requestedTargets: requestedTargetLanguages,
+            completedAt: Date.now(),
+          },
         };
+      }
+    }
     message.translations = translationBundle.translations;
     message.translationMeta = {
       ...translationBundle.meta,
@@ -7315,6 +8435,14 @@
     }
     pushToast("toastMessageSent", "toastMessageSentCopy");
     render();
+  }
+
+  function createBaseTranslationMap(text, sourceLanguage) {
+    return text
+      ? {
+          [sourceLanguage]: { text, failed: false },
+        }
+      : {};
   }
 
   function getNeededTargetLanguages(room, senderId, fromLanguage) {
@@ -7342,18 +8470,35 @@
     return [...needed];
   }
 
-  async function buildTranslations(room, text, senderId, fromLanguage, forceFail) {
-    const languages = Object.keys(CHAT_LANGUAGES);
-    const result = {
-      [fromLanguage]: { text, failed: false },
-    };
-    const targetLanguages = getNeededTargetLanguages(room, senderId, fromLanguage);
+  async function buildTranslations(room, text, senderId, fromLanguage, forceFail, requestedTargetLanguages = null) {
+    const targetLanguages = Array.isArray(requestedTargetLanguages)
+      ? [...new Set(requestedTargetLanguages.filter((language) => language && language !== fromLanguage))]
+      : getNeededTargetLanguages(room, senderId, fromLanguage);
+    const result = createBaseTranslationMap(text, fromLanguage);
 
-    languages.forEach((language) => {
-      if (!result[language]) {
-        result[language] = { text, failed: false };
-      }
+    console.info("[translation] request", {
+      senderId,
+      sourceLanguage: fromLanguage,
+      targetLanguages,
+      serverReachable: runtime.backend.serverReachable,
+      liveTranslationEnabled: runtime.backend.liveTranslationEnabled,
     });
+
+    if (!targetLanguages.length) {
+      return {
+        translations: result,
+        meta: {
+          provider: "none",
+          model: runtime.backend.model || null,
+          live: false,
+          state: "idle",
+          reason: "not-needed",
+          errorDetail: null,
+          requestedTargets: [],
+          completedAt: Date.now(),
+        },
+      };
+    }
 
     if (forceFail || /#fail\b/i.test(text)) {
       targetLanguages.forEach((targetLanguage) => {
@@ -7361,17 +8506,34 @@
       });
       return {
         translations: result,
-        meta: { provider: "forced-failure", model: null, live: false },
+        meta: {
+          provider: "forced-failure",
+          model: null,
+          live: false,
+          state: "failed",
+          reason: "forced_failure",
+          errorDetail: "Forced translation failure for debugging.",
+          requestedTargets: targetLanguages,
+          completedAt: Date.now(),
+        },
       };
     }
 
     const liveTranslations = await requestServerTranslations(text, fromLanguage, targetLanguages);
-    if (liveTranslations) {
+    if (liveTranslations.status === "success") {
       targetLanguages.forEach((targetLanguage) => {
         const entry = liveTranslations.translations?.[targetLanguage];
         result[targetLanguage] = entry?.text
           ? { text: entry.text, failed: Boolean(entry.failed) }
           : { text, failed: true };
+      });
+      const hasFailure = targetLanguages.some((language) => Boolean(result[language]?.failed));
+      console.info("[translation] response", {
+        sourceLanguage: fromLanguage,
+        targetLanguages,
+        provider: liveTranslations.provider,
+        model: liveTranslations.model,
+        hasFailure,
       });
       return {
         translations: result,
@@ -7379,9 +8541,21 @@
           provider: liveTranslations.provider || "openai",
           model: liveTranslations.model || runtime.backend.model || null,
           live: true,
+          state: hasFailure ? "partial" : "success",
+          reason: null,
+          errorDetail: null,
+          requestedTargets: targetLanguages,
+          completedAt: Date.now(),
         },
       };
     }
+
+    console.warn("[translation] fallback", {
+      sourceLanguage: fromLanguage,
+      targetLanguages,
+      reason: liveTranslations.reason,
+      errorDetail: liveTranslations.errorDetail || null,
+    });
 
     for (const targetLanguage of targetLanguages) {
       try {
@@ -7391,15 +8565,29 @@
         result[targetLanguage] = { text, failed: true };
       }
     }
+    const allFallbacksFailed = targetLanguages.every((language) => Boolean(result[language]?.failed));
     return {
       translations: result,
-      meta: { provider: "mock", model: null, live: false },
+      meta: {
+        provider: "mock",
+        model: null,
+        live: false,
+        state: allFallbacksFailed ? "failed" : "mock",
+        reason: liveTranslations.reason,
+        errorDetail: liveTranslations.errorDetail || null,
+        requestedTargets: targetLanguages,
+        completedAt: Date.now(),
+      },
     };
   }
 
   async function requestServerTranslations(text, sourceLanguage, targetLanguages) {
-    if (!shouldUseTranslationBackend() || !targetLanguages.length) {
-      return null;
+    if (!targetLanguages.length) {
+      return { status: "skipped", reason: "not-needed", errorDetail: null };
+    }
+
+    if (!shouldUseTranslationBackend()) {
+      return { status: "failed", reason: "client_backend_unavailable", errorDetail: "The browser is not connected to the local backend." };
     }
 
     try {
@@ -7416,27 +8604,71 @@
         }),
       });
 
+      const payload = await readJsonResponseBody(response);
       if (!response.ok) {
-        updateBackendStatus({ serverReachable: true, liveTranslationEnabled: false, checkedAt: Date.now() });
-        return null;
+        const reason = normalizeTranslationFailureReason(payload?.error, response.status);
+        updateBackendStatus({
+          serverReachable: true,
+          liveTranslationEnabled: false,
+          translationConfigured: payload?.error === "missing_api_key" ? false : runtime.backend.translationConfigured,
+          lastTranslationError: payload?.error || reason,
+          lastTranslationErrorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+          checkedAt: Date.now(),
+        });
+        return {
+          status: "failed",
+          reason,
+          errorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
+        };
       }
 
-      const payload = await response.json();
       updateBackendStatus({
         serverReachable: true,
         liveTranslationEnabled: true,
         model: payload?.model || null,
+        translationConfigured: true,
+        lastTranslationError: null,
+        lastTranslationErrorDetail: null,
         checkedAt: Date.now(),
       });
       return {
+        status: "success",
         translations: payload?.translations || null,
         provider: "openai",
         model: payload?.model || null,
       };
     } catch (error) {
-      updateBackendStatus({ serverReachable: false, liveTranslationEnabled: false, checkedAt: Date.now() });
-      return null;
+      updateBackendStatus({
+        serverReachable: false,
+        liveTranslationEnabled: false,
+        lastTranslationError: "server_unreachable",
+        lastTranslationErrorDetail: String(error?.message || error || "Server unreachable"),
+        checkedAt: Date.now(),
+      });
+      return {
+        status: "failed",
+        reason: "server_unreachable",
+        errorDetail: String(error?.message || error || "Server unreachable"),
+      };
     }
+  }
+
+  async function readJsonResponseBody(response) {
+    const raw = await response.text();
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      return {
+        detail: raw,
+      };
+    }
+  }
+
+  function normalizeTranslationFailureReason(errorCode, statusCode) {
+    if (errorCode === "missing_api_key") return "service_disabled";
+    if (Number(statusCode) >= 500) return "live_request_failed";
+    return "live_request_rejected";
   }
 
   function shouldUseTranslationBackend() {
@@ -7477,6 +8709,21 @@
       }
     });
 
+    return changed;
+  }
+
+  function prunePresenceSignals() {
+    const now = Date.now();
+    const ttlMs = 2 * 60 * 1000;
+    let changed = false;
+    Object.keys(runtime.presenceSignals).forEach((userId) => {
+      const signal = runtime.presenceSignals[userId];
+      if (!signal) return;
+      if (now - Number(signal.lastSeenAt || 0) > ttlMs) {
+        delete runtime.presenceSignals[userId];
+        changed = true;
+      }
+    });
     return changed;
   }
 
@@ -7547,20 +8794,26 @@
 
     const now = Date.now();
     currentUser.lastSeenAt = now;
+    currentUser.loginState = "online";
     runtime.presenceSignals[currentUser.id] = {
       userId: currentUser.id,
       currentRoomId: uiState.activeRoomId || currentUser.currentRoomId || null,
       lastSeenAt: now,
+      loginState: "online",
     };
+    persistPresenceSnapshotIfNeeded(now);
     if (now - runtime.lastPresenceSignalAt >= 15000) {
       runtime.lastPresenceSignalAt = now;
-      sendPresenceSignal(uiState.activeRoomId || currentUser.currentRoomId || null);
+      sendPresenceSignal(uiState.activeRoomId || currentUser.currentRoomId || null, { loginState: "online", lastSeenAt: now });
     }
   }
 
-  async function sendPresenceSignal(roomId) {
+  async function sendPresenceSignal(roomId, options = {}) {
     const currentUser = getCurrentUser();
     if (!currentUser || !shouldUseTranslationBackend()) return;
+    if (!options.force && options.loginState === "online" && Date.now() - runtime.lastPresenceSignalAt < 900 && roomId === currentUser.currentRoomId) {
+      return;
+    }
 
     try {
       await fetch("/api/presence", {
@@ -7571,7 +8824,8 @@
         body: JSON.stringify({
           userId: currentUser.id,
           currentRoomId: roomId || null,
-          lastSeenAt: Date.now(),
+          lastSeenAt: Number(options.lastSeenAt || Date.now()),
+          loginState: options.loginState === "offline" ? "offline" : "online",
         }),
       });
     } catch (error) {
@@ -7619,7 +8873,10 @@
       previous.liveTranslationEnabled !== merged.liveTranslationEnabled ||
       previous.model !== merged.model ||
       previous.sharedStateEnabled !== merged.sharedStateEnabled ||
-      previous.hasServerState !== merged.hasServerState;
+      previous.hasServerState !== merged.hasServerState ||
+      previous.translationConfigured !== merged.translationConfigured ||
+      previous.lastTranslationError !== merged.lastTranslationError ||
+      previous.lastTranslationErrorDetail !== merged.lastTranslationErrorDetail;
 
     runtime.backend = merged;
     return changed;
@@ -7635,6 +8892,9 @@
           model: null,
           sharedStateEnabled: false,
           hasServerState: false,
+          translationConfigured: false,
+          lastTranslationError: "client_backend_unavailable",
+          lastTranslationErrorDetail: "The page is not connected to the local Node backend.",
           checkedAt: Date.now(),
         })
       ) {
@@ -7657,6 +8917,9 @@
           model: payload?.model || null,
           sharedStateEnabled: Boolean(payload?.sharedStateEnabled),
           hasServerState: Boolean(payload?.hasServerState),
+          translationConfigured: Boolean(payload?.translationConfigured),
+          lastTranslationError: payload?.lastTranslationError || null,
+          lastTranslationErrorDetail: payload?.lastTranslationErrorDetail || null,
           checkedAt: Date.now(),
         })
       ) {
@@ -7672,6 +8935,9 @@
           model: null,
           sharedStateEnabled: false,
           hasServerState: false,
+          translationConfigured: false,
+          lastTranslationError: "server_unreachable",
+          lastTranslationErrorDetail: String(error?.message || error || "Server unreachable"),
           checkedAt: Date.now(),
         })
       ) {
@@ -7753,35 +9019,45 @@
       return;
     }
     const existing = getDraft(roomId).attachment;
-    if (existing?.kind === "video" && existing.runtimeId) {
-      revokeRuntimeVideo(existing.runtimeId);
-    }
+    releaseDraftAttachment(existing);
     setDraft(roomId, { processing: true });
     render();
     pushToast("imageCompressing", "imageCompressing");
-    const attachment = await compressImage(file);
-    setDraft(roomId, { attachment, processing: false });
+    try {
+      const attachment = await compressImage(file);
+      setDraft(roomId, { attachment, processing: false });
+    } catch (error) {
+      setDraft(roomId, { attachment: null, processing: false });
+      pushToast("toastMediaStorageFailed", "toastMediaStorageFailedCopy");
+    }
     uiState.attachmentMenuOpen = false;
     render();
   }
 
   async function compressImage(file) {
     // The browser only processes the specific user-selected file; no broad device storage access is requested.
-    // Later this should move into a dedicated media pipeline with permanent storage metadata returned from the backend.
-    const bitmap = await createImageBitmap(file);
-    const ratio = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const image = await loadImageForCanvas(file);
+    const ratio = Math.min(1, CONFIG.imageMaxDimension / Math.max(image.width, image.height));
     const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
-    canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+    canvas.width = Math.max(1, Math.round(image.width * ratio));
+    canvas.height = Math.max(1, Math.round(image.height * ratio));
     const context = canvas.getContext("2d");
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const previewUrl = canvas.toDataURL("image/jpeg", 0.82);
-    bitmap.close();
+    context.drawImage(image.source, 0, 0, canvas.width, canvas.height);
+    const targetType = file.type === "image/png" ? "image/webp" : "image/jpeg";
+    const optimizedBlob = await canvasToBlob(canvas, targetType, 0.82);
+    image.cleanup();
+    const { uploadedAt, expiresAt } = buildMediaExpiry();
     return {
       kind: "image",
       name: file.name,
-      size: Math.round((previewUrl.length * 3) / 4),
-      previewUrl,
+      size: optimizedBlob.size,
+      mimeType: optimizedBlob.type || targetType,
+      blob: optimizedBlob,
+      objectUrl: blobToObjectUrl(optimizedBlob),
+      storage: "draft",
+      uploadedAt,
+      expiresAt,
+      mediaId: uid("draft-media"),
     };
   }
 
@@ -7791,23 +9067,24 @@
       return;
     }
     const existing = getDraft(roomId).attachment;
-    if (existing?.kind === "video" && existing.runtimeId) {
-      revokeRuntimeVideo(existing.runtimeId);
-    }
+    releaseDraftAttachment(existing);
     setDraft(roomId, { processing: true });
     render();
     pushToast("videoPreparing", "videoPreparing");
-    const attachment = await prepareVideo(file);
-    setDraft(roomId, { attachment, processing: false });
+    try {
+      const attachment = await prepareVideo(file);
+      setDraft(roomId, { attachment, processing: false });
+    } catch (error) {
+      setDraft(roomId, { attachment: null, processing: false });
+      pushToast("toastMediaStorageFailed", "toastMediaStorageFailedCopy");
+    }
     uiState.attachmentMenuOpen = false;
     render();
   }
 
   function handleGenericFileSelection(roomId, file) {
     const existing = getDraft(roomId).attachment;
-    if (existing?.kind === "video" && existing.runtimeId) {
-      revokeRuntimeVideo(existing.runtimeId);
-    }
+    releaseDraftAttachment(existing);
     setDraft(roomId, {
       attachment: {
         kind: "file",
@@ -7822,16 +9099,130 @@
   }
 
   async function prepareVideo(file) {
-    // Later this placeholder becomes a real compression hook that returns a stored media URL plus transcoding status.
-    await wait(900);
-    const runtimeId = uid("video");
-    runtime.videoUrls.set(runtimeId, URL.createObjectURL(file));
+    const optimizedBlob = CONFIG.videoCompressionEnabled ? await compressVideo(file) : file;
+    const { uploadedAt, expiresAt } = buildMediaExpiry();
+    const optimizedName =
+      String(optimizedBlob.type || "").includes("webm")
+        ? (/\.[^.]+$/.test(file.name) ? file.name.replace(/\.[^.]+$/, "") : file.name) + ".webm"
+        : file.name;
     return {
       kind: "video",
-      name: file.name,
-      size: file.size,
-      runtimeId,
+      name: optimizedName,
+      size: optimizedBlob.size,
+      mimeType: optimizedBlob.type || "video/webm",
+      blob: optimizedBlob,
+      objectUrl: blobToObjectUrl(optimizedBlob),
+      storage: "draft",
+      uploadedAt,
+      expiresAt,
+      mediaId: uid("draft-media"),
     };
+  }
+
+  async function compressVideo(file) {
+    const compressed = await transcodeVideoToWebm(file).catch(() => null);
+    if (compressed instanceof Blob && compressed.size > 0) {
+      return compressed;
+    }
+    return file;
+  }
+
+  async function transcodeVideoToWebm(file) {
+    if (typeof document === "undefined" || typeof MediaRecorder !== "function") {
+      throw new Error("video_compression_unavailable");
+    }
+
+    const sourceUrl = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.src = sourceUrl;
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = () => resolve();
+      video.onerror = () => reject(new Error("video_metadata_failed"));
+    });
+
+    const drawRatio = Math.min(1, CONFIG.videoMaxDimension / Math.max(video.videoWidth || 1, video.videoHeight || 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round((video.videoWidth || 1) * drawRatio));
+    canvas.height = Math.max(1, Math.round((video.videoHeight || 1) * drawRatio));
+    const context = canvas.getContext("2d");
+    if (!context) {
+      URL.revokeObjectURL(sourceUrl);
+      throw new Error("video_canvas_failed");
+    }
+    const capture = typeof video.captureStream === "function" ? video.captureStream() : typeof video.mozCaptureStream === "function" ? video.mozCaptureStream() : null;
+    const outputStream = canvas.captureStream(24);
+    if (capture) {
+      capture.getAudioTracks().forEach((track) => outputStream.addTrack(track));
+    }
+
+    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+      ? "video/webm;codecs=vp9,opus"
+      : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+        ? "video/webm;codecs=vp8,opus"
+        : "video/webm";
+    const chunks = [];
+    const recorder = new MediaRecorder(outputStream, {
+      mimeType,
+      videoBitsPerSecond: CONFIG.videoTargetBitrate,
+      audioBitsPerSecond: CONFIG.videoAudioBitrate,
+    });
+
+    let rafId = 0;
+    const drawFrame = () => {
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      if (!video.paused && !video.ended) {
+        rafId = requestAnimationFrame(drawFrame);
+      }
+    };
+
+    return new Promise((resolve, reject) => {
+      const fail = (error) => {
+        cancelAnimationFrame(rafId);
+        URL.revokeObjectURL(sourceUrl);
+        video.pause();
+        outputStream.getTracks().forEach((track) => track.stop());
+        if (capture) {
+          capture.getTracks().forEach((track) => track.stop());
+        }
+        reject(error);
+      };
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size) {
+          chunks.push(event.data);
+        }
+      };
+      recorder.onerror = () => fail(new Error("video_record_failed"));
+      recorder.onstop = () => {
+        cancelAnimationFrame(rafId);
+        URL.revokeObjectURL(sourceUrl);
+        video.pause();
+        outputStream.getTracks().forEach((track) => track.stop());
+        if (capture) {
+          capture.getTracks().forEach((track) => track.stop());
+        }
+        const blob = new Blob(chunks, { type: mimeType });
+        if (blob.size) {
+          resolve(blob);
+          return;
+        }
+        reject(new Error("video_blob_empty"));
+      };
+      video.onended = () => {
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      };
+
+      recorder.start(600);
+      video.currentTime = 0;
+      video.play().then(() => {
+        drawFrame();
+      }).catch(fail);
+    });
   }
 
   function handleInviteSubmit() {
@@ -7920,7 +9311,10 @@
     const room = appState.rooms.find((item) => item.id === uiState.activeRoomId);
     const message = room?.messages.find((item) => item.id === messageId);
     if (!message?.media) return;
-    if (message.media.kind === "video" && !resolveMediaSource(message.media)) {
+    if (message.media.storage === "indexeddb") {
+      ensureIndexedMediaLoaded(message.media);
+    }
+    if (message.media.kind === "video" && message.media.storage !== "indexeddb" && !resolveMediaSource(message.media)) {
       pushToast("toastMediaMissing", "toastMediaMissingCopy");
     }
     uiState.previewMedia = message.media;
@@ -7997,13 +9391,7 @@
         try {
           const parsed = normalizeLoadedState(JSON.parse(event.newValue));
           if (parsed) {
-            appState = parsed;
-            syncUiWithCurrentUserState();
-            if (shouldDeferNonCriticalRender()) {
-              renderSafelyDuringInput();
-            } else {
-              render();
-            }
+            applyStateSnapshot(parsed, { source: "storage", skipPersist: true });
           }
         } catch (error) {
           console.warn("Failed to sync storage state", error);
@@ -8014,9 +9402,18 @@
       if (!document.hidden) {
         markUserPresence(uiState.activeRoomId);
         checkRoomExpirations();
+        cleanupExpiredChatMedia();
+        refreshStorageEstimate();
         scheduleReceiptRefresh({ force: true, delay: 0 });
         render();
+        return;
       }
+      persistPresenceSnapshotIfNeeded(Date.now(), { force: true });
+    });
+    window.addEventListener("pagehide", () => {
+      const timestamp = Date.now();
+      persistPresenceSnapshotIfNeeded(timestamp, { force: true, offline: true });
+      sendPresenceSignal(null, { force: true, loginState: "offline", lastSeenAt: timestamp });
     });
   }
 
@@ -8098,6 +9495,7 @@
         userId: payload.userId,
         currentRoomId: payload.currentRoomId || null,
         lastSeenAt: Number(payload.lastSeenAt || Date.now()),
+        loginState: payload.loginState === "offline" ? "offline" : "online",
       };
       renderSafelyDuringInput();
     });
@@ -8121,8 +9519,12 @@
     clearInterval(runtime.relativeTimer);
     clearInterval(runtime.heartbeatTimer);
     clearInterval(runtime.healthTimer);
+    clearInterval(runtime.mediaCleanupTimer);
     runtime.countdownInterval = setInterval(() => {
       if (pruneTypingSignals()) {
+        renderSafelyDuringInput();
+      }
+      if (prunePresenceSignals()) {
         renderSafelyDuringInput();
       }
       if (uiState.modal?.type === "password") {
@@ -8139,8 +9541,13 @@
     runtime.healthTimer = setInterval(() => {
       refreshBackendStatus();
     }, 15000);
+    runtime.mediaCleanupTimer = setInterval(() => {
+      cleanupExpiredChatMedia();
+      refreshStorageEstimate();
+    }, CONFIG.mediaCleanupIntervalMs);
   }
 
+  restoreAutoLoginSession({ clearOnMissing: false });
   const currentUser = getCurrentUser();
   if (currentUser) {
     uiState.activeRoomId = currentUser.currentRoomId || null;
@@ -8154,6 +9561,8 @@
   initRealtimeSync();
   startRuntimeLoops();
   checkRoomExpirations();
+  cleanupExpiredChatMedia();
+  refreshStorageEstimate();
   refreshBackendStatus();
   render();
   bootstrapServerState();

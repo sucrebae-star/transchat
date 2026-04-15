@@ -988,6 +988,11 @@ body[data-theme="dark"] .metric {
   gap: 10px;
 }
 
+.media-expired-card {
+  background: color-mix(in srgb, var(--surface) 86%, #ffcf7d 14%);
+  border-style: dashed;
+}
+
 .video-meta strong,
 .video-meta span {
   display: block;
@@ -1462,12 +1467,32 @@ body[data-theme="dark"] .sticky-active-block {
   background: var(--text-faint);
 }
 
+.presence-dot.offline {
+  background: var(--text-faint);
+}
+
 .presence-dot.online {
   background: var(--success);
 }
 
 .presence-dot.in-room {
   background: var(--accent);
+}
+
+.presence-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.presence-inline.compact {
+  gap: 5px;
+}
+
+.presence-room-note {
+  color: var(--text-faint);
+  font-size: 0.72rem;
 }
 
 .drawer {
@@ -2249,6 +2274,19 @@ body[data-theme="dark"] .mobile-nav-dock {
   color: #d45a64;
 }
 
+.landing-checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-soft);
+}
+
+.landing-checkbox-row input {
+  margin: 0;
+  accent-color: var(--accent-strong);
+}
+
 .landing-language-accordion-trigger {
   appearance: none;
   width: 100%;
@@ -2771,6 +2809,8 @@ body[data-theme="dark"] .mobile-composer {
 
 .friend-inline-presence {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
   font-size: 0.69rem;
   color: var(--text-soft);
   white-space: nowrap;
@@ -2778,7 +2818,7 @@ body[data-theme="dark"] .mobile-composer {
 
 .friend-inline-presence.online,
 .friend-inline-presence.in-room {
-  color: var(--accent-strong);
+  color: var(--text);
 }
 
 .connection-actions {

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SERVER_STATE_FILE = path.join(__dirname, "transchat-server-state.json");
+const STATE_SCHEMA_VERSION = 2;
 
 const PORT = Number(process.env.PORT || 3000);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -159,6 +160,12 @@ async function handleTranslate(req, res) {
       return sendJson(res, 200, { translations: {} });
     }
 
+    console.info("[translate] request", {
+      sourceLanguage,
+      targetLanguages: normalizedTargets,
+      length: text.length,
+    });
+
     const translationResult = await requestOpenAITranslations({
       text,
       sourceLanguage,
@@ -189,7 +196,7 @@ async function handleStateUpdate(req, res) {
     const nextState = body?.state;
     const sourceId = String(body?.sourceId || "unknown");
 
-    if (!(nextState && nextState.version === 1)) {
+    if (!(nextState && [1, STATE_SCHEMA_VERSION].includes(Number(nextState.version || 0)))) {
       return sendJson(res, 400, { error: "invalid_state" });
     }
 
@@ -219,7 +226,7 @@ async function handleStateUpdate(req, res) {
 }
 
 function mergeStates(previousState, nextState) {
-  if (!(previousState && previousState.version === 1)) {
+  if (!(previousState && [1, STATE_SCHEMA_VERSION].includes(Number(previousState.version || 0)))) {
     return sanitizeSharedState(nextState);
   }
 
@@ -449,6 +456,7 @@ async function handlePresenceUpdate(req, res) {
     const userId = String(body?.userId || "").trim();
     const currentRoomId = body?.currentRoomId ? String(body.currentRoomId).trim() : null;
     const lastSeenAt = Number(body?.lastSeenAt || Date.now());
+    const loginState = body?.loginState === "offline" ? "offline" : "online";
 
     if (!userId) {
       return sendJson(res, 400, { error: "invalid_presence_payload" });
@@ -456,8 +464,9 @@ async function handlePresenceUpdate(req, res) {
 
     presenceSignals.set(userId, {
       userId,
-      currentRoomId,
+      currentRoomId: loginState === "offline" ? null : currentRoomId,
       lastSeenAt,
+      loginState,
       expiresAt: Date.now() + PRESENCE_SIGNAL_TTL_MS,
     });
 
@@ -465,8 +474,9 @@ async function handlePresenceUpdate(req, res) {
     broadcastServerEvent({
       type: "presence-updated",
       userId,
-      currentRoomId,
+      currentRoomId: loginState === "offline" ? null : currentRoomId,
       lastSeenAt,
+      loginState,
     });
 
     return sendJson(res, 200, { ok: true });
@@ -690,16 +700,90 @@ function sanitizeMessageState(message, allowedUserIds) {
     return message;
   }
 
+  const translations = sanitizeTranslations(message.translations, message.originalText, message.sourceLanguage);
+
   return {
     ...message,
+    media: sanitizeMediaState(message.media),
     status: ["composing", "sent", "delivered", "read"].includes(message.status) ? message.status : "sent",
     deliveredTo: filterRecordByAllowedKeys(message.deliveredTo, allowedUserIds),
     readBy: filterRecordByAllowedKeys(message.readBy, allowedUserIds),
+    translations,
+    translationMeta: sanitizeTranslationMeta(message.translationMeta, translations, message.sourceLanguage),
+  };
+}
+
+function sanitizeTranslations(translations, originalText, sourceLanguage) {
+  return Object.fromEntries(
+    Object.entries(translations || {})
+      .filter(([language]) => ALLOWED_LANGUAGES.has(language))
+      .map(([language, entry]) => {
+        const text = typeof entry?.text === "string" ? entry.text : "";
+        const failed = Boolean(entry?.failed);
+        const looksLikeLegacyFallback = language !== sourceLanguage && !failed && text === String(originalText || "");
+        if (!text && !failed) return null;
+        if (looksLikeLegacyFallback) return null;
+        return [
+          language,
+          {
+            text: text || String(originalText || ""),
+            failed,
+          },
+        ];
+      })
+      .filter(Boolean)
+  );
+}
+
+function sanitizeTranslationMeta(meta, translations, sourceLanguage) {
+  const requestedTargets = [...new Set(
+    (Array.isArray(meta?.requestedTargets) ? meta.requestedTargets : Object.keys(translations || {}))
+      .map((language) => String(language || "").trim())
+      .filter((language) => ALLOWED_LANGUAGES.has(language) && language !== sourceLanguage)
+  )];
+  const provider = typeof meta?.provider === "string" ? meta.provider : "none";
+  const state =
+    typeof meta?.state === "string"
+      ? meta.state
+      : meta?.pending
+        ? "pending"
+        : provider === "mock"
+          ? "mock"
+          : provider === "none" && !requestedTargets.length
+            ? "idle"
+            : "success";
+
+  return {
+    provider,
+    model: meta?.model || null,
+    live: Boolean(meta?.live),
+    pending: state === "pending",
+    state,
+    reason: typeof meta?.reason === "string" ? meta.reason : null,
+    errorDetail: typeof meta?.errorDetail === "string" ? meta.errorDetail : null,
+    requestedTargets,
+    completedAt: Number(meta?.completedAt || 0) || null,
+  };
+}
+
+function sanitizeMediaState(media) {
+  if (!media || !["image", "video", "file"].includes(media.kind)) {
+    return media || null;
+  }
+
+  return {
+    ...media,
+    mediaId: typeof media?.mediaId === "string" ? media.mediaId : null,
+    mimeType: typeof media?.mimeType === "string" ? media.mimeType : "",
+    uploadedAt: Number(media?.uploadedAt || 0) || null,
+    expiresAt: Number(media?.expiresAt || 0) || null,
+    expired: Boolean(media?.expired) || (Number(media?.expiresAt || 0) > 0 && Number(media?.expiresAt || 0) <= Date.now()),
+    storage: typeof media?.storage === "string" ? media.storage : "",
   };
 }
 
 function sanitizeSharedState(state) {
-  if (!(state && state.version === 1)) {
+  if (!(state && [1, STATE_SCHEMA_VERSION].includes(Number(state.version || 0)))) {
     return null;
   }
 
@@ -755,6 +839,7 @@ function sanitizeSharedState(state) {
           ? normalizeRecoveryAnswer(user.recoveryAnswer)
           : normalizeRecoveryAnswer(user?.name),
       joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
+      lastSeenAt: Number(user?.lastSeenAt || user?.lastLoginAt || user?.joinedAt || user?.createdAt || Date.now()),
       lastLoginAt: Number(user?.lastLoginAt || 0) || null,
       loginState: user?.loginState === "online" ? "online" : "offline",
       hasUnreadInvites: Boolean(user?.hasUnreadInvites),
@@ -783,6 +868,7 @@ function sanitizeSharedState(state) {
 
   return {
     ...state,
+    version: STATE_SCHEMA_VERSION,
     deletedUsers,
     deletedRooms,
     updatedAt: Number(state.updatedAt || Date.now()),
@@ -865,7 +951,7 @@ async function loadServerState() {
   try {
     const raw = await readFile(SERVER_STATE_FILE, "utf8");
     const parsed = JSON.parse(raw);
-    if (!(parsed && parsed.version === 1)) {
+    if (!(parsed && [1, STATE_SCHEMA_VERSION].includes(Number(parsed.version || 0)))) {
       return null;
     }
 
