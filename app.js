@@ -70,6 +70,9 @@
   });
   const MEDIA_DB_NAME = "transchat-media-v1";
   const MEDIA_DB_STORE = "chat-media";
+  const PROFILE_CROP_PREVIEW_SIZE = 260;
+  const PROFILE_CROP_OUTPUT_SIZE = 520;
+  const PROFILE_CROP_MAX_DIMENSION = 1280;
 
   const APP_ROOT = ensureAppRoot();
   const runtime = {
@@ -143,6 +146,9 @@
       swRegistered: false,
       listenersBound: false,
     },
+    profileImageCropDrag: null,
+    historyBound: false,
+    historyRoomId: null,
   };
 
   function ensureAppRoot() {
@@ -191,6 +197,7 @@
 
   const uiState = {
     activeRoomId: null,
+    dismissedRoomId: null,
     modal: null,
     drawer: null,
     directoryTab: "chat",
@@ -1542,6 +1549,21 @@
     translationIssueMode: "Loi dich",
   });
 
+  Object.assign(DICTIONARY.ko, {
+    naturalTranslationBetaTitle: "자연스러운 번역 베타",
+    naturalTranslationBetaCopy: "최근 대화를 짧게 요약해 말투, 호칭, 관계 맥락을 번역에 반영합니다.",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    naturalTranslationBetaTitle: "Natural translation beta",
+    naturalTranslationBetaCopy: "Uses a short recent-chat summary to keep tone, names, and relationship context more natural.",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    naturalTranslationBetaTitle: "Ban dich tu nhien beta",
+    naturalTranslationBetaCopy: "Tom tat ngan cuoc tro chuyen gan day de giu xung ho, giong dieu va boi canh quan he tu nhien hon.",
+  });
+
   // Translation tone labels stay centralized so the composer menu can switch concepts without hardcoded UI copy.
   Object.assign(DICTIONARY.ko, {
     translationPendingInline: "번역 중...",
@@ -2007,6 +2029,7 @@
       isUnlimitedTester,
       isUnlimitedUser: isAdmin || isUnlimitedTester,
       canBypassUsageLimit: isAdmin || isUnlimitedTester,
+      preferredTranslationConcept: normalizeTranslationConcept(accountOptions.preferredTranslationConcept),
       // Future auth expansion point: replace test-name identity with Google, magic-link, or phone-backed identities.
       auth: {
         provider: "test-name",
@@ -2024,6 +2047,7 @@
       usage: sanitizeUsageState(accountOptions.usage, joinedAt),
       planUpdatedAt: Number(accountOptions.planUpdatedAt || joinedAt),
       planPolicyAcknowledgedAt: Number(accountOptions.planPolicyAcknowledgedAt || 0) || null,
+      enableNaturalTranslationBeta: Boolean(accountOptions.enableNaturalTranslationBeta),
       recoveryQuestionKey: accountOptions.recoveryQuestionKey || accountOptions.recoveryQuestion || getDeterministicRecoveryQuestionKey(normalizedName),
       recoveryQuestion:
         accountOptions.recoveryQuestion || accountOptions.recoveryQuestionKey || getDeterministicRecoveryQuestionKey(normalizedName),
@@ -2075,14 +2099,30 @@
   }
 
   function sanitizeMessageState(message, allowedUserIds) {
-    if (!message || message.kind !== "user") {
+    if (!message) {
+      return message;
+    }
+    if (message.kind === "system") {
+      return {
+        ...message,
+        systemParams: Object.fromEntries(
+          Object.entries(message.systemParams || {}).map(([key, value]) => [
+            key,
+            typeof value === "string" ? normalizeDisplayText(value) : value,
+          ])
+        ),
+      };
+    }
+    if (message.kind !== "user") {
       return message;
     }
 
-    const translations = sanitizeTranslations(message.translations, message.originalText, message.sourceLanguage);
+    const originalText = normalizeDisplayText(message.originalText);
+    const translations = sanitizeTranslations(message.translations, originalText, message.sourceLanguage);
 
     return {
       ...message,
+      originalText,
       status: ["composing", "sent", "delivered", "read"].includes(message.status) ? message.status : "sent",
       media: sanitizeMediaState(message.media),
       deliveredTo: filterRecordByAllowedKeys(message.deliveredTo, allowedUserIds),
@@ -2095,15 +2135,16 @@
   function sanitizeTranslations(translations, originalText, sourceLanguage) {
     return Object.fromEntries(
       Object.entries(translations || {})
-        .filter(([language]) => Object.prototype.hasOwnProperty.call(CHAT_LANGUAGES, language))
-        .map(([language, entry]) => {
-          const text = typeof entry?.text === "string" ? entry.text : "";
+        .filter(([key]) => Boolean(getTranslationVariantLanguage(key)))
+        .map(([key, entry]) => {
+          const language = getTranslationVariantLanguage(key);
+          const text = typeof entry?.text === "string" ? normalizeDisplayText(entry.text) : "";
           const failed = Boolean(entry?.failed);
           const looksLikeLegacyFallback = language !== sourceLanguage && !failed && text === String(originalText || "");
           if (!text && !failed) return null;
           if (looksLikeLegacyFallback) return null;
           return [
-            language,
+            key,
             {
               text: text || String(originalText || ""),
               failed,
@@ -2117,8 +2158,11 @@
   function sanitizeTranslationMeta(meta, translations, sourceLanguage) {
     const requestedTargets = [...new Set(
       (Array.isArray(meta?.requestedTargets) ? meta.requestedTargets : Object.keys(translations || {}))
-        .map((language) => String(language || "").trim())
-        .filter((language) => Object.prototype.hasOwnProperty.call(CHAT_LANGUAGES, language) && language !== sourceLanguage)
+        .map((key) => String(key || "").trim())
+        .filter((key) => {
+          const language = getTranslationVariantLanguage(key);
+          return Boolean(language) && language !== sourceLanguage;
+        })
     )];
     const provider = typeof meta?.provider === "string" ? meta.provider : "none";
     const live = Boolean(meta?.live);
@@ -2229,11 +2273,13 @@
           },
           blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
           preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
+          preferredTranslationConcept: normalizeTranslationConcept(user?.preferredTranslationConcept),
           password: typeof user?.password === "string" ? user.password : "",
           planTier: ["monthly", "yearly"].includes(user?.planTier) ? user.planTier : "free",
           usage: sanitizeUsageState(user?.usage, Number(parsed.updatedAt || Date.now())),
           planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
           planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
+          enableNaturalTranslationBeta: Boolean(user?.enableNaturalTranslationBeta),
           recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
             ? user.recoveryQuestionKey
             : RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestion)
@@ -2526,6 +2572,14 @@
     if (mergedLocalActiveUser) {
       scheduleServerStateSync();
     }
+    const traceMessage = getLatestUserMessageForTrace(appState);
+    if (traceMessage) {
+      logEncodingTrace("client-render-ready", traceMessage.text, {
+        roomId: traceMessage.roomId,
+        messageId: traceMessage.messageId,
+        source: options.source || "local",
+      });
+    }
     if (options.source === "server" && shouldDeferNonCriticalRender()) {
       renderSafelyDuringInput();
     } else {
@@ -2546,6 +2600,13 @@
     if (!shouldUseTranslationBackend()) return;
 
     try {
+      const traceMessage = getLatestUserMessageForTrace(appState);
+      if (traceMessage) {
+        logEncodingTrace("client-state-payload", traceMessage.text, {
+          roomId: traceMessage.roomId,
+          messageId: traceMessage.messageId,
+        });
+      }
       // Prototype sync note: the local Node server mirrors app state for test devices only; replace with DB access control in production.
       const response = await fetch(CONFIG.stateApiPath, {
         method: "PUT",
@@ -2778,6 +2839,7 @@
         preferred.nativeLanguage ||
         fallback.nativeLanguage ||
         "ko",
+      preferredTranslationConcept: preferred.preferredTranslationConcept || fallback.preferredTranslationConcept || "general",
       uiLanguage: preferred.uiLanguage || fallback.uiLanguage || "ko",
       joinedAt: Math.min(Number(primary.joinedAt || primary.createdAt || Date.now()), Number(secondary.joinedAt || secondary.createdAt || Date.now())),
       lastSeenAt: Math.max(Number(primary.lastSeenAt || 0), Number(secondary.lastSeenAt || 0)),
@@ -2785,6 +2847,7 @@
       loginState: primary.loginState === "online" || secondary.loginState === "online" ? "online" : "offline",
       hasUnreadInvites: Boolean(primary.hasUnreadInvites || secondary.hasUnreadInvites),
       hasUnreadMessages: Boolean(primary.hasUnreadMessages || secondary.hasUnreadMessages),
+      enableNaturalTranslationBeta: Boolean(primary.enableNaturalTranslationBeta || secondary.enableNaturalTranslationBeta),
       currentRoomId: preferred.currentRoomId || fallback.currentRoomId || null,
       isAdmin: Boolean(primary.isAdmin || secondary.isAdmin),
       isUnlimitedTester: Boolean(primary.isUnlimitedTester || secondary.isUnlimitedTester),
@@ -2888,6 +2951,43 @@
 
   function normalizePolicyIdentity(value) {
     return normalizeDisplayText(value).replace(/\s+/g, "").trim().toLowerCase();
+  }
+
+  function summarizeTextForTrace(value) {
+    const text = String(value ?? "");
+    return {
+      length: text.length,
+      replacement: text.includes("\uFFFD"),
+      preview: text.slice(0, 80),
+      codepoints: Array.from(text.slice(0, 8)).map((character) => `U+${character.codePointAt(0).toString(16).toUpperCase()}`),
+    };
+  }
+
+  function logEncodingTrace(stage, value, extra = {}) {
+    const text = String(value ?? "");
+    if (!text) return;
+    console.info(`[encoding] ${stage}`, {
+      ...extra,
+      ...summarizeTextForTrace(text),
+    });
+  }
+
+  function getLatestUserMessageForTrace(state = appState) {
+    const rooms = Array.isArray(state?.rooms) ? [...state.rooms] : [];
+    const latestRoom = rooms
+      .filter((room) => Array.isArray(room?.messages) && room.messages.length)
+      .sort((a, b) => Number(b.lastMessageAt || b.createdAt || 0) - Number(a.lastMessageAt || a.createdAt || 0))[0];
+    const latestMessage = [...(latestRoom?.messages || [])]
+      .filter((message) => message?.kind === "user" && String(message?.originalText || "").trim())
+      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0];
+    if (!(latestRoom && latestMessage)) {
+      return null;
+    }
+    return {
+      roomId: latestRoom.id,
+      messageId: latestMessage.id,
+      text: latestMessage.originalText,
+    };
   }
 
   function isAdminLoginId(value) {
@@ -3263,6 +3363,209 @@
     const dataUrl = canvas.toDataURL("image/jpeg", 0.84);
     bitmap.close();
     return dataUrl;
+  }
+
+  async function prepareProfileEditorImage(file) {
+    const validation = validateSelectedImageFile(file, {
+      maxBytes: CONFIG.profileImageMaxBytes,
+      kind: "profile",
+    });
+    if (!validation.ok) {
+      const error = new Error("profile_image_invalid");
+      error.titleKey = validation.titleKey;
+      error.messageKey = validation.messageKey;
+      throw error;
+    }
+
+    const loaded = await loadImageForCanvas(file);
+    const ratio = Math.min(1, PROFILE_CROP_MAX_DIMENSION / Math.max(loaded.width, loaded.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(loaded.width * ratio));
+    canvas.height = Math.max(1, Math.round(loaded.height * ratio));
+    const context = canvas.getContext("2d");
+    context.drawImage(loaded.source, 0, 0, canvas.width, canvas.height);
+    loaded.cleanup();
+
+    return {
+      sourceUrl: canvas.toDataURL("image/jpeg", 0.92),
+      sourceWidth: canvas.width,
+      sourceHeight: canvas.height,
+    };
+  }
+
+  function getProfileCropMetrics(data) {
+    const sourceWidth = Math.max(1, Number(data?.sourceWidth || 1));
+    const sourceHeight = Math.max(1, Number(data?.sourceHeight || 1));
+    const zoom = Math.max(1, Number(data?.zoom || 1));
+    const baseScale = Math.max(PROFILE_CROP_OUTPUT_SIZE / sourceWidth, PROFILE_CROP_OUTPUT_SIZE / sourceHeight);
+    const drawWidth = sourceWidth * baseScale * zoom;
+    const drawHeight = sourceHeight * baseScale * zoom;
+    return {
+      previewRatio: PROFILE_CROP_PREVIEW_SIZE / PROFILE_CROP_OUTPUT_SIZE,
+      drawWidth,
+      drawHeight,
+    };
+  }
+
+  function clampProfileCropState(data) {
+    if (!data) return data;
+    const metrics = getProfileCropMetrics(data);
+    const minOffsetX = PROFILE_CROP_OUTPUT_SIZE - metrics.drawWidth;
+    const minOffsetY = PROFILE_CROP_OUTPUT_SIZE - metrics.drawHeight;
+    data.offsetX = Math.min(0, Math.max(minOffsetX, Number(data.offsetX || 0)));
+    data.offsetY = Math.min(0, Math.max(minOffsetY, Number(data.offsetY || 0)));
+    data.zoom = Math.max(1, Math.min(Number(data.maxZoom || 3.2), Number(data.zoom || 1)));
+    return data;
+  }
+
+  function createProfileCropState(source) {
+    const data = {
+      sourceUrl: source.sourceUrl,
+      sourceWidth: source.sourceWidth,
+      sourceHeight: source.sourceHeight,
+      zoom: 1,
+      minZoom: 1,
+      maxZoom: 3.2,
+      offsetX: 0,
+      offsetY: 0,
+      saving: false,
+    };
+    const metrics = getProfileCropMetrics(data);
+    data.offsetX = (PROFILE_CROP_OUTPUT_SIZE - metrics.drawWidth) / 2;
+    data.offsetY = (PROFILE_CROP_OUTPUT_SIZE - metrics.drawHeight) / 2;
+    return clampProfileCropState(data);
+  }
+
+  async function loadImageElement(sourceUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("image_load_failed"));
+      image.src = sourceUrl;
+    });
+  }
+
+  function getProfileCropImageInlineStyle(data) {
+    const metrics = getProfileCropMetrics(data);
+    return [
+      `width:${metrics.drawWidth * metrics.previewRatio}px`,
+      `height:${metrics.drawHeight * metrics.previewRatio}px`,
+      `transform:translate(${Number(data.offsetX || 0) * metrics.previewRatio}px, ${Number(data.offsetY || 0) * metrics.previewRatio}px)`,
+    ].join(";");
+  }
+
+  function syncProfileCropPreviewUi() {
+    if (uiState.modal?.type !== "profile-image-editor") {
+      return;
+    }
+    const data = clampProfileCropState(uiState.modal.data || {});
+    const image = APP_ROOT.querySelector("[data-profile-crop-image]");
+    const zoomInput = APP_ROOT.querySelector('[data-input="profile-crop-zoom"]');
+    const zoomValue = APP_ROOT.querySelector("[data-profile-crop-zoom-value]");
+    if (image instanceof HTMLElement) {
+      image.setAttribute("style", getProfileCropImageInlineStyle(data));
+    }
+    if (zoomInput instanceof HTMLInputElement) {
+      zoomInput.value = String(data.zoom);
+    }
+    if (zoomValue instanceof HTMLElement) {
+      zoomValue.textContent = `${Math.round(data.zoom * 100)}%`;
+    }
+  }
+
+  async function openProfileImageEditor(file) {
+    const prepared = await prepareProfileEditorImage(file);
+    uiState.modal = {
+      type: "profile-image-editor",
+      data: createProfileCropState(prepared),
+    };
+    render();
+  }
+
+  function updateProfileCropZoom(nextZoom) {
+    if (uiState.modal?.type !== "profile-image-editor") {
+      return;
+    }
+    const data = uiState.modal.data || {};
+    const previousMetrics = getProfileCropMetrics(data);
+    const focusX = (PROFILE_CROP_OUTPUT_SIZE / 2 - Number(data.offsetX || 0)) / previousMetrics.drawWidth;
+    const focusY = (PROFILE_CROP_OUTPUT_SIZE / 2 - Number(data.offsetY || 0)) / previousMetrics.drawHeight;
+    data.zoom = Math.max(Number(data.minZoom || 1), Math.min(Number(data.maxZoom || 3.2), Number(nextZoom || 1)));
+    const nextMetrics = getProfileCropMetrics(data);
+    data.offsetX = PROFILE_CROP_OUTPUT_SIZE / 2 - focusX * nextMetrics.drawWidth;
+    data.offsetY = PROFILE_CROP_OUTPUT_SIZE / 2 - focusY * nextMetrics.drawHeight;
+    clampProfileCropState(data);
+    syncProfileCropPreviewUi();
+  }
+
+  function clearProfileCropDrag() {
+    runtime.profileImageCropDrag = null;
+  }
+
+  function onRootPointerDown(event) {
+    const stage = event.target instanceof HTMLElement ? event.target.closest("[data-profile-crop-stage]") : null;
+    if (!(stage instanceof HTMLElement) || uiState.modal?.type !== "profile-image-editor") {
+      return;
+    }
+    event.preventDefault();
+    const data = uiState.modal.data || {};
+    runtime.profileImageCropDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: Number(data.offsetX || 0),
+      originY: Number(data.offsetY || 0),
+    };
+    stage.setPointerCapture?.(event.pointerId);
+  }
+
+  function onWindowPointerMove(event) {
+    const drag = runtime.profileImageCropDrag;
+    if (!drag || uiState.modal?.type !== "profile-image-editor") {
+      return;
+    }
+    const data = uiState.modal.data || {};
+    const previewRatio = getProfileCropMetrics(data).previewRatio;
+    data.offsetX = drag.originX + (event.clientX - drag.startX) / previewRatio;
+    data.offsetY = drag.originY + (event.clientY - drag.startY) / previewRatio;
+    clampProfileCropState(data);
+    syncProfileCropPreviewUi();
+  }
+
+  function onWindowPointerUp(event) {
+    if (runtime.profileImageCropDrag && (!event.pointerId || runtime.profileImageCropDrag.pointerId === event.pointerId)) {
+      clearProfileCropDrag();
+    }
+  }
+
+  async function submitProfileImageCrop() {
+    const currentUser = getCurrentUser();
+    const cropData = uiState.modal?.type === "profile-image-editor" ? uiState.modal.data : null;
+    if (!currentUser || !cropData || cropData.saving) {
+      return;
+    }
+
+    cropData.saving = true;
+    render();
+    try {
+      const image = await loadImageElement(cropData.sourceUrl);
+      const metrics = getProfileCropMetrics(cropData);
+      const canvas = document.createElement("canvas");
+      canvas.width = PROFILE_CROP_OUTPUT_SIZE;
+      canvas.height = PROFILE_CROP_OUTPUT_SIZE;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, Number(cropData.offsetX || 0), Number(cropData.offsetY || 0), metrics.drawWidth, metrics.drawHeight);
+      currentUser.profileImage = canvas.toDataURL("image/jpeg", 0.9);
+      persistState();
+      uiState.modal = null;
+      clearProfileCropDrag();
+      pushToast("toastProfileImageUpdated", "toastProfileImageUpdatedCopy");
+      render();
+    } catch (error) {
+      cropData.saving = false;
+      pushToast(error.titleKey || "toastProfileImageInvalid", error.messageKey || "toastProfileImageInvalidCopy");
+      render();
+    }
   }
 
   async function loadImageForCanvas(file) {
@@ -3661,6 +3964,25 @@
   function normalizeTranslationConcept(value) {
     const normalized = String(value || "").trim().toLowerCase();
     return TRANSLATION_CONCEPTS.some((entry) => entry.id === normalized) ? normalized : "general";
+  }
+
+  function getTranslationVariantLanguage(value) {
+    const normalized = String(value || "").trim();
+    if (Object.prototype.hasOwnProperty.call(CHAT_LANGUAGES, normalized)) {
+      return normalized;
+    }
+    const [language] = normalized.split("__");
+    return Object.prototype.hasOwnProperty.call(CHAT_LANGUAGES, language) ? language : "";
+  }
+
+  function buildTranslationVariantKey(language, concept) {
+    const baseLanguage = getTranslationVariantLanguage(language);
+    if (!baseLanguage) return "";
+    return `${baseLanguage}__${normalizeTranslationConcept(concept)}`;
+  }
+
+  function getUserTranslationConcept(user = getCurrentUser()) {
+    return normalizeTranslationConcept(user?.preferredTranslationConcept || "general");
   }
 
   function getTranslationConceptMeta(conceptId) {
@@ -5185,6 +5507,7 @@
               </select>
             </div>
           </div>
+          ${renderNaturalTranslationBetaCard(currentUser)}
           ${renderPushSettingsCard(currentUser)}
           ${renderPwaInstallCard()}
           <button class="button button-danger logout-inline-button" data-action="logout-current-user">${escapeHtml(t("logoutButton"))}</button>
@@ -5273,6 +5596,23 @@
           </button>
         </div>
         <span class="helper">${escapeHtml(t(pushStatus.helperKey))}</span>
+      </div>
+    `;
+  }
+
+  function renderNaturalTranslationBetaCard(currentUser) {
+    return `
+      <div class="setting-card compact">
+        <div class="settings-switch-row">
+          <div class="settings-switch-copy">
+            <strong>${escapeHtml(t("naturalTranslationBetaTitle"))}</strong>
+            <span class="helper">${escapeHtml(t("naturalTranslationBetaCopy"))}</span>
+          </div>
+          <label class="settings-switch" aria-label="${escapeHtml(t("naturalTranslationBetaTitle"))}">
+            <input type="checkbox" data-input="natural-translation-beta" ${currentUser.enableNaturalTranslationBeta ? "checked" : ""}>
+            <span class="settings-switch-slider"></span>
+          </label>
+        </div>
       </div>
     `;
   }
@@ -5413,6 +5753,7 @@
   function renderChatDetailsMenuMobile(room) {
     const currentUser = getCurrentUser();
     const canManageRoom = currentUser?.id === room.creatorId;
+    const draft = getDraft(room.id);
     return `
       <div class="chat-details-backdrop" data-action="close-chat-details"></div>
       <aside class="chat-details-panel mobile-chat-menu">
@@ -5425,6 +5766,12 @@
             </button>
           `
           : ""}
+        <div class="chat-menu-section">
+          <div class="chat-menu-label">${escapeHtml(t("translationConceptLabel"))}</div>
+          <div class="translation-concept-list">
+            ${renderTranslationConceptOptions(room.id, currentUser?.preferredTranslationConcept || draft.translationConcept)}
+          </div>
+        </div>
         <button class="chat-menu-item" data-action="open-modal" data-modal="invite">
           <span aria-hidden="true">👥+</span>
           <span>${escapeHtml(t("inviteButton"))}</span>
@@ -5447,10 +5794,17 @@
             class="composer-input"
             type="text"
             data-input="composer"
-            data-room-id="${room.id}"
-            value="${escapeHtml(draft.text)}"
-            placeholder="${escapeHtml(t("composerPlaceholder"))}"
-          />
+              data-room-id="${room.id}"
+              value="${escapeHtml(draft.text)}"
+              placeholder="${escapeHtml(t("composerPlaceholder"))}"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              enterkeyhint="send"
+              inputmode="text"
+              data-lpignore="true"
+            />
           <button class="icon-button plus-trigger" data-action="toggle-attachment-menu" aria-label="${escapeHtml(t("addFile"))}" title="${escapeHtml(t("addFile"))}">+</button>
           <button class="button button-primary send-button" data-action="send-message" data-room-id="${room.id}" ${draft.processing ? "disabled" : ""}>${escapeHtml(t("sendButton"))}</button>
           <div class="attachment-menu ${uiState.attachmentMenuOpen ? "open" : ""}">
@@ -5538,6 +5892,12 @@
               value="${escapeHtml(draft.text)}"
               placeholder="${escapeHtml(t("composerPlaceholder"))}"
               autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              enterkeyhint="send"
+              inputmode="text"
+              data-lpignore="true"
             />
             <button
               class="icon-button plus-trigger composer-inline-action"
@@ -5550,13 +5910,6 @@
               +
             </button>
             <div class="attachment-menu ${uiState.attachmentMenuOpen ? "open" : ""}">
-              <div class="attachment-menu-section">
-                <div class="attachment-menu-label">${escapeHtml(t("translationConceptLabel"))}</div>
-                <div class="translation-concept-list">
-                  ${renderTranslationConceptOptions(room.id, draft.translationConcept)}
-                </div>
-              </div>
-              <div class="attachment-menu-divider"></div>
               <div class="attachment-menu-grid">
                 <button class="attach-option" type="button" data-action="trigger-image" data-room-id="${room.id}" aria-label="${escapeHtml(t("addPhoto"))}" title="${escapeHtml(t("addPhoto"))}">
                   ${renderIconSvg("photo")}
@@ -5574,6 +5927,7 @@
         </div>
       </div>
       <input class="hidden-input" type="file" accept="image/jpeg,image/png,image/webp" data-input="image-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" accept="image/*" capture="environment" data-input="camera-image-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" accept="video/*" data-input="video-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" data-input="generic-file" data-room-id="${room.id}" />
     `;
@@ -6065,6 +6419,9 @@
     const participants = deriveRoomParticipantIds(room)
       .map((participantId) => appState.users.find((user) => user.id === participantId))
       .filter(Boolean);
+    const currentUser = getCurrentUser();
+    const canManageRoom = currentUser?.id === room.creatorId;
+    const draft = getDraft(room.id);
 
     return `
       <div class="chat-details-backdrop" data-action="close-chat-details"></div>
@@ -6084,8 +6441,15 @@
           </button>
         </div>
         <div class="chat-details-actions">
+          ${canManageRoom ? `<button class="button button-secondary" data-action="open-modal" data-modal="room-settings">${escapeHtml(t("roomSettingsButton"))}</button>` : ""}
           <button class="button button-secondary" data-action="open-modal" data-modal="invite">${escapeHtml(t("inviteButton"))}</button>
           <button class="button button-danger" data-action="leave-room" data-room-id="${room.id}">${escapeHtml(t("leaveButton"))}</button>
+        </div>
+        <div class="chat-menu-section desktop-tone-section">
+          <div class="chat-menu-label">${escapeHtml(t("translationConceptLabel"))}</div>
+          <div class="translation-concept-list">
+            ${renderTranslationConceptOptions(room.id, currentUser?.preferredTranslationConcept || draft.translationConcept)}
+          </div>
         </div>
         <div class="chat-details-list">
           ${participants.length
@@ -6217,12 +6581,20 @@
     }
 
     const preferredLanguage = getPreferredTranslationLanguage(currentUser, message);
+    const preferredConcept = getUserTranslationConcept(currentUser);
+    const preferredKey = preferredLanguage ? buildTranslationVariantKey(preferredLanguage, preferredConcept) : "";
     const requestedTargets =
       Array.isArray(message.translationMeta?.requestedTargets) && message.translationMeta.requestedTargets.length
         ? message.translationMeta.requestedTargets
-        : Object.keys(message.translations || {}).filter((language) => language !== message.sourceLanguage);
-    const translation = preferredLanguage ? message.translations?.[preferredLanguage] : null;
-    const requestedForCurrentUser = Boolean(preferredLanguage) && requestedTargets.includes(preferredLanguage);
+        : Object.keys(message.translations || {}).filter((key) => getTranslationVariantLanguage(key) !== message.sourceLanguage);
+    const hasConceptVariantForCurrentLanguage = Boolean(preferredLanguage) && Object.keys(message.translations || {}).some((key) => {
+      const language = getTranslationVariantLanguage(key);
+      return language === preferredLanguage && key !== preferredLanguage;
+    });
+    const translation = preferredLanguage
+      ? message.translations?.[preferredKey] || (!hasConceptVariantForCurrentLanguage ? message.translations?.[preferredLanguage] : null)
+      : null;
+    const requestedForCurrentUser = Boolean(preferredKey) && (requestedTargets.includes(preferredKey) || (!hasConceptVariantForCurrentLanguage && requestedTargets.includes(preferredLanguage)));
     const state = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
     const disabled = message.translationMeta?.reason === "service_disabled";
     const mocked = message.translationMeta?.provider === "mock";
@@ -6239,6 +6611,9 @@
     }
 
     if (!translation) {
+      if (preferredKey && hasConceptVariantForCurrentLanguage) {
+        return { text: "", failed: false, pending: true, mocked: false, disabled, translated: false };
+      }
       if (state === "pending" && requestedForCurrentUser) {
         return { text: "", failed: false, pending: true, mocked: false, disabled, translated: false };
       }
@@ -6274,13 +6649,16 @@
     if (!room || !message || message.kind !== "user" || message.senderId === currentUser?.id || !message.originalText) return;
     const targetLanguage = getPreferredTranslationLanguage(currentUser, message);
     if (!targetLanguage || targetLanguage === message.sourceLanguage) return;
-    if (message.translations?.[targetLanguage]?.text) return;
+    const viewerConcept = getUserTranslationConcept(currentUser);
+    const targetKey = buildTranslationVariantKey(targetLanguage, viewerConcept);
+    if (!targetKey) return;
+    if (message.translations?.[targetKey]?.text) return;
 
     const requestedTargets = new Set(Array.isArray(message.translationMeta?.requestedTargets) ? message.translationMeta.requestedTargets : []);
     const translationState = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
-    if (translationState === "pending" && requestedTargets.has(targetLanguage)) return;
+    if (translationState === "pending" && requestedTargets.has(targetKey)) return;
 
-    const taskKey = `${room.id}:${message.id}:${targetLanguage}`;
+    const taskKey = `${room.id}:${message.id}:${targetKey}`;
     if (runtime.translationTasks.has(taskKey)) return;
     runtime.translationTasks.set(taskKey, Date.now());
 
@@ -6298,7 +6676,7 @@
         const liveMessage = liveRoom?.messages?.find((entry) => entry.id === message.id);
         if (!liveRoom || !liveMessage) return;
         const liveRequestedTargets = new Set(Array.isArray(liveMessage.translationMeta?.requestedTargets) ? liveMessage.translationMeta.requestedTargets : []);
-        if (!liveRequestedTargets.has(targetLanguage)) {
+        if (!liveRequestedTargets.has(targetKey)) {
           liveMessage.translationMeta = {
             ...(liveMessage.translationMeta || {}),
             provider: liveMessage.translationMeta?.provider || "pending",
@@ -6308,7 +6686,7 @@
             state: "pending",
             reason: null,
             errorDetail: null,
-            requestedTargets: [...liveRequestedTargets, targetLanguage],
+            requestedTargets: [...liveRequestedTargets, targetKey],
             completedAt: null,
           };
           persistState();
@@ -6323,18 +6701,20 @@
           false,
           [targetLanguage],
           {
-            translationConcept: liveMessage.translationConcept || "general",
+            translationConcept: viewerConcept,
+            naturalTranslationEnabled: isNaturalTranslationEnabledForUser(),
+            contextSummary: getRoomNaturalTranslationSummary(liveRoom),
           }
         );
         const nextEntry =
-          translationBundle.translations?.[targetLanguage] ||
+          translationBundle.translations?.[targetKey] ||
           { text: liveMessage.originalText, failed: translationBundle.meta?.state === "failed" };
 
         liveMessage.translations = {
           ...(liveMessage.translations || {}),
-          [targetLanguage]: nextEntry,
+          [targetKey]: nextEntry,
         };
-        const mergedTargets = [...new Set([...(liveMessage.translationMeta?.requestedTargets || []), targetLanguage])];
+        const mergedTargets = [...new Set([...(liveMessage.translationMeta?.requestedTargets || []), targetKey])];
         const hasAnyFailure = mergedTargets.some((language) => Boolean(liveMessage.translations?.[language]?.failed));
         liveMessage.translationMeta = {
           ...(liveMessage.translationMeta || {}),
@@ -6353,7 +6733,7 @@
         if (liveMessage) {
           liveMessage.translations = {
             ...(liveMessage.translations || {}),
-            [targetLanguage]: { text: liveMessage.originalText, failed: true },
+            [targetKey]: { text: liveMessage.originalText, failed: true },
           };
           liveMessage.translationMeta = {
             ...(liveMessage.translationMeta || {}),
@@ -6361,7 +6741,7 @@
             state: "failed",
             reason: "client_exception",
             errorDetail: String(error?.message || error || "translation_error"),
-            requestedTargets: [...new Set([...(liveMessage.translationMeta?.requestedTargets || []), targetLanguage])],
+            requestedTargets: [...new Set([...(liveMessage.translationMeta?.requestedTargets || []), targetKey])],
             completedAt: Date.now(),
           };
           persistState();
@@ -6581,6 +6961,13 @@
             data-room-id="${room.id}"
             value="${escapeHtml(draft.text)}"
             placeholder="${escapeHtml(t("composerPlaceholder"))}"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+            enterkeyhint="send"
+            inputmode="text"
+            data-lpignore="true"
           />
           <div class="composer-action-group">
             <div class="attachment-menu ${uiState.attachmentMenuOpen ? "open" : ""}">
@@ -6600,6 +6987,7 @@
         </div>
       </div>
       <input class="hidden-input" type="file" accept="image/jpeg,image/png,image/webp" data-input="image-file" data-room-id="${room.id}" />
+      <input class="hidden-input" type="file" accept="image/*" capture="environment" data-input="camera-image-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" accept="video/*" data-input="video-file" data-room-id="${room.id}" />
       <input class="hidden-input" type="file" data-input="generic-file" data-room-id="${room.id}" />
     `;
@@ -6835,10 +7223,95 @@
                   ? renderUsageLimitModal()
                 : modalType === "profile-preview"
                   ? renderProfilePreviewModal()
+                  : modalType === "profile-image-editor"
+                    ? renderProfileImageEditorModal()
+                    : modalType === "profile-image-view"
+                      ? renderProfileImageViewModal()
+                  : modalType === "image-source"
+                    ? renderImageSourceModal()
                   : modalType === "notice"
                     ? renderNoticeModal()
                 : "";
     return `<div class="modal-layer">${body}</div>`;
+  }
+
+  function renderProfileImageEditorModal() {
+    const data = uiState.modal?.data || {};
+    return `
+      <section class="modal profile-crop-modal">
+        <div class="modal-header">
+          <h3>프로필 사진 편집</h3>
+          <p>사각형 안에서 확대하고 위치를 맞춰주세요</p>
+        </div>
+        <div class="modal-body profile-crop-body">
+          <div class="profile-crop-stage" data-profile-crop-stage="true">
+            <img
+              class="profile-crop-image"
+              data-profile-crop-image="true"
+              src="${escapeHtml(data.sourceUrl || "")}"
+              alt="profile crop"
+              draggable="false"
+              style="${escapeHtml(getProfileCropImageInlineStyle(data))}"
+            >
+          </div>
+          <div class="profile-crop-controls">
+            <div class="profile-crop-zoom-row">
+              <span>확대</span>
+              <input
+                type="range"
+                min="${escapeHtml(String(data.minZoom || 1))}"
+                max="${escapeHtml(String(data.maxZoom || 3.2))}"
+                step="0.01"
+                value="${escapeHtml(String(data.zoom || 1))}"
+                data-input="profile-crop-zoom"
+              >
+              <strong data-profile-crop-zoom-value="true">${Math.round(Number(data.zoom || 1) * 100)}%</strong>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" type="button" data-action="close-modal">취소</button>
+          <button class="button button-primary" type="button" data-action="submit-profile-image-crop" ${data.saving ? "disabled" : ""}>저장</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderProfileImageViewModal() {
+    const data = uiState.modal?.data || {};
+    return `
+      <section class="modal profile-image-view-modal">
+        <div class="modal-header">
+          <h3>프로필 사진</h3>
+          <p>${escapeHtml(data.name || "")}</p>
+        </div>
+        <div class="modal-body profile-image-view-body">
+          <img class="profile-image-view-image" src="${escapeHtml(data.image || DEFAULT_PROFILE_IMAGE)}" alt="${escapeHtml(data.name || "profile")}">
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("settingsClose"))}</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderImageSourceModal() {
+    const roomId = uiState.modal?.data?.roomId || uiState.activeRoomId || "";
+    return `
+      <section class="modal bottom-sheet-modal image-source-modal">
+        <div class="modal-header">
+          <h3>사진 업로드</h3>
+          <p>가져올 방식을 선택하세요</p>
+        </div>
+        <div class="modal-body image-source-actions">
+          <button class="button button-primary" type="button" data-action="pick-image-source" data-source="gallery" data-room-id="${escapeHtml(roomId)}">갤러리에서 선택</button>
+          <button class="button button-secondary" type="button" data-action="pick-image-source" data-source="camera" data-room-id="${escapeHtml(roomId)}">카메라로 촬영</button>
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
+        </div>
+      </section>
+    `;
   }
 
   function renderCreateRoomModal() {
@@ -7205,10 +7678,21 @@
     const presence = getPresence(friend, friend.currentRoomId || null);
     const modalData = uiState.modal?.data || {};
     return `
-      <section class="modal">
-        <div class="modal-header">
-          <h3>${escapeHtml(canAdminEdit ? t("adminProfileEditTitle") : t("profilePopupTitle"))}</h3>
-          <p>${escapeHtml(displayName)}</p>
+      <section class="modal profile-preview-modal">
+        <div class="modal-header profile-preview-header">
+          <div class="profile-preview-heading">
+            <h3>${escapeHtml(canAdminEdit ? t("adminProfileEditTitle") : t("profilePopupTitle"))}</h3>
+            <p>${escapeHtml(displayName)}</p>
+          </div>
+          <button
+            class="profile-preview-photo-button"
+            type="button"
+            data-action="open-profile-image-view"
+            data-user-id="${friend.id}"
+            aria-label="${escapeHtml(displayName)}"
+          >
+            ${renderProfileImage(friend, "profile-preview-photo", displayName)}
+          </button>
         </div>
         <div class="modal-body profile-preview-grid">
           ${canAdminEdit
@@ -7315,7 +7799,92 @@
     restoreSurfaceScrollState(surfaceScrollState);
     updateChatLayoutMetrics();
     restoreFocusState(focusState);
+    syncBrowserHistoryForActiveRoom();
     scheduleReceiptRefresh({ delay: 70 });
+  }
+
+  function ensureBrowserHistoryState() {
+    if (typeof window === "undefined" || !window.history || typeof window.history.replaceState !== "function") {
+      return;
+    }
+    const currentState = window.history.state;
+    if (currentState?.__transchat) {
+      return;
+    }
+    window.history.replaceState({ __transchat: true, screen: "chat-list", roomId: null }, "", window.location.href);
+  }
+
+  function syncBrowserHistoryForActiveRoom() {
+    if (typeof window === "undefined" || !window.history) {
+      return;
+    }
+
+    ensureBrowserHistoryState();
+    const roomId = uiState.activeRoomId || null;
+    const currentState = window.history.state;
+    if (roomId) {
+      if (currentState?.__transchat && currentState.screen === "room" && currentState.roomId === roomId) {
+        runtime.historyRoomId = roomId;
+        return;
+      }
+      if (runtime.historyRoomId === roomId) {
+        return;
+      }
+      window.history.pushState({ __transchat: true, screen: "room", roomId }, "", window.location.href);
+      runtime.historyRoomId = roomId;
+      return;
+    }
+
+    runtime.historyRoomId = null;
+    if (!(currentState?.__transchat && currentState.screen === "chat-list")) {
+      window.history.replaceState({ __transchat: true, screen: "chat-list", roomId: null }, "", window.location.href);
+    }
+  }
+
+  function closeActiveRoomView(options = {}) {
+    const currentUser = getCurrentUser();
+    const roomId = uiState.activeRoomId || currentUser?.currentRoomId || null;
+    if (roomId) {
+      stopTypingForRoom(roomId);
+      uiState.dismissedRoomId = roomId;
+    }
+    uiState.activeRoomId = null;
+    uiState.directoryTab = "chat";
+    uiState.chatDetailsOpen = false;
+    uiState.attachmentMenuOpen = false;
+    uiState.mobileRoomsOpen = false;
+    markUserPresence(null);
+    if (currentUser) {
+      markAllChatNotificationsSeen(currentUser.id);
+      persistState();
+    }
+    if (options.updateHistory !== false) {
+      syncBrowserHistoryForActiveRoom();
+    }
+    render();
+  }
+
+  function handleRoomBackNavigation() {
+    if (!uiState.activeRoomId) {
+      return;
+    }
+    const historyState = window.history?.state;
+    if (historyState?.__transchat && historyState.screen === "room") {
+      window.history.back();
+      return;
+    }
+    closeActiveRoomView();
+  }
+
+  function onWindowPopState(event) {
+    if (!uiState.activeRoomId) {
+      return;
+    }
+    const nextState = event.state;
+    const isRoomState = Boolean(nextState?.__transchat && nextState.screen === "room");
+    if (!isRoomState) {
+      closeActiveRoomView({ updateHistory: false });
+    }
   }
 
   function captureChatScrollState() {
@@ -7481,6 +8050,13 @@
   }
 
   function onRootClick(event) {
+    if (event.target instanceof HTMLElement && event.target.classList.contains("modal-layer")) {
+      uiState.modal = null;
+      uiState.previewMedia = null;
+      clearProfileCropDrag();
+      render();
+      return;
+    }
     const actionTarget = event.target.closest("[data-action]");
     if (!actionTarget) return;
     const action = actionTarget.dataset.action;
@@ -7655,8 +8231,11 @@
     if (action === "set-translation-concept") {
       const roomId = actionTarget.dataset.roomId;
       const concept = normalizeTranslationConcept(actionTarget.dataset.concept);
-      if (!roomId) return;
+      const currentUser = getCurrentUser();
+      if (!roomId || !currentUser) return;
+      currentUser.preferredTranslationConcept = concept;
       setDraft(roomId, { translationConcept: concept });
+      persistState();
       render();
       return;
     }
@@ -7671,10 +8250,27 @@
       openModal(actionTarget.dataset.modal);
       return;
     }
+    if (action === "pick-image-source") {
+      const roomId = actionTarget.dataset.roomId || uiState.modal?.data?.roomId || uiState.activeRoomId || "";
+      const source = actionTarget.dataset.source === "camera" ? "camera-image-file" : "image-file";
+      uiState.modal = null;
+      render();
+      if (roomId) {
+        window.setTimeout(() => {
+          triggerHiddenInput(source, roomId);
+        }, 30);
+      }
+      return;
+    }
     if (action === "close-modal") {
       uiState.modal = null;
       uiState.previewMedia = null;
+      clearProfileCropDrag();
       render();
+      return;
+    }
+    if (action === "submit-profile-image-crop") {
+      void submitProfileImageCrop();
       return;
     }
     if (action === "apply-plan-selection") {
@@ -7757,7 +8353,11 @@
     }
     if (action === "trigger-image") {
       uiState.attachmentMenuOpen = false;
-      triggerHiddenInput("image-file", actionTarget.dataset.roomId);
+      uiState.modal = {
+        type: "image-source",
+        data: { roomId: actionTarget.dataset.roomId || uiState.activeRoomId || "" },
+      };
+      render();
       return;
     }
     if (action === "trigger-video") {
@@ -7847,6 +8447,21 @@
           editPassword: friend?.password || "",
         },
       };
+      render();
+      return;
+    }
+    if (action === "open-profile-image-view") {
+      const friend = appState.users.find((user) => user.id === actionTarget.dataset.userId);
+      if (!friend) return;
+      uiState.modal = {
+        type: "profile-image-view",
+        data: {
+          userId: friend.id,
+          name: getUserDisplayName(friend) || friend.loginId || friend.name,
+          image: getUserProfileImage(friend),
+        },
+      };
+      clearProfileCropDrag();
       render();
       return;
     }
@@ -8090,6 +8705,15 @@
       }
       return;
     }
+    if (target.dataset.input === "natural-translation-beta") {
+      const currentUser = getCurrentUser();
+      if (currentUser) {
+        currentUser.enableNaturalTranslationBeta = Boolean(target.checked);
+        persistState();
+        render();
+      }
+      return;
+    }
     if (target.dataset.input === "switch-user") {
       if (target.value) {
         switchUser(target.value);
@@ -8144,6 +8768,14 @@
       target.value = "";
       return;
     }
+    if (target.dataset.input === "camera-image-file") {
+      const [file] = target.files || [];
+      if (file) {
+        await handleImageSelection(target.dataset.roomId, file);
+      }
+      target.value = "";
+      return;
+    }
     if (target.dataset.input === "video-file") {
       const [file] = target.files || [];
       if (file) {
@@ -8163,6 +8795,12 @@
 
   function onRootKeyDown(event) {
     const target = event.target;
+    if (event.key === "Escape" && uiState.modal) {
+      uiState.modal = null;
+      uiState.previewMedia = null;
+      render();
+      return;
+    }
     if (
       target instanceof HTMLInputElement &&
       ["signup-id", "signup-name", "signup-password"].includes(target.dataset.input) &&
@@ -8439,8 +9077,8 @@
     };
     persistState();
     markUserPresence(user.currentRoomId || null);
-    if (options.toastKey !== false) {
-      pushToast(options.toastKey || "toastEnter", options.toastCopyKey || "toastEnterCopy", { name: getUserDisplayName(user) || user.loginId || user.name });
+    if (options.toastKey) {
+      pushToast(options.toastKey, options.toastCopyKey || "toastEnterCopy", { name: getUserDisplayName(user) || user.loginId || user.name });
     }
     render();
     void registerPushTokenForCurrentUser();
@@ -9140,9 +9778,9 @@
     if (liveText !== draft.text) {
       setDraft(roomId, { text: liveText });
     }
-    const text = liveText.trim();
+    const text = normalizeDisplayText(liveText).trim();
     const attachment = draft.attachment;
-    const translationConcept = normalizeTranslationConcept(draft.translationConcept);
+    const translationConcept = getUserTranslationConcept(currentUser);
     const failTranslation = Boolean(draft.failTranslation);
     if (!text && !attachment) {
       pushToast("toastEmptyDraft", "toastEmptyDraftCopy");
@@ -9206,7 +9844,13 @@
       storedAttachment
     );
     message.translationConcept = translationConcept;
+    logEncodingTrace("client-draft", text, {
+      roomId,
+      messageId,
+      sourceLanguage: currentUser.nativeLanguage,
+    });
     const requestedTargetLanguages = text ? getNeededTargetLanguages(room, currentUser.id, currentUser.nativeLanguage) : [];
+    const requestedTargetKeys = requestedTargetLanguages.map((language) => buildTranslationVariantKey(language, translationConcept));
     message.translationMeta = text
       ? {
           provider: "pending",
@@ -9216,7 +9860,7 @@
           state: "pending",
           reason: null,
           errorDetail: null,
-          requestedTargets: requestedTargetLanguages,
+          requestedTargets: requestedTargetKeys,
           completedAt: null,
         }
       : {
@@ -9251,7 +9895,6 @@
     if (failTranslation) {
       pushToast("toastTranslationFailed", "toastTranslationFailedCopy");
     }
-    pushToast("toastMessageSent", "toastMessageSentCopy");
     render();
 
     if (!text) {
@@ -9284,6 +9927,8 @@
             requestedTargetLanguages,
             {
               translationConcept,
+              naturalTranslationEnabled: isNaturalTranslationEnabledForUser(currentUser),
+              contextSummary: getRoomNaturalTranslationSummary(room),
             }
           );
         } catch (error) {
@@ -9374,18 +10019,77 @@
     return [...needed];
   }
 
+  function isNaturalTranslationEnabledForUser(user = getCurrentUser()) {
+    return Boolean(user?.enableNaturalTranslationBeta);
+  }
+
+  function normalizeContextSnippet(text) {
+    return String(text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 56);
+  }
+
+  function getRoomNaturalTranslationSummary(room) {
+    if (!room || !isNaturalTranslationEnabledForUser()) {
+      return "";
+    }
+
+    const recentMessages = (room.messages || [])
+      .filter((message) => message?.kind === "user" && String(message?.originalText || message?.text || "").trim())
+      .slice(-6);
+    if (!recentMessages.length) {
+      return "";
+    }
+
+    const signature = recentMessages.map((message) => `${message.id}:${message.translationConcept || "general"}`).join("|");
+    if (room.naturalTranslationContextCache?.signature === signature && room.naturalTranslationContextCache?.summary) {
+      return room.naturalTranslationContextCache.summary;
+    }
+
+    const dominantConcept = recentMessages.reduce((counts, message) => {
+      const concept = normalizeTranslationConcept(message.translationConcept);
+      counts[concept] = (counts[concept] || 0) + 1;
+      return counts;
+    }, {});
+    const preferredConcept =
+      Object.entries(dominantConcept).sort((a, b) => b[1] - a[1])[0]?.[0] || "general";
+    const recentLines = recentMessages.slice(-4).map((message) => {
+      const speaker = appState.users.find((user) => user.id === message.senderId);
+      const snippet = normalizeContextSnippet(message.originalText || message.text || "");
+      if (!snippet) return "";
+      return `${speaker?.name || "User"}: ${snippet}`;
+    }).filter(Boolean);
+    const summary = [
+      `Relationship tone hint: ${describeTranslationConcept(preferredConcept)}.`,
+      recentLines.length ? `Recent lines: ${recentLines.join(" | ")}` : "",
+    ].filter(Boolean).join("\n");
+
+    room.naturalTranslationContextCache = {
+      signature,
+      summary,
+      updatedAt: Date.now(),
+    };
+    return summary;
+  }
+
   async function buildTranslations(room, text, senderId, fromLanguage, forceFail, requestedTargetLanguages = null, options = {}) {
     const targetLanguages = Array.isArray(requestedTargetLanguages)
       ? [...new Set(requestedTargetLanguages.filter((language) => language && language !== fromLanguage))]
       : getNeededTargetLanguages(room, senderId, fromLanguage);
     const result = createBaseTranslationMap(text, fromLanguage);
     const translationConcept = normalizeTranslationConcept(options.translationConcept);
+    const translationKeys = targetLanguages.map((language) => buildTranslationVariantKey(language, translationConcept));
+    const naturalTranslationEnabled = Boolean(options.naturalTranslationEnabled);
+    const contextSummary = naturalTranslationEnabled ? String(options.contextSummary || "").trim() : "";
 
     console.info("[translation] request", {
       senderId,
       sourceLanguage: fromLanguage,
       targetLanguages,
       translationConcept,
+      naturalTranslationEnabled,
+      contextSummaryLength: contextSummary.length,
       serverReachable: runtime.backend.serverReachable,
       liveTranslationEnabled: runtime.backend.liveTranslationEnabled,
     });
@@ -9408,7 +10112,8 @@
 
     if (forceFail || /#fail\b/i.test(text)) {
       targetLanguages.forEach((targetLanguage) => {
-        result[targetLanguage] = { text, failed: true };
+        const targetKey = buildTranslationVariantKey(targetLanguage, translationConcept);
+        result[targetKey] = { text, failed: true };
       });
       return {
         translations: result,
@@ -9419,7 +10124,7 @@
           state: "failed",
           reason: "forced_failure",
           errorDetail: "Forced translation failure for debugging.",
-          requestedTargets: targetLanguages,
+          requestedTargets: translationKeys,
           completedAt: Date.now(),
         },
       };
@@ -9427,9 +10132,11 @@
 
     const liveTranslations = await requestServerTranslations(text, fromLanguage, targetLanguages, {
       translationConcept,
+      contextSummary,
     });
     if (liveTranslations.status === "success") {
       targetLanguages.forEach((targetLanguage) => {
+        const targetKey = buildTranslationVariantKey(targetLanguage, translationConcept);
         const entry = liveTranslations.translations?.[targetLanguage];
         const translatedText =
           typeof entry === "string"
@@ -9437,11 +10144,11 @@
             : typeof entry?.text === "string"
               ? entry.text
               : "";
-        result[targetLanguage] = translatedText
+        result[targetKey] = translatedText
           ? { text: translatedText, failed: Boolean(entry?.failed) }
           : { text, failed: true };
       });
-      const hasFailure = targetLanguages.some((language) => Boolean(result[language]?.failed));
+      const hasFailure = translationKeys.some((language) => Boolean(result[language]?.failed));
       console.info("[translation] response", {
         sourceLanguage: fromLanguage,
         targetLanguages,
@@ -9459,7 +10166,7 @@
           state: hasFailure ? "partial" : "success",
           reason: null,
           errorDetail: null,
-          requestedTargets: targetLanguages,
+          requestedTargets: translationKeys,
           completedAt: Date.now(),
         },
       };
@@ -9476,12 +10183,12 @@
     for (const targetLanguage of targetLanguages) {
       try {
         const translated = await mockTranslate(text, fromLanguage, targetLanguage, { forceFail: false });
-        result[targetLanguage] = { text: translated, failed: false };
+        result[buildTranslationVariantKey(targetLanguage, translationConcept)] = { text: translated, failed: false };
       } catch (error) {
-        result[targetLanguage] = { text, failed: true };
+        result[buildTranslationVariantKey(targetLanguage, translationConcept)] = { text, failed: true };
       }
     }
-    const allFallbacksFailed = targetLanguages.every((language) => Boolean(result[language]?.failed));
+    const allFallbacksFailed = translationKeys.every((language) => Boolean(result[language]?.failed));
     return {
       translations: result,
       meta: {
@@ -9491,7 +10198,7 @@
         state: allFallbacksFailed ? "failed" : "mock",
         reason: liveTranslations.reason,
         errorDetail: liveTranslations.errorDetail || null,
-        requestedTargets: targetLanguages,
+        requestedTargets: translationKeys,
         completedAt: Date.now(),
       },
     };
@@ -9519,6 +10226,11 @@
 
     const requestPromise = (async () => {
       try {
+        logEncodingTrace("client-translate-request", text, {
+          sourceLanguage,
+          targetLanguages,
+          translationConcept,
+        });
         // Later this request can move to a real auth/session-aware Node.js + WebSocket message pipeline.
         const response = await fetch(CONFIG.translationApiPath, {
           method: "POST",
@@ -9530,6 +10242,7 @@
             sourceLanguage,
             targetLanguages,
             translationConcept,
+            contextSummary: String(options.contextSummary || "").trim(),
           }),
         });
 

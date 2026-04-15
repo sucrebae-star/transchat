@@ -92,6 +92,43 @@ function normalizeDisplayText(value) {
   }
 }
 
+function summarizeTextForTrace(value) {
+  const text = String(value ?? "");
+  return {
+    length: text.length,
+    replacement: text.includes("\uFFFD"),
+    preview: text.slice(0, 80),
+    codepoints: Array.from(text.slice(0, 8)).map((character) => `U+${character.codePointAt(0).toString(16).toUpperCase()}`),
+  };
+}
+
+function logEncodingTrace(stage, value, extra = {}) {
+  const text = String(value ?? "");
+  if (!text) return;
+  console.info(`[encoding] ${stage}`, {
+    ...extra,
+    ...summarizeTextForTrace(text),
+  });
+}
+
+function getLatestUserMessageForTrace(state = serverState) {
+  const rooms = Array.isArray(state?.rooms) ? [...state.rooms] : [];
+  const latestRoom = rooms
+    .filter((room) => Array.isArray(room?.messages) && room.messages.length)
+    .sort((a, b) => Number(b.lastMessageAt || b.createdAt || 0) - Number(a.lastMessageAt || a.createdAt || 0))[0];
+  const latestMessage = [...(latestRoom?.messages || [])]
+    .filter((message) => message?.kind === "user" && String(message?.originalText || "").trim())
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0];
+  if (!(latestRoom && latestMessage)) {
+    return null;
+  }
+  return {
+    roomId: latestRoom.id,
+    messageId: latestMessage.id,
+    text: latestMessage.originalText,
+  };
+}
+
 function normalizeRecoveryAnswer(value) {
   return normalizeDisplayText(value)
     .replace(/\s+/g, "")
@@ -184,10 +221,11 @@ async function handleTranslate(req, res) {
     }
 
     const body = await readJsonBody(req);
-    const text = String(body?.text || "").trim();
+    const text = normalizeDisplayText(body?.text).trim();
     const sourceLanguage = String(body?.sourceLanguage || "").trim();
     const targetLanguages = Array.isArray(body?.targetLanguages) ? body.targetLanguages : [];
     const translationConcept = normalizeTranslationConcept(body?.translationConcept);
+    const contextSummary = String(body?.contextSummary || "").trim().slice(0, 800);
 
     if (!text || !ALLOWED_LANGUAGES.has(sourceLanguage)) {
       return sendJson(res, 400, { error: "invalid_request" });
@@ -204,7 +242,12 @@ async function handleTranslate(req, res) {
       sourceLanguage,
       targetLanguages: normalizedTargets,
       translationConcept,
+      contextSummaryLength: contextSummary.length,
       length: text.length,
+    });
+    logEncodingTrace("server-translate-received", text, {
+      sourceLanguage,
+      targetLanguages: normalizedTargets,
     });
 
     const translationResult = await requestOpenAITranslations({
@@ -212,9 +255,16 @@ async function handleTranslate(req, res) {
       sourceLanguage,
       targetLanguages: normalizedTargets,
       translationConcept,
+      contextSummary,
     });
     lastTranslationError = null;
     lastTranslationErrorDetail = null;
+    Object.entries(translationResult.translations || {}).forEach(([language, entry]) => {
+      logEncodingTrace("server-translate-result", entry?.text || "", {
+        targetLanguage: language,
+        sourceLanguage,
+      });
+    });
 
     return sendJson(res, 200, {
       translations: translationResult.translations,
@@ -346,10 +396,26 @@ async function handleStateUpdate(req, res) {
     }
 
     const previousState = serverState;
+    const incomingTrace = getLatestUserMessageForTrace(nextState);
+    if (incomingTrace) {
+      logEncodingTrace("server-state-received", incomingTrace.text, {
+        roomId: incomingTrace.roomId,
+        messageId: incomingTrace.messageId,
+        sourceId,
+      });
+    }
     const normalizedState = mergeStates(serverState, {
       ...nextState,
       updatedAt: Number(nextState.updatedAt || Date.now()),
     });
+    const normalizedTrace = getLatestUserMessageForTrace(normalizedState);
+    if (normalizedTrace) {
+      logEncodingTrace("server-state-normalized", normalizedTrace.text, {
+        roomId: normalizedTrace.roomId,
+        messageId: normalizedTrace.messageId,
+        sourceId,
+      });
+    }
 
     serverState = normalizedState;
     prunePushTokensForDeletedUsers(serverState);
@@ -1043,7 +1109,7 @@ function normalizeTranslationError(error) {
   return "translation_error";
 }
 
-async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages, translationConcept = "general" }) {
+async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages, translationConcept = "general", contextSummary = "" }) {
   if (!targetLanguages.length) {
     return {
       translations: {},
@@ -1058,6 +1124,7 @@ async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages
         sourceLanguage,
         targetLanguage,
         translationConcept,
+        contextSummary,
       });
       return [
         targetLanguage,
@@ -1075,12 +1142,13 @@ async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages
   };
 }
 
-async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLanguage, translationConcept = "general" }) {
+async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLanguage, translationConcept = "general", contextSummary = "" }) {
   const cacheKey = JSON.stringify({
     model: OPENAI_MODEL,
     sourceLanguage,
     targetLanguage,
     translationConcept,
+    contextSummary,
     text,
   });
   const cached = translationCache.get(cacheKey);
@@ -1101,6 +1169,7 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLang
       sourceLanguage,
       targetLanguage,
       translationConcept,
+      contextSummary,
     }),
   };
 
@@ -1124,7 +1193,7 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLang
   return outputText;
 }
 
-function buildTranslationPrompt({ text, sourceLanguage, targetLanguage, translationConcept = "general" }) {
+function buildTranslationPrompt({ text, sourceLanguage, targetLanguage, translationConcept = "general", contextSummary = "" }) {
   return [
     "You are a realtime chat translator.",
     "Translate the full message into the target language only.",
@@ -1132,6 +1201,8 @@ function buildTranslationPrompt({ text, sourceLanguage, targetLanguage, translat
     "Do not summarize, shorten, soften, explain, or add commentary.",
     "Do not filter or propose alternatives.",
     `Use this recipient-facing tone: ${describeTranslationConcept(translationConcept)}.`,
+    contextSummary ? "Apply this short conversation context only to keep names, relationship tone, and honorifics consistent:" : "",
+    contextSummary || "",
     "Preserve the full meaning, tone, sentence count, URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
     `Source language: ${describeLanguage(sourceLanguage)}.`,
     `Target language: ${describeLanguage(targetLanguage)}.`,
@@ -1221,14 +1292,30 @@ function sanitizeUsageState(value) {
 }
 
 function sanitizeMessageState(message, allowedUserIds) {
-  if (!message || message.kind !== "user") {
+  if (!message) {
+    return message;
+  }
+  if (message.kind === "system") {
+    return {
+      ...message,
+      systemParams: Object.fromEntries(
+        Object.entries(message.systemParams || {}).map(([key, value]) => [
+          key,
+          typeof value === "string" ? normalizeDisplayText(value) : value,
+        ])
+      ),
+    };
+  }
+  if (message.kind !== "user") {
     return message;
   }
 
-  const translations = sanitizeTranslations(message.translations, message.originalText, message.sourceLanguage);
+  const originalText = normalizeDisplayText(message.originalText);
+  const translations = sanitizeTranslations(message.translations, originalText, message.sourceLanguage);
 
   return {
     ...message,
+    originalText,
     media: sanitizeMediaState(message.media),
     status: ["composing", "sent", "delivered", "read"].includes(message.status) ? message.status : "sent",
     deliveredTo: filterRecordByAllowedKeys(message.deliveredTo, allowedUserIds),
@@ -1238,18 +1325,28 @@ function sanitizeMessageState(message, allowedUserIds) {
   };
 }
 
+function getTranslationVariantLanguage(value) {
+  const normalized = String(value || "").trim();
+  if (ALLOWED_LANGUAGES.has(normalized)) {
+    return normalized;
+  }
+  const [language] = normalized.split("__");
+  return ALLOWED_LANGUAGES.has(language) ? language : "";
+}
+
 function sanitizeTranslations(translations, originalText, sourceLanguage) {
   return Object.fromEntries(
     Object.entries(translations || {})
-      .filter(([language]) => ALLOWED_LANGUAGES.has(language))
-      .map(([language, entry]) => {
-        const text = typeof entry?.text === "string" ? entry.text : "";
+      .filter(([key]) => Boolean(getTranslationVariantLanguage(key)))
+      .map(([key, entry]) => {
+        const language = getTranslationVariantLanguage(key);
+        const text = typeof entry?.text === "string" ? normalizeDisplayText(entry.text) : "";
         const failed = Boolean(entry?.failed);
         const looksLikeLegacyFallback = language !== sourceLanguage && !failed && text === String(originalText || "");
         if (!text && !failed) return null;
         if (looksLikeLegacyFallback) return null;
         return [
-          language,
+          key,
           {
             text: text || String(originalText || ""),
             failed,
@@ -1263,8 +1360,11 @@ function sanitizeTranslations(translations, originalText, sourceLanguage) {
 function sanitizeTranslationMeta(meta, translations, sourceLanguage) {
   const requestedTargets = [...new Set(
     (Array.isArray(meta?.requestedTargets) ? meta.requestedTargets : Object.keys(translations || {}))
-      .map((language) => String(language || "").trim())
-      .filter((language) => ALLOWED_LANGUAGES.has(language) && language !== sourceLanguage)
+      .map((key) => String(key || "").trim())
+      .filter((key) => {
+        const language = getTranslationVariantLanguage(key);
+        return Boolean(language) && language !== sourceLanguage;
+      })
   )];
   const provider = typeof meta?.provider === "string" ? meta.provider : "none";
   const state =
@@ -1335,10 +1435,12 @@ function sanitizeSharedState(state) {
       },
       blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
       password: typeof user?.password === "string" ? user.password : "",
+      preferredTranslationConcept: normalizeTranslationConcept(user?.preferredTranslationConcept),
       planTier: ["monthly", "yearly"].includes(user?.planTier) ? user.planTier : "free",
       usage: sanitizeUsageState(user?.usage),
       planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
       planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
+      enableNaturalTranslationBeta: Boolean(user?.enableNaturalTranslationBeta),
       isAdmin: Boolean(user?.isAdmin) || normalizeDisplayText(user?.loginId || "").trim().toLowerCase() === "admin",
       isUnlimitedTester: Boolean(user?.isUnlimitedTester) || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "hoa" || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "현태",
       isUnlimitedUser: Boolean(user?.isUnlimitedUser) || Boolean(user?.isUnlimitedTester) || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "hoa" || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "현태",
@@ -1492,6 +1594,13 @@ async function loadServerState() {
     }
 
     const sanitized = sanitizeSharedState(parsed);
+    const trace = getLatestUserMessageForTrace(sanitized);
+    if (trace) {
+      logEncodingTrace("server-state-load", trace.text, {
+        roomId: trace.roomId,
+        messageId: trace.messageId,
+      });
+    }
     if (JSON.stringify(sanitized) !== JSON.stringify(parsed)) {
       await saveServerState(sanitized);
     }
@@ -1502,6 +1611,13 @@ async function loadServerState() {
 }
 
 async function saveServerState(state) {
+  const trace = getLatestUserMessageForTrace(state);
+  if (trace) {
+    logEncodingTrace("server-state-save", trace.text, {
+      roomId: trace.roomId,
+      messageId: trace.messageId,
+    });
+  }
   await writeFile(SERVER_STATE_FILE, JSON.stringify(state), "utf8");
 }
 
@@ -1547,17 +1663,23 @@ function sendJson(res, statusCode, payload) {
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
-    let raw = "";
+    const chunks = [];
+    let totalBytes = 0;
 
     req.on("data", (chunk) => {
-      raw += chunk;
-      if (raw.length > 200_000) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.length;
+      if (totalBytes > 200_000) {
         reject(new Error("Request body too large"));
+        req.destroy();
+        return;
       }
+      chunks.push(buffer);
     });
 
     req.on("end", () => {
       try {
+        const raw = chunks.length ? Buffer.concat(chunks).toString("utf8") : "";
         resolve(raw ? JSON.parse(raw) : {});
       } catch (error) {
         reject(new Error("Invalid JSON body"));
