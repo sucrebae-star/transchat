@@ -64,6 +64,7 @@
     mediaObjectUrls: new Map(),
     mediaLoadPromises: new Map(),
     mediaDbPromise: null,
+    translationTasks: new Map(),
     statusTimers: new Map(),
     toastTimers: new Map(),
     typingStopTimers: new Map(),
@@ -2104,6 +2105,9 @@
   function syncUiWithCurrentUserState() {
     const currentUser = getCurrentUser();
     if (!currentUser) {
+      if (tryRemapActiveUserIdentity()) {
+        return;
+      }
       if (getActiveUserId()) {
         clearAutoLoginState();
         setActiveUserId(null);
@@ -2149,6 +2153,25 @@
 
     const localCurrentUser = appState.users.find((user) => user.id === activeUserId);
     if (!localCurrentUser) {
+      if (tryRemapActiveUserIdentity(nextState)) {
+        return { state: nextState, mergedLocalActiveUser: false };
+      }
+      return { state: nextState, mergedLocalActiveUser: false };
+    }
+
+    const serverIdentityMatch = findUserByLoginName(localCurrentUser.loginId || localCurrentUser.name, nextState.users || []);
+    if (serverIdentityMatch) {
+      setActiveUserId(serverIdentityMatch.id);
+      const remembered = readAutoLoginState();
+      if (remembered?.loginId) {
+        persistAutoLoginState(serverIdentityMatch);
+      }
+      return { state: nextState, mergedLocalActiveUser: false };
+    }
+
+    const localActivityAt = Number(localCurrentUser.lastSeenAt || localCurrentUser.lastLoginAt || 0);
+    const localLooksFresh = localActivityAt > 0 && Date.now() - localActivityAt < 5 * 60 * 1000;
+    if (!localLooksFresh || getStateTimestamp(nextState) >= localActivityAt) {
       return { state: nextState, mergedLocalActiveUser: false };
     }
 
@@ -2277,6 +2300,37 @@
     return Number(state?.updatedAt || 0);
   }
 
+  function getStateRosterFingerprint(state) {
+    return getCanonicalUsersForDisplay(state?.users || [])
+      .map((user) => normalizeAccountId(user.loginId || user.name))
+      .filter(Boolean)
+      .sort()
+      .join("|");
+  }
+
+  function shouldPreferServerState(serverState, localState) {
+    const serverTimestamp = getStateTimestamp(serverState);
+    const localTimestamp = getStateTimestamp(localState);
+    if (serverTimestamp >= localTimestamp) return true;
+
+    const serverRoster = getStateRosterFingerprint(serverState);
+    const localRoster = getStateRosterFingerprint(localState);
+    if (serverRoster && serverRoster !== localRoster && (serverState.users || []).length >= (localState.users || []).length) {
+      return true;
+    }
+
+    const remembered = readAutoLoginState();
+    const activeIdentity = normalizeAccountId(getCurrentUser()?.loginId || remembered?.loginId || "");
+    if (activeIdentity) {
+      const serverHasIdentity = Boolean(findUserByLoginName(activeIdentity, serverState.users || []));
+      if (serverHasIdentity && serverRoster !== localRoster) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   async function bootstrapServerState() {
     const serverState = await fetchServerState();
     if (serverState) {
@@ -2289,7 +2343,7 @@
         Boolean((appState.rooms || []).length) ||
         Boolean((appState.invites || []).length);
 
-      if (!serverIsEmpty && getStateTimestamp(serverState) >= getStateTimestamp(appState)) {
+      if (!serverIsEmpty && shouldPreferServerState(serverState, appState)) {
         applyStateSnapshot(serverState, { source: "server" });
         if (!getCurrentUser()) {
           restoreAutoLoginSession();
@@ -2374,7 +2428,7 @@
 
     const user =
       appState.users.find((item) => item.id === remembered.userId) ||
-      appState.users.find((item) => normalizeAccountId(item.loginId || item.name) === remembered.loginId) ||
+      findUserByLoginName(remembered.loginId, appState.users || []) ||
       null;
 
     if (!user || appState.deletedUsers?.[user.id] || (!isAdminUser(user) && !isAllowedPrivateTester(user.name))) {
@@ -2386,6 +2440,7 @@
 
     uiState.landing.autoLogin = true;
     uiState.landing.uiLanguage = user.uiLanguage || uiState.landing.uiLanguage || "ko";
+    persistAutoLoginState(user);
     completeLandingLogin(user, {
       toastKey: false,
       preserveStoredUiLanguage: true,
@@ -2398,6 +2453,93 @@
     const userId = getActiveUserId();
     if (!userId) return null;
     return appState.users.find((user) => user.id === userId) || null;
+  }
+
+  function getUserIdentityScore(user) {
+    if (!user) return 0;
+    const onlineBoost = user.loginState === "online" ? 1_000_000_000_000 : 0;
+    const lastSeen = Number(user.lastSeenAt || 0);
+    const lastLogin = Number(user.lastLoginAt || 0);
+    const joinedAt = Number(user.joinedAt || user.createdAt || 0);
+    const completionBoost =
+      (user.profileImage ? 5_000 : 0) +
+      (user.gender ? 1_000 : 0) +
+      (user.age ? 1_000 : 0) +
+      (user.currentRoomId ? 2_000 : 0);
+    return onlineBoost + Math.max(lastSeen, lastLogin, joinedAt) + completionBoost;
+  }
+
+  function mergeUserIdentityRecords(primary, secondary) {
+    if (!primary) return secondary || null;
+    if (!secondary) return primary;
+
+    const preferred = getUserIdentityScore(primary) >= getUserIdentityScore(secondary) ? primary : secondary;
+    const fallback = preferred === primary ? secondary : primary;
+    return {
+      ...fallback,
+      ...preferred,
+      id: preferred.id,
+      loginId: preferred.loginId || fallback.loginId,
+      name: preferred.name || fallback.name,
+      password: preferred.password || fallback.password || "",
+      profileImage: preferred.profileImage || fallback.profileImage || null,
+      gender: preferred.gender || fallback.gender || "",
+      age: preferred.age || fallback.age || "",
+      nativeLanguage: preferred.nativeLanguage || fallback.nativeLanguage || "ko",
+      preferredChatLanguage:
+        preferred.preferredChatLanguage ||
+        fallback.preferredChatLanguage ||
+        preferred.nativeLanguage ||
+        fallback.nativeLanguage ||
+        "ko",
+      uiLanguage: preferred.uiLanguage || fallback.uiLanguage || "ko",
+      joinedAt: Math.min(Number(primary.joinedAt || primary.createdAt || Date.now()), Number(secondary.joinedAt || secondary.createdAt || Date.now())),
+      lastSeenAt: Math.max(Number(primary.lastSeenAt || 0), Number(secondary.lastSeenAt || 0)),
+      lastLoginAt: Math.max(Number(primary.lastLoginAt || 0), Number(secondary.lastLoginAt || 0)) || null,
+      loginState: primary.loginState === "online" || secondary.loginState === "online" ? "online" : "offline",
+      hasUnreadInvites: Boolean(primary.hasUnreadInvites || secondary.hasUnreadInvites),
+      hasUnreadMessages: Boolean(primary.hasUnreadMessages || secondary.hasUnreadMessages),
+      currentRoomId: preferred.currentRoomId || fallback.currentRoomId || null,
+      isAdmin: Boolean(primary.isAdmin || secondary.isAdmin),
+      isUnlimitedTester: Boolean(primary.isUnlimitedTester || secondary.isUnlimitedTester),
+      isUnlimitedUser: Boolean(primary.isUnlimitedUser || secondary.isUnlimitedUser),
+      canBypassUsageLimit: Boolean(primary.canBypassUsageLimit || secondary.canBypassUsageLimit),
+    };
+  }
+
+  function buildCanonicalUserMap(users = []) {
+    const canonical = new Map();
+    (users || []).forEach((user) => {
+      const key = normalizeAccountId(user?.loginId || user?.name || user?.id);
+      if (!key) return;
+      const existing = canonical.get(key);
+      canonical.set(key, existing ? mergeUserIdentityRecords(existing, user) : user);
+    });
+    return canonical;
+  }
+
+  function getCanonicalUsersForDisplay(users = []) {
+    return [...buildCanonicalUserMap(users).values()];
+  }
+
+  function tryRemapActiveUserIdentity(stateOverride = null) {
+    const activeUserId = getActiveUserId();
+    if (!activeUserId) return false;
+
+    const remembered = readAutoLoginState();
+    const localActive = appState.users.find((user) => user.id === activeUserId) || null;
+    const identity = normalizeAccountId(remembered?.loginId || localActive?.loginId || localActive?.name);
+    if (!identity) return false;
+
+    const pool = stateOverride?.users || appState.users || [];
+    const replacement = findUserByLoginName(identity, pool);
+    if (!replacement || replacement.id === activeUserId) return false;
+
+    setActiveUserId(replacement.id);
+    if (remembered?.loginId) {
+      persistAutoLoginState(replacement);
+    }
+    return true;
   }
 
   function getUiLanguage() {
@@ -4552,8 +4694,7 @@
   }
 
   function renderFriendsScreenMobile(currentUser) {
-    const friends = appState.users
-      .slice()
+    const friends = getCanonicalUsersForDisplay(appState.users)
       .filter((user) => user.id !== currentUser.id)
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.name.localeCompare(b.name));
 
@@ -5447,6 +5588,9 @@
 
         const sender = appState.users.find((user) => user.id === message.senderId);
         const isMine = sender?.id === currentUser.id;
+        if (!isMine) {
+          queueMissingViewerTranslation(room, message, currentUser);
+        }
         const translated = getDisplayTranslation(message, currentUser);
         const showOriginal = Boolean(uiState.originalVisibility[message.id]);
         const shouldShowToggle = message.originalText && message.originalText !== translated.text && !translated.failed && !translated.pending;
@@ -5525,13 +5669,11 @@
       };
     }
 
-    const fallbackLanguage = currentUser.nativeLanguage || message.sourceLanguage;
-    const preferredLanguages = [...new Set([currentUser.preferredChatLanguage, fallbackLanguage].filter(Boolean))];
+    const preferredLanguage = getPreferredTranslationLanguage(currentUser, message);
     const requestedTargets =
       Array.isArray(message.translationMeta?.requestedTargets) && message.translationMeta.requestedTargets.length
         ? message.translationMeta.requestedTargets
         : Object.keys(message.translations || {}).filter((language) => language !== message.sourceLanguage);
-    const preferredLanguage = preferredLanguages.find((language) => language && language !== message.sourceLanguage) || null;
     const translation = preferredLanguage ? message.translations?.[preferredLanguage] : null;
     const requestedForCurrentUser = Boolean(preferredLanguage) && requestedTargets.includes(preferredLanguage);
     const state = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
@@ -5553,6 +5695,12 @@
       if (state === "pending" && requestedForCurrentUser) {
         return { text: message.originalText, failed: false, pending: true, mocked: false, disabled, translated: false };
       }
+      if (mocked && requestedForCurrentUser) {
+        return { text: message.originalText, failed: false, pending: false, mocked: true, disabled: false, translated: false };
+      }
+      if (disabled && requestedForCurrentUser) {
+        return { text: message.originalText, failed: false, pending: false, mocked: false, disabled: true, translated: false };
+      }
       if ((state === "failed" || state === "partial") && requestedForCurrentUser) {
         return { text: message.originalText, failed: true, pending: false, mocked: false, disabled, translated: false };
       }
@@ -5563,10 +5711,122 @@
       text: translation.text || message.originalText,
       failed: Boolean(translation.failed),
       pending: state === "pending" && !translation.text,
-      mocked: mocked && !translation.failed && (translation.text || message.originalText) !== message.originalText,
+      mocked: mocked && !translation.failed && requestedForCurrentUser,
       disabled: disabled && !(translation.text && translation.text !== message.originalText),
       translated: Boolean(translation.text) && translation.text !== message.originalText,
     };
+  }
+
+  function getPreferredTranslationLanguage(currentUser, message) {
+    const fallbackLanguage = currentUser?.nativeLanguage || message?.sourceLanguage;
+    const preferredLanguages = [...new Set([currentUser?.preferredChatLanguage, fallbackLanguage].filter(Boolean))];
+    return preferredLanguages.find((language) => language && language !== message?.sourceLanguage) || null;
+  }
+
+  function queueMissingViewerTranslation(room, message, currentUser) {
+    if (!room || !message || message.kind !== "user" || message.senderId === currentUser?.id || !message.originalText) return;
+    const targetLanguage = getPreferredTranslationLanguage(currentUser, message);
+    if (!targetLanguage || targetLanguage === message.sourceLanguage) return;
+    if (message.translations?.[targetLanguage]?.text) return;
+
+    const requestedTargets = new Set(Array.isArray(message.translationMeta?.requestedTargets) ? message.translationMeta.requestedTargets : []);
+    const translationState = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
+    if (translationState === "pending" && requestedTargets.has(targetLanguage)) return;
+
+    const taskKey = `${room.id}:${message.id}:${targetLanguage}`;
+    if (runtime.translationTasks.has(taskKey)) return;
+    runtime.translationTasks.set(taskKey, Date.now());
+
+    console.info("[translation] hydrate-missing-target", {
+      roomId: room.id,
+      messageId: message.id,
+      targetLanguage,
+      serverReachable: runtime.backend.serverReachable,
+      liveTranslationEnabled: runtime.backend.liveTranslationEnabled,
+    });
+
+    Promise.resolve()
+      .then(async () => {
+        const liveRoom = appState.rooms.find((entry) => entry.id === room.id);
+        const liveMessage = liveRoom?.messages?.find((entry) => entry.id === message.id);
+        if (!liveRoom || !liveMessage) return;
+        const liveRequestedTargets = new Set(Array.isArray(liveMessage.translationMeta?.requestedTargets) ? liveMessage.translationMeta.requestedTargets : []);
+        if (!liveRequestedTargets.has(targetLanguage)) {
+          liveMessage.translationMeta = {
+            ...(liveMessage.translationMeta || {}),
+            provider: liveMessage.translationMeta?.provider || "pending",
+            model: liveMessage.translationMeta?.model || runtime.backend.model || null,
+            live: Boolean(runtime.backend.liveTranslationEnabled),
+            pending: true,
+            state: "pending",
+            reason: null,
+            errorDetail: null,
+            requestedTargets: [...liveRequestedTargets, targetLanguage],
+            completedAt: null,
+          };
+          persistState();
+          renderSafelyDuringInput();
+        }
+
+        const translationBundle = await buildTranslations(
+          liveRoom,
+          liveMessage.originalText,
+          liveMessage.senderId,
+          liveMessage.sourceLanguage,
+          false,
+          [targetLanguage]
+        );
+        const nextEntry =
+          translationBundle.translations?.[targetLanguage] ||
+          { text: liveMessage.originalText, failed: translationBundle.meta?.state === "failed" };
+
+        liveMessage.translations = {
+          ...(liveMessage.translations || {}),
+          [targetLanguage]: nextEntry,
+        };
+        const mergedTargets = [...new Set([...(liveMessage.translationMeta?.requestedTargets || []), targetLanguage])];
+        const hasAnyFailure = mergedTargets.some((language) => Boolean(liveMessage.translations?.[language]?.failed));
+        liveMessage.translationMeta = {
+          ...(liveMessage.translationMeta || {}),
+          ...translationBundle.meta,
+          pending: false,
+          state: hasAnyFailure ? "partial" : translationBundle.meta?.state || "success",
+          requestedTargets: mergedTargets,
+          completedAt: Date.now(),
+        };
+        persistState();
+        renderSafelyDuringInput();
+      })
+      .catch((error) => {
+        const liveRoom = appState.rooms.find((entry) => entry.id === room.id);
+        const liveMessage = liveRoom?.messages?.find((entry) => entry.id === message.id);
+        if (liveMessage) {
+          liveMessage.translations = {
+            ...(liveMessage.translations || {}),
+            [targetLanguage]: { text: liveMessage.originalText, failed: true },
+          };
+          liveMessage.translationMeta = {
+            ...(liveMessage.translationMeta || {}),
+            pending: false,
+            state: "failed",
+            reason: "client_exception",
+            errorDetail: String(error?.message || error || "translation_error"),
+            requestedTargets: [...new Set([...(liveMessage.translationMeta?.requestedTargets || []), targetLanguage])],
+            completedAt: Date.now(),
+          };
+          persistState();
+          renderSafelyDuringInput();
+        }
+        console.warn("[translation] viewer-target failed", {
+          roomId: room.id,
+          messageId: message.id,
+          targetLanguage,
+          error: String(error?.message || error),
+        });
+      })
+      .finally(() => {
+        runtime.translationTasks.delete(taskKey);
+      });
   }
 
   function isScrollNearBottom(scrollElement, threshold = 88) {
@@ -7520,8 +7780,12 @@
     render();
   }
 
-  function findUserByLoginName(name) {
-    return appState.users.find((user) => normalizeAccountId(user.loginId || user.name) === normalizeAccountId(name)) || null;
+  function findUserByLoginName(name, sourceUsers = appState.users) {
+    const normalized = normalizeAccountId(name);
+    if (!normalized) return null;
+    return (sourceUsers || [])
+      .filter((user) => normalizeAccountId(user.loginId || user.name) === normalized)
+      .sort((a, b) => getUserIdentityScore(b) - getUserIdentityScore(a))[0] || null;
   }
 
   function resetLandingPanelState() {
@@ -8450,6 +8714,11 @@
 
     const audienceIds = new Set(deriveRoomParticipantIds(room));
     audienceIds.add(room.creatorId);
+    (appState.users || []).forEach((user) => {
+      if (user?.currentRoomId === room.id) {
+        audienceIds.add(user.id);
+      }
+    });
     Object.entries(room.accessByUser || {}).forEach(([userId, access]) => {
       if (access === true || access?.unlocked) {
         audienceIds.add(userId);
@@ -8523,8 +8792,14 @@
     if (liveTranslations.status === "success") {
       targetLanguages.forEach((targetLanguage) => {
         const entry = liveTranslations.translations?.[targetLanguage];
-        result[targetLanguage] = entry?.text
-          ? { text: entry.text, failed: Boolean(entry.failed) }
+        const translatedText =
+          typeof entry === "string"
+            ? entry
+            : typeof entry?.text === "string"
+              ? entry.text
+              : "";
+        result[targetLanguage] = translatedText
+          ? { text: translatedText, failed: Boolean(entry?.failed) }
           : { text, failed: true };
       });
       const hasFailure = targetLanguages.some((language) => Boolean(result[language]?.failed));
@@ -8910,6 +9185,12 @@
       }
 
       const payload = await response.json();
+      console.info("[translation] health", {
+        serverReachable: true,
+        liveTranslationEnabled: Boolean(payload?.liveTranslationEnabled),
+        translationConfigured: Boolean(payload?.translationConfigured),
+        lastTranslationError: payload?.lastTranslationError || null,
+      });
       if (
         updateBackendStatus({
           serverReachable: true,
@@ -8927,6 +9208,7 @@
       }
       initServerEvents();
     } catch (error) {
+      console.warn("[translation] health failed", String(error?.message || error || "server_unreachable"));
       closeServerEvents();
       if (
         updateBackendStatus({
@@ -8967,7 +9249,12 @@
       .join("");
 
     if (transformed !== text) return transformed;
-    const fallbackLabel = { ko: "번역본", en: "Translated message", vi: "Ban dich" }[targetLanguage];
+    const fallbackLabels = {
+      ko: "번역본",
+      en: "Translated message",
+      vi: "Bản dịch",
+    };
+    const fallbackLabel = fallbackLabels[targetLanguage] || "Translated message";
     return `${fallbackLabel}: ${text}`;
   }
 
