@@ -11,6 +11,6 @@
     "twa:doctor": "npx @bubblewrap/cli doctor",
     "twa:init": "npx @bubblewrap/cli init --manifest https://transchat.xyz/manifest.json",
     "twa:update": "npx @bubblewrap/cli update",
-    "twa:build": "cd android && gradlew.bat bundleRelease"
+    "twa:build": ".\\gradlew.bat bundleRelease"
   }
 }

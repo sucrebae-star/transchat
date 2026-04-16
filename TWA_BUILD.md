@@ -18,7 +18,7 @@ The current web app is suitable for a Bubblewrap-based Trusted Web Activity beca
 
 ## Local prerequisites
 
-Install these on the machine that will generate the Android project and bundle:
+Install these on the machine that will build the existing Android project and bundle:
 
 1. Node.js 20+
 2. Java JDK 17
@@ -43,24 +43,21 @@ Check the SHA-256 fingerprint:
 keytool -list -v -keystore transchat-upload.keystore -alias transchat
 ```
 
-## 2. Generate the initial TWA Android project
+## 2. Android project status
 
-```powershell
-npm run twa:init
-```
+This repository already contains the generated Android Gradle project at the repository root.
 
-Use these values when Bubblewrap asks:
+That means these files should already exist in the current folder:
 
-- Domain: `transchat.xyz`
-- Application name: `Transchat`
-- Launcher name: `Transchat`
-- Package ID: `com.transchat.chat`
-- Start URL: `/`
-- Display mode: `standalone`
-- Theme color: `#f3f6fb`
-- Background color: `#f3f6fb`
+- `app/`
+- `gradle/`
+- `gradlew`
+- `gradlew.bat`
+- `build.gradle`
+- `settings.gradle`
+- `twa-manifest.json`
 
-Bubblewrap will create the `android/` project.
+If those files are present, do not run Bubblewrap again just to build the `.aab`.
 
 ## 3. Update Digital Asset Links
 
@@ -100,6 +97,8 @@ Then deploy the same file so this URL works in production:
 npm run twa:update
 ```
 
+Skip this step if Bubblewrap is not installed and the current root Gradle project is already in place.
+
 ## 6. Build the Android App Bundle
 
 ```powershell
@@ -108,7 +107,7 @@ npm run twa:build
 
 Expected output:
 
-- `android/app/build/outputs/bundle/release/app-release.aab`
+- `app/build/outputs/bundle/release/app-release.aab`
 
 ## 7. Upload to Google Play Console
 

@@ -93,6 +93,38 @@ function normalizeDisplayText(value) {
   }
 }
 
+function countMatches(value, pattern) {
+  const matches = String(value || "").match(pattern);
+  return matches ? matches.length : 0;
+}
+
+function isEncodingCorruptedText(value, expectedLanguage = "") {
+  const text = String(value ?? "").normalize("NFC");
+  if (!text) return false;
+  if (text.includes("\uFFFD")) return true;
+
+  const questionBurstCount = countMatches(text, /\?{2,}/g);
+  const cjkCount = countMatches(text, /[\u4E00-\u9FFF]/g);
+  const hangulCount = countMatches(text, /[\uAC00-\uD7AF]/g);
+  const latinCount = countMatches(text, /[A-Za-zÀ-ỹ]/g);
+  const weirdScriptCount = cjkCount + hangulCount;
+  const weirdRatio = weirdScriptCount / Math.max(text.length, 1);
+
+  if (questionBurstCount && weirdScriptCount >= 2) {
+    return true;
+  }
+
+  if (expectedLanguage === "ko") {
+    return hangulCount === 0 && (questionBurstCount > 0 || cjkCount >= 2);
+  }
+
+  if (expectedLanguage === "vi" || expectedLanguage === "en") {
+    return latinCount >= 4 && weirdScriptCount >= 4 && weirdRatio > 0.12;
+  }
+
+  return false;
+}
+
 function summarizeTextForTrace(value) {
   const text = String(value ?? "");
   return {
@@ -230,6 +262,13 @@ async function handleTranslate(req, res) {
 
     if (!text || !ALLOWED_LANGUAGES.has(sourceLanguage)) {
       return sendJson(res, 400, { error: "invalid_request" });
+    }
+
+    if (isEncodingCorruptedText(text, sourceLanguage)) {
+      return sendJson(res, 422, {
+        error: "encoding_corrupted",
+        message: "Source text is already damaged and cannot be translated safely.",
+      });
     }
 
     const normalizedTargets = [...new Set(targetLanguages.map((item) => String(item).trim()))]

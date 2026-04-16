@@ -1598,6 +1598,21 @@
     dateYesterday: "Hom qua",
   });
 
+  Object.assign(DICTIONARY.ko, {
+    encodingCorruptedInline: "이 메시지는 인코딩 문제로 손상되었습니다.",
+    encodingCorruptedBadge: "문자 손상",
+  });
+
+  Object.assign(DICTIONARY.en, {
+    encodingCorruptedInline: "This message was damaged by an encoding issue.",
+    encodingCorruptedBadge: "Text damaged",
+  });
+
+  Object.assign(DICTIONARY.vi, {
+    encodingCorruptedInline: "Tin nhan nay da bi hong do loi ma hoa.",
+    encodingCorruptedBadge: "Loi ma hoa",
+  });
+
   // Added: plan/pricing copy stays in the central dictionary so the lightweight billing preview remains localizable.
   Object.assign(DICTIONARY.ko, {
     planSectionTitle: "현재 이용중인 플랜",
@@ -2943,6 +2958,67 @@
     } catch (error) {
       return normalized;
     }
+  }
+
+  function countMatches(value, pattern) {
+    const matches = String(value || "").match(pattern);
+    return matches ? matches.length : 0;
+  }
+
+  function isEncodingCorruptedText(value, expectedLanguage = "") {
+    const text = String(value ?? "").normalize("NFC");
+    if (!text) return false;
+    if (text.includes("\uFFFD")) return true;
+
+    const questionBurstCount = countMatches(text, /\?{2,}/g);
+    const cjkCount = countMatches(text, /[\u4E00-\u9FFF]/g);
+    const hangulCount = countMatches(text, /[\uAC00-\uD7AF]/g);
+    const latinCount = countMatches(text, /[A-Za-zÀ-ỹ]/g);
+    const weirdScriptCount = cjkCount + hangulCount;
+    const weirdRatio = weirdScriptCount / Math.max(text.length, 1);
+
+    if (questionBurstCount && weirdScriptCount >= 2) {
+      return true;
+    }
+
+    if (expectedLanguage === "ko") {
+      return hangulCount === 0 && (questionBurstCount > 0 || cjkCount >= 2);
+    }
+
+    if (expectedLanguage === "vi" || expectedLanguage === "en") {
+      return latinCount >= 4 && weirdScriptCount >= 4 && weirdRatio > 0.12;
+    }
+
+    return false;
+  }
+
+  function resolveRenderableMessageText(primaryText, primaryLanguage, fallbackText = "", fallbackLanguage = "") {
+    const primary = String(primaryText || "");
+    const fallback = String(fallbackText || "");
+    const primaryCorrupted = isEncodingCorruptedText(primary, primaryLanguage);
+    const fallbackCorrupted = isEncodingCorruptedText(fallback, fallbackLanguage);
+
+    if (primary && !primaryCorrupted) {
+      return {
+        text: primary,
+        corrupted: false,
+        usedFallback: false,
+      };
+    }
+
+    if (fallback && !fallbackCorrupted) {
+      return {
+        text: fallback,
+        corrupted: true,
+        usedFallback: true,
+      };
+    }
+
+    return {
+      text: "",
+      corrupted: primaryCorrupted || fallbackCorrupted,
+      usedFallback: false,
+    };
   }
 
   function normalizeLoginIdentity(value) {
@@ -6514,15 +6590,28 @@
         }
         const translated = getDisplayTranslation(message, currentUser);
         const showOriginal = Boolean(uiState.originalVisibility[message.id]);
-        const shouldShowToggle = message.originalText && message.originalText !== translated.text && !translated.failed && !translated.pending;
+        const viewerLanguage = isMine ? message.sourceLanguage : getPreferredTranslationLanguage(currentUser, message) || message.sourceLanguage;
         const messageStatus = isMine ? getOutgoingMessageStatus(room, message, currentUser) : "";
-        const effectiveDisplayText =
+        const candidateDisplayText =
           translated.pending && !isMine
             ? t("translationPendingInline")
             : translated.text || (translated.failed ? message.originalText : "");
-        const links = translated.pending ? [] : detectLinks(effectiveDisplayText || message.originalText);
+        const renderableText = translated.pending
+          ? { text: candidateDisplayText, corrupted: false, usedFallback: false }
+          : resolveRenderableMessageText(candidateDisplayText, viewerLanguage, message.originalText, message.sourceLanguage);
+        const originalCorrupted = isEncodingCorruptedText(message.originalText, message.sourceLanguage);
+        const encodingCorrupted = Boolean(renderableText.corrupted);
+        const effectiveDisplayText =
+          renderableText.text || (encodingCorrupted ? t("encodingCorruptedInline") : message.originalText);
+        const shouldShowToggle =
+          message.originalText &&
+          !originalCorrupted &&
+          message.originalText !== effectiveDisplayText &&
+          !translated.failed &&
+          !translated.pending;
+        const links = translated.pending || encodingCorrupted ? [] : detectLinks(effectiveDisplayText || message.originalText);
         const visibleText = stripLinks(effectiveDisplayText || message.originalText);
-        const visibleOriginal = stripLinks(message.originalText);
+        const visibleOriginal = originalCorrupted ? "" : stripLinks(message.originalText);
         parts.push(`
           <div class="message-row ${isMine ? "mine" : ""}" data-diff-key="message:${message.id}">
             ${!isMine ? `<div class="message-avatar"><div class="avatar">${escapeHtml(initials(sender?.name || "?"))}</div></div>` : ""}
@@ -6538,7 +6627,8 @@
                 <span>${escapeHtml(formatMessageMetaDate(message.createdAt))}</span>
                 ${messageStatus ? `<span>${escapeHtml(t(`status${capitalize(messageStatus)}`))}</span>` : ""}
                 ${translated.pending ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationPendingBadge"))}" aria-label="${escapeHtml(t("translationPendingBadge"))}">🔄</span>` : ""}
-                ${translated.failed ? `<span class="tiny-pill pill-danger compact-meta-pill" title="${escapeHtml(t("translationFailedBadge"))}" aria-label="${escapeHtml(t("translationFailedBadge"))}">⚠️</span>` : ""}
+                ${encodingCorrupted ? `<span class="tiny-pill pill-danger compact-meta-pill" title="${escapeHtml(t("encodingCorruptedBadge"))}" aria-label="${escapeHtml(t("encodingCorruptedBadge"))}">⚠️</span>` : ""}
+                ${translated.failed && !encodingCorrupted ? `<span class="tiny-pill pill-danger compact-meta-pill" title="${escapeHtml(t("translationFailedBadge"))}" aria-label="${escapeHtml(t("translationFailedBadge"))}">⚠️</span>` : ""}
                 ${translated.mocked ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationMockBadge"))}" aria-label="${escapeHtml(t("translationMockBadge"))}">🧪</span>` : ""}
                 ${translated.disabled ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationDisabledBadge"))}" aria-label="${escapeHtml(t("translationDisabledBadge"))}">⏸️</span>` : ""}
                 ${message.originalText && translated.translated && !translated.failed && !isMine && !translated.mocked ? `<span class="tiny-pill pill-accent compact-meta-pill" title="${escapeHtml(t("translatedBadge"))}" aria-label="${escapeHtml(t("translatedBadge"))}">✅</span>` : ""}
@@ -6586,18 +6676,18 @@
     const translations = message?.translations || {};
     const preferredKey = buildTranslationVariantKey(baseLanguage, preferredConcept);
     const preferredEntry = translations[preferredKey];
-    if (hasUsableTranslationEntry(preferredEntry) && !preferredEntry.failed) {
+    if (hasUsableTranslationEntry(preferredEntry) && !preferredEntry.failed && !isEncodingCorruptedText(preferredEntry.text, baseLanguage)) {
       return { key: preferredKey, entry: preferredEntry };
     }
 
     const legacyEntry = translations[baseLanguage];
-    if (hasUsableTranslationEntry(legacyEntry) && !legacyEntry.failed) {
+    if (hasUsableTranslationEntry(legacyEntry) && !legacyEntry.failed && !isEncodingCorruptedText(legacyEntry.text, baseLanguage)) {
       return { key: baseLanguage, entry: legacyEntry };
     }
 
     const fallbackVariant = Object.entries(translations).find(([key, entry]) => {
       const variantLanguage = getTranslationVariantLanguage(key);
-      return variantLanguage === baseLanguage && hasUsableTranslationEntry(entry) && !entry.failed;
+      return variantLanguage === baseLanguage && hasUsableTranslationEntry(entry) && !entry.failed && !isEncodingCorruptedText(entry.text, baseLanguage);
     });
     if (fallbackVariant) {
       return { key: fallbackVariant[0], entry: fallbackVariant[1] };
@@ -6692,6 +6782,22 @@
     if (!room || !message || message.kind !== "user" || message.senderId === currentUser?.id || !message.originalText) return;
     const targetLanguage = getPreferredTranslationLanguage(currentUser, message);
     if (!targetLanguage || targetLanguage === message.sourceLanguage) return;
+    if (isEncodingCorruptedText(message.originalText, message.sourceLanguage)) {
+      const liveRoom = appState.rooms.find((entry) => entry.id === room.id);
+      const liveMessage = liveRoom?.messages?.find((entry) => entry.id === message.id);
+      if (liveMessage) {
+        liveMessage.translationMeta = {
+          ...(liveMessage.translationMeta || {}),
+          pending: false,
+          state: "failed",
+          reason: "encoding_corrupted",
+          errorDetail: "Stored source text is already damaged.",
+          completedAt: Date.now(),
+        };
+        persistState();
+      }
+      return;
+    }
     const viewerConcept = getUserTranslationConcept(currentUser);
     const targetKey = buildTranslationVariantKey(targetLanguage, viewerConcept);
     if (!targetKey) return;
@@ -10166,6 +10272,25 @@
       };
     }
 
+    if (isEncodingCorruptedText(text, fromLanguage)) {
+      targetLanguages.forEach((targetLanguage) => {
+        result[buildTranslationVariantKey(targetLanguage, translationConcept)] = { text, failed: true };
+      });
+      return {
+        translations: result,
+        meta: {
+          provider: "none",
+          model: null,
+          live: false,
+          state: "failed",
+          reason: "encoding_corrupted",
+          errorDetail: "Source text is already damaged and cannot be translated safely.",
+          requestedTargets: translationKeys,
+          completedAt: Date.now(),
+        },
+      };
+    }
+
     if (forceFail || /#fail\b/i.test(text)) {
       targetLanguages.forEach((targetLanguage) => {
         const targetKey = buildTranslationVariantKey(targetLanguage, translationConcept);
@@ -10222,6 +10347,25 @@
           state: hasFailure ? "partial" : "success",
           reason: null,
           errorDetail: null,
+          requestedTargets: translationKeys,
+          completedAt: Date.now(),
+        },
+      };
+    }
+
+    if (liveTranslations.reason === "encoding_corrupted") {
+      targetLanguages.forEach((targetLanguage) => {
+        result[buildTranslationVariantKey(targetLanguage, translationConcept)] = { text, failed: true };
+      });
+      return {
+        translations: result,
+        meta: {
+          provider: "none",
+          model: null,
+          live: false,
+          state: "failed",
+          reason: "encoding_corrupted",
+          errorDetail: liveTranslations.errorDetail || "Stored source text is already damaged.",
           requestedTargets: translationKeys,
           completedAt: Date.now(),
         },
@@ -10409,6 +10553,7 @@
   }
 
   function normalizeTranslationFailureReason(errorCode, statusCode) {
+    if (errorCode === "encoding_corrupted") return "encoding_corrupted";
     if (errorCode === "missing_api_key") return "service_disabled";
     if (Number(statusCode) >= 500) return "live_request_failed";
     return "live_request_rejected";
