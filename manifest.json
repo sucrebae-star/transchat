@@ -1,13 +1,19 @@
 {
   "id": "/",
-  "name": "TRANSCHAT",
-  "short_name": "TRANSCHAT",
+  "name": "Transchat",
+  "short_name": "Transchat",
   "description": "Real-time translated chat prototype",
+  "lang": "ko",
+  "dir": "ltr",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "portrait-primary",
   "background_color": "#f3f6fb",
   "theme_color": "#f3f6fb",
+  "categories": ["social", "communication"],
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/icons/icon-192.png",

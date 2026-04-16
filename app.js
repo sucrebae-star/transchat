@@ -39,6 +39,8 @@
     typingIdleMs: 1600,
     typingSignalThrottleMs: 700,
     typingSignalTtlMs: 4500,
+    translationPendingTimeoutMs: 15 * 1000,
+    translationRequestTimeoutMs: 12 * 1000,
     translationApiPath: "/api/translate",
     stateApiPath: "/api/state",
     eventsApiPath: "/api/events",
@@ -2187,6 +2189,7 @@
       reason: typeof meta?.reason === "string" ? meta.reason : null,
       errorDetail: typeof meta?.errorDetail === "string" ? meta.errorDetail : null,
       requestedTargets,
+      startedAt: Number(meta?.startedAt || 0) || null,
       completedAt: Number(meta?.completedAt || 0) || null,
     };
   }
@@ -5885,21 +5888,22 @@
       <div class="composer-wrap composer-inline mobile-composer-wrap">
         <div class="composer-line mobile-composer-line">
           <div class="composer-input-shell">
-            <input
+            <textarea
               class="composer-input"
-              type="text"
               data-input="composer"
               data-room-id="${room.id}"
-              value="${escapeHtml(draft.text)}"
               placeholder="${escapeHtml(t("composerPlaceholder"))}"
+              name="chat-message-${room.id}"
+              rows="1"
               autocomplete="off"
               autocorrect="off"
               autocapitalize="off"
               spellcheck="false"
               enterkeyhint="send"
+              aria-autocomplete="none"
               inputmode="text"
               data-lpignore="true"
-            />
+            >${escapeHtml(draft.text)}</textarea>
             <button
               class="icon-button plus-trigger composer-inline-action"
               type="button"
@@ -6602,6 +6606,15 @@
     return { key: "", entry: null };
   }
 
+  function isTranslationPendingStale(message) {
+    if (!message || message.kind !== "user") return false;
+    const state = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
+    if (state !== "pending") return false;
+    const startedAt = Number(message.translationMeta?.startedAt || message.createdAt || 0) || 0;
+    if (!startedAt) return true;
+    return Date.now() - startedAt > CONFIG.translationPendingTimeoutMs;
+  }
+
   function getDisplayTranslation(message, currentUser) {
     if (message.senderId === currentUser.id || !message.originalText) {
       const hasSuccessfulTarget = Object.entries(message.translations || {}).some(([key, entry]) => {
@@ -6644,7 +6657,7 @@
     }
 
     if (!translation) {
-      if (state === "pending" && requestedForCurrentUser) {
+      if (state === "pending" && requestedForCurrentUser && !isTranslationPendingStale(message)) {
         return { text: "", failed: false, pending: true, mocked: false, disabled, translated: false };
       }
       if (mocked && requestedForCurrentUser) {
@@ -6687,7 +6700,8 @@
 
     const requestedTargets = new Set(Array.isArray(message.translationMeta?.requestedTargets) ? message.translationMeta.requestedTargets : []);
     const translationState = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
-    if (translationState === "pending" && requestedTargets.has(targetKey)) return;
+    const stalePending = isTranslationPendingStale(message);
+    if (translationState === "pending" && requestedTargets.has(targetKey) && !stalePending) return;
 
     const taskKey = `${room.id}:${message.id}:${targetKey}`;
     if (runtime.translationTasks.has(taskKey)) return;
@@ -6697,6 +6711,7 @@
       roomId: room.id,
       messageId: message.id,
       targetLanguage,
+      stalePending,
       serverReachable: runtime.backend.serverReachable,
       liveTranslationEnabled: runtime.backend.liveTranslationEnabled,
     });
@@ -6707,7 +6722,7 @@
         const liveMessage = liveRoom?.messages?.find((entry) => entry.id === message.id);
         if (!liveRoom || !liveMessage) return;
         const liveRequestedTargets = new Set(Array.isArray(liveMessage.translationMeta?.requestedTargets) ? liveMessage.translationMeta.requestedTargets : []);
-        if (!liveRequestedTargets.has(targetKey)) {
+        if (!liveRequestedTargets.has(targetKey) || isTranslationPendingStale(liveMessage)) {
           liveMessage.translationMeta = {
             ...(liveMessage.translationMeta || {}),
             provider: liveMessage.translationMeta?.provider || "pending",
@@ -6718,6 +6733,7 @@
             reason: null,
             errorDetail: null,
             requestedTargets: [...liveRequestedTargets, targetKey],
+            startedAt: Date.now(),
             completedAt: null,
           };
           persistState();
@@ -6753,6 +6769,7 @@
           pending: false,
           state: hasAnyFailure ? "partial" : translationBundle.meta?.state || "success",
           requestedTargets: mergedTargets,
+          startedAt: null,
           completedAt: Date.now(),
         };
         persistState();
@@ -6773,6 +6790,7 @@
             reason: "client_exception",
             errorDetail: String(error?.message || error || "translation_error"),
             requestedTargets: [...new Set([...(liveMessage.translationMeta?.requestedTargets || []), targetKey])],
+            startedAt: null,
             completedAt: Date.now(),
           };
           persistState();
@@ -6799,7 +6817,7 @@
 
   function isComposerFocused() {
     const active = document.activeElement;
-    return active instanceof HTMLInputElement && active.dataset.input === "composer";
+    return (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && active.dataset.input === "composer";
   }
 
   function getRecipientIdsForMessage(room, message) {
@@ -8022,6 +8040,10 @@
 
   function updateChatLayoutMetrics() {
     const composer = APP_ROOT.querySelector(".mobile-composer");
+    const composerInput = composer?.querySelector?.('[data-input="composer"]');
+    if (composerInput instanceof HTMLTextAreaElement) {
+      autoResizeTextarea(composerInput);
+    }
     const composerHeight = composer instanceof HTMLElement ? composer.offsetHeight : 0;
     runtime.composerHeight = composerHeight;
     document.documentElement.style.setProperty("--composer-height", `${composerHeight}px`);
@@ -8065,7 +8087,7 @@
 
   function onRootFocusIn(event) {
     const target = event.target;
-    if (!(target instanceof HTMLInputElement) || target.dataset.input !== "composer") {
+    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || target.dataset.input !== "composer") {
       return;
     }
     runtime.chatPinnedToBottom = true;
@@ -8879,7 +8901,7 @@
       return;
     }
     if (
-      target instanceof HTMLInputElement &&
+      (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
       target.dataset.input === "composer" &&
       event.key === "Enter" &&
       !event.shiftKey &&
@@ -8929,7 +8951,7 @@
         uiState.profileEditor.age = target.value;
       }
     }
-    if (target instanceof HTMLInputElement && target.dataset.input === "composer") {
+    if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.dataset.input === "composer") {
       setDraft(target.dataset.roomId, { text: target.value });
     }
     if (runtime.pendingRenderWhileComposing) {
@@ -8995,7 +9017,7 @@
 
   function getComposerValue(roomId) {
     const input = getComposerInput(roomId);
-    if (input instanceof HTMLInputElement) {
+    if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
       return input.value;
     }
     return getDraft(roomId).text || "";
@@ -9892,6 +9914,7 @@
           reason: null,
           errorDetail: null,
           requestedTargets: requestedTargetKeys,
+          startedAt: Date.now(),
           completedAt: null,
         }
       : {
@@ -9903,6 +9926,7 @@
           reason: "not-needed",
           errorDetail: null,
           requestedTargets: [],
+          startedAt: null,
           completedAt: Date.now(),
         };
     room.messages.push(message);
@@ -9998,6 +10022,7 @@
         liveMessage.translationMeta = {
           ...translationBundle.meta,
           pending: false,
+          startedAt: null,
         };
         liveMessage.status = liveMessage.status === "composing" ? "sent" : liveMessage.status || "sent";
         persistState();
@@ -10259,26 +10284,38 @@
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const finalAttempt = attempt === 1;
         try {
+          const controller = typeof AbortController === "function" ? new AbortController() : null;
+          const timeoutId = controller
+            ? window.setTimeout(() => controller.abort(), CONFIG.translationRequestTimeoutMs)
+            : 0;
           logEncodingTrace("client-translate-request", text, {
             sourceLanguage,
             targetLanguages,
             translationConcept,
             attempt: attempt + 1,
           });
-          // Later this request can move to a real auth/session-aware Node.js + WebSocket message pipeline.
-          const response = await fetch(CONFIG.translationApiPath, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              text,
-              sourceLanguage,
-              targetLanguages,
-              translationConcept,
-              contextSummary: String(options.contextSummary || "").trim(),
-            }),
-          });
+          let response;
+          try {
+            // Later this request can move to a real auth/session-aware Node.js + WebSocket message pipeline.
+            response = await fetch(CONFIG.translationApiPath, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                text,
+                sourceLanguage,
+                targetLanguages,
+                translationConcept,
+                contextSummary: String(options.contextSummary || "").trim(),
+              }),
+              signal: controller?.signal,
+            });
+          } finally {
+            if (timeoutId) {
+              window.clearTimeout(timeoutId);
+            }
+          }
 
           const payload = await readJsonResponseBody(response);
           if (!response.ok) {
@@ -10331,7 +10368,7 @@
               targetLanguages,
               translationConcept,
               attempt: attempt + 1,
-              reason: "server_unreachable",
+              reason: error?.name === "AbortError" ? "timeout" : "server_unreachable",
               errorDetail: String(error?.message || error || "Server unreachable"),
             });
             await new Promise((resolve) => setTimeout(resolve, 180));
@@ -10340,13 +10377,13 @@
           updateBackendStatus({
             serverReachable: false,
             liveTranslationEnabled: false,
-            lastTranslationError: "server_unreachable",
+            lastTranslationError: error?.name === "AbortError" ? "timeout" : "server_unreachable",
             lastTranslationErrorDetail: String(error?.message || error || "Server unreachable"),
             checkedAt: Date.now(),
           });
           return {
             status: "failed",
-            reason: "server_unreachable",
+            reason: error?.name === "AbortError" ? "timeout" : "server_unreachable",
             errorDetail: String(error?.message || error || "Server unreachable"),
           };
         }

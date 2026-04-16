@@ -2788,6 +2788,15 @@ body[data-theme="dark"] .mobile-composer {
   font-size: 0.92rem;
 }
 
+.mobile-composer textarea.composer-input {
+  max-height: 180px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  line-height: 1.38;
+  resize: none;
+  overflow-y: auto;
+}
+
 .mobile-composer .plus-trigger,
 .mobile-composer .send-button {
   min-width: 42px;

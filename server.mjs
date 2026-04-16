@@ -53,6 +53,7 @@ const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/index.html", "index.html"],
   ["/manifest.json", "manifest.json"],
+  ["/.well-known/assetlinks.json", path.join(".well-known", "assetlinks.json")],
   ["/styles.css", "styles.css"],
   ["/app.js", "app.js"],
   ["/firebase-messaging-sw.js", "firebase-messaging-sw.runtime.js"],
