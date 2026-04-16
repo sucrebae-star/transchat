@@ -104,6 +104,7 @@
     composerHeight: 0,
     viewportBaseHeight: 0,
     keyboardOffset: 0,
+    viewportSyncFrame: 0,
     preservedScrollPositions: {},
     receiptTimer: null,
     storageEstimate: null,
@@ -11581,7 +11582,14 @@
     runtime.keyboardOffset = Math.max(0, runtime.viewportBaseHeight - viewportBottom);
     document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
     document.documentElement.style.setProperty("--keyboard-offset", `${runtime.keyboardOffset}px`);
-    keepChatBottomVisible(Boolean(runtime.keyboardOffset));
+    if (runtime.viewportSyncFrame) {
+      cancelAnimationFrame(runtime.viewportSyncFrame);
+    }
+    runtime.viewportSyncFrame = requestAnimationFrame(() => {
+      runtime.viewportSyncFrame = 0;
+      updateChatLayoutMetrics();
+      keepChatBottomVisible(Boolean(runtime.keyboardOffset));
+    });
   }
 
   function bindGlobalListeners() {

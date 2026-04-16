@@ -3062,13 +3062,13 @@ body[data-theme="dark"] .mobile-composer {
 }
 
 .mobile-chat-room .chat-scroll {
-  padding: 8px 12px calc(14px + var(--keyboard-offset, 0px));
-  scroll-padding-bottom: calc(var(--composer-height, 0px) + var(--keyboard-offset, 0px) + 24px);
+  padding: 8px 12px 14px;
+  scroll-padding-bottom: calc(var(--composer-height, 0px) + var(--safe-bottom) + 24px);
   overscroll-behavior: contain;
 }
 
 .mobile-composer {
-  padding: 10px 12px calc(10px + var(--safe-bottom) + var(--keyboard-offset, 0px));
+  padding: 10px 12px calc(10px + var(--safe-bottom));
 }
 
 .mobile-composer .send-button {
