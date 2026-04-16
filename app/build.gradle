@@ -162,6 +162,22 @@ android {
     lintOptions {
         checkReleaseBuilds false
     }
+    signingConfigs {
+    release {
+        storeFile file("../android.keystore")
+        storePassword "1519817a@"
+        keyAlias "android"
+        keyPassword "1519817a@"
+    }
+}
+
+buildTypes {
+    release {
+        signingConfig signingConfigs.release
+        minifyEnabled false
+        shrinkResources false
+    }
+}
 }
 
 task generateShorcutsFile {

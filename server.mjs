@@ -29,6 +29,7 @@ const ROOM_AUTO_EXPIRATION_ENABLED = false;
 const TYPING_SIGNAL_TTL_MS = 4500;
 const PRESENCE_SIGNAL_TTL_MS = 2 * 60 * 1000;
 const ALLOWED_LANGUAGES = new Set(["ko", "en", "vi"]);
+const DEFAULT_TRANSLATION_CONCEPT = "lover";
 const DEMO_USER_NAMES = new Set(["Hana", "Alex", "Linh", "Yuna"]);
 const DEMO_ROOM_IDS = new Set(["room-lounge", "room-travel", "room-brainstorm"]);
 const DEMO_ROOM_TITLES = new Set(["Global Lounge", "Weekend Passport", "Night Shift Ideas"]);
@@ -1149,7 +1150,7 @@ function normalizeTranslationError(error) {
   return "translation_error";
 }
 
-async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages, translationConcept = "general", contextSummary = "" }) {
+async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
   if (!targetLanguages.length) {
     return {
       translations: {},
@@ -1182,7 +1183,7 @@ async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages
   };
 }
 
-async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLanguage, translationConcept = "general", contextSummary = "" }) {
+async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
   const cacheKey = JSON.stringify({
     model: OPENAI_MODEL,
     sourceLanguage,
@@ -1233,37 +1234,53 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLang
   return outputText;
 }
 
-function buildTranslationPrompt({ text, sourceLanguage, targetLanguage, translationConcept = "general", contextSummary = "" }) {
+function buildTranslationPrompt({ text, sourceLanguage, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+  const normalizedConcept = normalizeTranslationConcept(translationConcept);
+  const romanticDirectionHint =
+    normalizedConcept === "lover" && sourceLanguage === "ko" && targetLanguage === "vi"
+      ? "Default relationship context: a Korean male speaker addressing a Vietnamese female romantic partner. Keep the partner-facing tone warm and affectionate, but preserve the source wording and structure first."
+      : normalizedConcept === "lover"
+        ? "Default relationship context: private romantic partners. Preserve caring, reassuring, affectionate tone exactly without rewriting for extra smoothness."
+        : "";
+
   return [
-    "You are a realtime chat translator.",
-    "Translate the full message into the target language only.",
-    "Return only the translated message text.",
-    "Do not summarize, shorten, soften, explain, or add commentary.",
-    "Do not filter or propose alternatives.",
-    `Use this recipient-facing tone: ${describeTranslationConcept(translationConcept)}.`,
-    contextSummary ? "Apply this short conversation context only to keep names, relationship tone, and honorifics consistent:" : "",
+    "You are a professional translator for a private romantic chat app.",
+    `Translate the user's message accurately from ${describeLanguage(sourceLanguage)} to ${describeLanguage(targetLanguage)}.`,
+    "",
+    "Rules:",
+    "- Preserve the original meaning as closely as possible.",
+    "- Do not omit names, vocatives, calling expressions, or emotional emphasis.",
+    "- Keep emphasis such as '꼭', '항상', '정말', '많이', and '절대' whenever the target language can express it naturally.",
+    "- Keep sentence structure as close to the original as possible.",
+    "- Preserve romantic, caring, reassuring tone exactly.",
+    "- Do not paraphrase, summarize, soften, or rewrite creatively.",
+    "- Fidelity is more important than stylistic freedom.",
+    "- Preserve URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
+    `- Apply this recipient-facing tone only within the fidelity rules: ${describeTranslationConcept(normalizedConcept)}.`,
+    romanticDirectionHint ? `- ${romanticDirectionHint}` : "",
+    contextSummary ? "Context summary (use only to keep names, relationship tone, and honorific consistency; never override the source wording):" : "",
     contextSummary || "",
-    "Preserve the full meaning, tone, sentence count, URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
-    `Source language: ${describeLanguage(sourceLanguage)}.`,
-    `Target language: ${describeLanguage(targetLanguage)}.`,
+    "",
+    "Return only the translated sentence.",
+    "No explanations.",
     "Message:",
     text,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function normalizeTranslationConcept(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  return ["office", "general", "friend", "lover"].includes(normalized) ? normalized : "general";
+  return ["office", "general", "friend", "lover"].includes(normalized) ? normalized : DEFAULT_TRANSLATION_CONCEPT;
 }
 
 function describeTranslationConcept(concept) {
   return (
     {
-      office: "professional, work-appropriate, and polite",
-      general: "natural everyday conversation with neutral friendliness",
-      friend: "casual, relaxed, and friendly between close friends",
-      lover: "gentle, warm, and affectionate between romantic partners",
-    }[normalizeTranslationConcept(concept)] || "natural everyday conversation with neutral friendliness"
+      office: "professional, polite, and exact without dropping any source nuance",
+      general: "neutral everyday conversation with high fidelity to the source wording and emphasis",
+      friend: "casual and friendly while still preserving the original wording, order, and emphasis closely",
+      lover: "gentle, warm, affectionate romantic-partner language while preserving the original wording, order, and emphasis closely",
+    }[normalizeTranslationConcept(concept)] || "gentle, warm, affectionate romantic-partner language while preserving the original wording, order, and emphasis closely"
   );
 }
 

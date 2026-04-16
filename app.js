@@ -58,6 +58,7 @@
     { id: "friend", labelKey: "translationConceptFriend" },
     { id: "lover", labelKey: "translationConceptLover" },
   ]);
+  const DEFAULT_TRANSLATION_CONCEPT = "lover";
   // Edit this allowlist during private testing; later move the same rule to authenticated server-side identities.
   const PRIVATE_TEST_ALLOWLIST = new Set(["현태", "배현태", "호아", "hoa"].map((value) => value.trim().toLowerCase()));
 
@@ -2858,7 +2859,7 @@
         preferred.nativeLanguage ||
         fallback.nativeLanguage ||
         "ko",
-      preferredTranslationConcept: preferred.preferredTranslationConcept || fallback.preferredTranslationConcept || "general",
+      preferredTranslationConcept: preferred.preferredTranslationConcept || fallback.preferredTranslationConcept || DEFAULT_TRANSLATION_CONCEPT,
       uiLanguage: preferred.uiLanguage || fallback.uiLanguage || "ko",
       joinedAt: Math.min(Number(primary.joinedAt || primary.createdAt || Date.now()), Number(secondary.joinedAt || secondary.createdAt || Date.now())),
       lastSeenAt: Math.max(Number(primary.lastSeenAt || 0), Number(secondary.lastSeenAt || 0)),
@@ -4024,7 +4025,7 @@
         attachment: null,
         failTranslation: false,
         processing: false,
-        translationConcept: "general",
+        translationConcept: DEFAULT_TRANSLATION_CONCEPT,
       };
     }
     return uiState.drafts[roomId];
@@ -4043,7 +4044,7 @@
 
   function normalizeTranslationConcept(value) {
     const normalized = String(value || "").trim().toLowerCase();
-    return TRANSLATION_CONCEPTS.some((entry) => entry.id === normalized) ? normalized : "general";
+    return TRANSLATION_CONCEPTS.some((entry) => entry.id === normalized) ? normalized : DEFAULT_TRANSLATION_CONCEPT;
   }
 
   function getTranslationVariantLanguage(value) {
@@ -4062,11 +4063,15 @@
   }
 
   function getUserTranslationConcept(user = getCurrentUser()) {
-    return normalizeTranslationConcept(user?.preferredTranslationConcept || "general");
+    return normalizeTranslationConcept(user?.preferredTranslationConcept || DEFAULT_TRANSLATION_CONCEPT);
   }
 
   function getTranslationConceptMeta(conceptId) {
-    return TRANSLATION_CONCEPTS.find((entry) => entry.id === normalizeTranslationConcept(conceptId)) || TRANSLATION_CONCEPTS[1];
+    return (
+      TRANSLATION_CONCEPTS.find((entry) => entry.id === normalizeTranslationConcept(conceptId)) ||
+      TRANSLATION_CONCEPTS.find((entry) => entry.id === DEFAULT_TRANSLATION_CONCEPT) ||
+      TRANSLATION_CONCEPTS[0]
+    );
   }
 
   function getTranslationConceptLabel(conceptId) {
@@ -6667,7 +6672,7 @@
     return typeof entry?.text === "string" && entry.text.trim().length > 0;
   }
 
-  function findStoredTranslationForLanguage(message, language, preferredConcept = "general") {
+  function findStoredTranslationForLanguage(message, language, preferredConcept = DEFAULT_TRANSLATION_CONCEPT) {
     const baseLanguage = getTranslationVariantLanguage(language);
     if (!baseLanguage) {
       return { key: "", entry: null };
@@ -10204,7 +10209,7 @@
       return "";
     }
 
-    const signature = recentMessages.map((message) => `${message.id}:${message.translationConcept || "general"}`).join("|");
+    const signature = recentMessages.map((message) => `${message.id}:${message.translationConcept || DEFAULT_TRANSLATION_CONCEPT}`).join("|");
     if (room.naturalTranslationContextCache?.signature === signature && room.naturalTranslationContextCache?.summary) {
       return room.naturalTranslationContextCache.summary;
     }
@@ -10215,7 +10220,7 @@
       return counts;
     }, {});
     const preferredConcept =
-      Object.entries(dominantConcept).sort((a, b) => b[1] - a[1])[0]?.[0] || "general";
+      Object.entries(dominantConcept).sort((a, b) => b[1] - a[1])[0]?.[0] || DEFAULT_TRANSLATION_CONCEPT;
     const recentLines = recentMessages.slice(-4).map((message) => {
       const speaker = appState.users.find((user) => user.id === message.senderId);
       const snippet = normalizeContextSnippet(message.originalText || message.text || "");
