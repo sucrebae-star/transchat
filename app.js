@@ -15,14 +15,6 @@
     passwordAttemptLimit: 5,
     passwordLockMs: 90 * 1000,
     mediaExpireHours: 24,
-    freeDailyMessageLimit: 30,
-    freeResetHour: 7,
-    monthlyPlanPrice: 9900,
-    yearlyPlanPrice: 99000,
-    premiumSoftLimit: 600,
-    premiumHardLimit: 900,
-    abuseGuardMessage: "planPremiumAbuseGuardCopy",
-    planPolicyVersion: "2026-04-preview",
     imageMaxBytes: 10 * 1024 * 1024,
     profileImageMaxBytes: 5 * 1024 * 1024,
     videoMaxBytes: 50 * 1024 * 1024,
@@ -40,6 +32,7 @@
     typingSignalThrottleMs: 700,
     typingSignalTtlMs: 4500,
     translationPendingTimeoutMs: 15 * 1000,
+    translationRetryCooldownMs: 30 * 1000,
     translationRequestTimeoutMs: 12 * 1000,
     translationApiPath: "/api/translate",
     stateApiPath: "/api/state",
@@ -48,9 +41,6 @@
     pushConfigApiPath: "/api/push/config",
     pushRegisterApiPath: "/api/push/register",
     pushUnregisterApiPath: "/api/push/unregister",
-    pushTestApiPath: "/api/push/send-test",
-    // Private test gate for now; replace with provider-backed auth when Google or magic-link login is added.
-    accessGateMode: "whitelist",
   };
   const TRANSLATION_CONCEPTS = Object.freeze([
     { id: "office", labelKey: "translationConceptOffice" },
@@ -59,11 +49,6 @@
     { id: "lover", labelKey: "translationConceptLover" },
   ]);
   const DEFAULT_TRANSLATION_CONCEPT = "lover";
-  // Edit this allowlist during private testing; later move the same rule to authenticated server-side identities.
-  const PRIVATE_TEST_ALLOWLIST = new Set(["현태", "배현태", "호아", "hoa"].map((value) => value.trim().toLowerCase()));
-
-  const PRIVATE_TEST_GATE_NAMES = new Set(["hoa", "현태", "admin"].map((value) => String(value || "").trim().toLowerCase()));
-  const UNLIMITED_TESTER_NAMES = new Set(["hoa", "현태"].map((value) => String(value || "").trim().toLowerCase()));
   const BUILT_IN_ADMIN_ACCOUNT = Object.freeze({
     loginId: "admin",
     password: "0694",
@@ -95,6 +80,8 @@
     heartbeatTimer: null,
     healthTimer: null,
     serverSyncTimer: null,
+    serverStatePollTimer: null,
+    translationRecoveryTimer: null,
     softRenderTimer: null,
     mediaCleanupTimer: null,
     eventSource: null,
@@ -116,6 +103,7 @@
     lastTypingSignalAt: {},
     lastPresenceSignalAt: 0,
     lastPresencePersistAt: 0,
+    lastServerStatePollAt: 0,
     backend: {
       serverReachable: false,
       liveTranslationEnabled: false,
@@ -478,7 +466,7 @@
     landingPointMobile: "모바일 입력 대응",
     landingPointMobileCopy: "소프트 키보드가 떠도 입력창이 가려지지 않도록 뷰포트 보정을 적용합니다.",
     landingPanelTitle: "바로 체험 시작",
-    landingPanelCopy: "UI 언어와 채팅 모국어를 분리해서 설정한 뒤 로컬 브라우저에서 전체 플로우를 테스트할 수 있습니다.",
+    landingPanelCopy: "UI 언어와 채팅 모국어를 각각 설정한 뒤 바로 대화를 시작할 수 있습니다.",
     labelUsername: "사용자 이름",
     labelNativeLanguage: "채팅 모국어",
     labelUiLanguage: "UI 언어",
@@ -487,7 +475,7 @@
     enterButton: "입장하기",
     demoUsersLabel: "기본 데모 사용자",
     demoUsersValue: "Hana, Alex, Linh, Yuna",
-    topbarStatus: "로컬 브라우저 테스트 가능",
+    topbarStatus: "브라우저에서 바로 사용 가능",
     serverOnline: "서버 연결됨",
     serverOffline: "서버 연결 없음",
     translationLiveMode: "실번역 사용",
@@ -522,7 +510,7 @@
     roomExpired: "만료됨",
     unreadLabel: "읽지 않음",
     chatWelcomeTitle: "TRANSCHAT에 오신 것을 환영합니다",
-    chatWelcomeCopy: "왼쪽 목록에서 방을 선택하면 메시지, 번역, 초대, 만료 흐름을 바로 테스트할 수 있습니다.",
+    chatWelcomeCopy: "왼쪽 목록에서 방을 선택하면 메시지, 번역, 초대 흐름을 바로 사용할 수 있습니다.",
     chatExpiredTitle: "대화가 만료되어 삭제되었습니다",
     chatExpiredCopy: "30분 동안 새로운 메시지가 없어 방이 자동 종료되었습니다. 모든 참여자와 메시지, 미디어가 정리된 상태입니다.",
     chatHeaderCreator: "생성자",
@@ -580,7 +568,7 @@
     presenceOnline: "온라인",
     presenceOffline: "오프라인",
     settingsTitle: "설정",
-    settingsCopy: "UI 언어, 모국어, 테마, 테스트 도구를 바로 바꿀 수 있습니다.",
+    settingsCopy: "UI 언어, 모국어, 테마를 바로 변경할 수 있습니다.",
     themeLabel: "테마",
     themeSystem: "시스템",
     themeLight: "라이트",
@@ -698,7 +686,7 @@
     landingPointMobile: "Mobile keyboard handling",
     landingPointMobileCopy: "The composer stays visible above the software keyboard with viewport-aware layout updates.",
     landingPanelTitle: "Enter the prototype",
-    landingPanelCopy: "Set UI language and chat native language separately, then test the full local browser flow.",
+    landingPanelCopy: "Set your UI language and chat native language separately, then start chatting right away.",
     labelUsername: "User name",
     labelNativeLanguage: "Native chat language",
     labelUiLanguage: "UI language",
@@ -707,7 +695,7 @@
     enterButton: "Enter",
     demoUsersLabel: "Seeded demo users",
     demoUsersValue: "Hana, Alex, Linh, Yuna",
-    topbarStatus: "Runs locally in the browser",
+    topbarStatus: "Ready in the browser",
     serverOnline: "Server online",
     serverOffline: "Server offline",
     translationLiveMode: "Live translation",
@@ -742,7 +730,7 @@
     roomExpired: "Expired",
     unreadLabel: "Unread",
     chatWelcomeTitle: "Welcome to TRANSCHAT",
-    chatWelcomeCopy: "Pick a room from the list to test messaging, translation, invites, and expiration behavior.",
+    chatWelcomeCopy: "Pick a room from the list to start messaging, translation, and invites right away.",
     chatExpiredTitle: "This conversation expired and was deleted",
     chatExpiredCopy: "No new message was sent for 30 minutes, so the room closed automatically. Participants, messages, and media were removed.",
     chatHeaderCreator: "Creator",
@@ -800,7 +788,7 @@
     presenceOnline: "Online",
     presenceOffline: "Offline",
     settingsTitle: "Settings",
-    settingsCopy: "Change UI language, native language, theme, and test tools instantly.",
+    settingsCopy: "Change UI language, native language, and theme instantly.",
     themeLabel: "Theme",
     themeSystem: "System",
     themeLight: "Light",
@@ -918,7 +906,7 @@
     landingPointMobile: "Bàn phím di động",
     landingPointMobileCopy: "Khung soạn tin luôn nằm trên bàn phím nhờ cập nhật viewport trên di động.",
     landingPanelTitle: "Bắt đầu trải nghiệm",
-    landingPanelCopy: "Đặt riêng ngôn ngữ giao diện và ngôn ngữ mẹ đẻ trong chat, sau đó thử toàn bộ luồng trên trình duyệt.",
+    landingPanelCopy: "Dat rieng ngon ngu giao dien va ngon ngu me de trong chat roi bat dau tro chuyen ngay.",
     labelUsername: "Tên người dùng",
     labelNativeLanguage: "Ngôn ngữ mẹ đẻ trong chat",
     labelUiLanguage: "Ngôn ngữ giao diện",
@@ -927,7 +915,7 @@
     enterButton: "Vào",
     demoUsersLabel: "Người dùng mẫu",
     demoUsersValue: "Hana, Alex, Linh, Yuna",
-    topbarStatus: "Chay truc tiep tren trinh duyet",
+    topbarStatus: "San sang tren trinh duyet",
     serverOnline: "May chu dang ket noi",
     serverOffline: "Khong ket noi may chu",
     translationLiveMode: "Dich thuc",
@@ -962,7 +950,7 @@
     roomExpired: "Da het han",
     unreadLabel: "Chua doc",
     chatWelcomeTitle: "Chao mung den voi TRANSCHAT",
-    chatWelcomeCopy: "Chon mot phong de thu nhan tin, dich, loi moi va han tu dong.",
+    chatWelcomeCopy: "Chon mot phong de bat dau nhan tin, dich va gui loi moi ngay.",
     chatExpiredTitle: "Cuoc tro chuyen nay da het han va bi xoa",
     chatExpiredCopy: "Khong co tin nhan moi trong 30 phut, nen phong da dong tu dong. Thanh vien, tin nhan va media da duoc xoa.",
     chatHeaderCreator: "Nguoi tao",
@@ -1020,7 +1008,7 @@
     presenceOnline: "Truc tuyen",
     presenceOffline: "Ngoai tuyen",
     settingsTitle: "Cai dat",
-    settingsCopy: "Doi ngon ngu giao dien, ngon ngu me de, giao dien sang toi va cong cu thu nghiem ngay lap tuc.",
+    settingsCopy: "Doi ngon ngu giao dien, ngon ngu me de va giao dien sang toi ngay lap tuc.",
     themeLabel: "Giao dien",
     themeSystem: "He thong",
     themeLight: "Sang",
@@ -1150,9 +1138,9 @@
     toastImageFormatInvalidCopy: "JPEG, PNG, WEBP 파일만 선택해 주세요.",
     toastProfileImageTooLarge: "프로필 사진 용량이 너무 큽니다",
     toastProfileImageTooLargeCopy: "프로필 사진은 5MB 이하로 선택해 주세요.",
-    toastAccessDenied: "테스트 허용 사용자만 입장할 수 있습니다",
-    toastAccessDeniedCopy: "화이트리스트에 등록된 이름으로만 테스트 입장이 가능합니다.",
-    landingAccessHint: "현재 테스트 단계이므로 허용된 사용자만 입장할 수 있습니다.",
+    toastAccessDenied: "로그인이 필요합니다",
+    toastAccessDeniedCopy: "계정을 확인한 뒤 다시 시도해주세요.",
+    landingAccessHint: "계정을 만들거나 로그인한 뒤 바로 사용할 수 있습니다.",
     connectionInvite: "초대하기",
     connectionInvited: "초대 보냄",
     connectionActive: "대화중",
@@ -1184,9 +1172,9 @@
     toastImageFormatInvalidCopy: "Please select a JPEG, PNG, or WEBP image.",
     toastProfileImageTooLarge: "Profile image is too large",
     toastProfileImageTooLargeCopy: "Profile images must be 5MB or smaller.",
-    toastAccessDenied: "Only approved testers can enter",
-    toastAccessDeniedCopy: "This private test currently allows a small whitelist of user names.",
-    landingAccessHint: "This private test is limited to approved users only.",
+    toastAccessDenied: "Login required",
+    toastAccessDeniedCopy: "Check your account information and try again.",
+    landingAccessHint: "Create an account or sign in to start right away.",
     connectionInvite: "Invite",
     connectionInvited: "Invited",
     connectionActive: "In chat",
@@ -1218,9 +1206,9 @@
     toastImageFormatInvalidCopy: "Chi ho tro anh JPEG, PNG hoac WEBP.",
     toastProfileImageTooLarge: "Anh dai dien qua lon",
     toastProfileImageTooLargeCopy: "Anh dai dien phai nho hon hoac bang 5MB.",
-    toastAccessDenied: "Chi nguoi dung duoc phep moi vao duoc",
-    toastAccessDeniedCopy: "Ban thu rieng nay chi cho phep mot danh sach ten cu the.",
-    landingAccessHint: "Ban thu hien chi cho phep nhung nguoi dung da duoc phep.",
+    toastAccessDenied: "Can dang nhap",
+    toastAccessDeniedCopy: "Hay kiem tra thong tin tai khoan roi thu lai.",
+    landingAccessHint: "Tao tai khoan hoac dang nhap de bat dau ngay.",
     connectionInvite: "Moi",
     connectionInvited: "Da moi",
     connectionActive: "Dang tro chuyen",
@@ -1251,9 +1239,9 @@
       vi: "Hay quyet dinh ke hoach cuoi tuan nay",
     },
     translationCheck: {
-      ko: "번역 품질 테스트 중입니다",
-      en: "We are testing translation quality",
-      vi: "Chung ta dang thu chat luong dich",
+      ko: "번역 품질을 계속 개선하고 있습니다",
+      en: "Translation quality continues to improve",
+      vi: "Chat luong dich dang tiep tuc duoc cai thien",
     },
   };
 
@@ -1262,7 +1250,6 @@
     console.info("[transchat] bootstrap:state-load:start");
     appState = loadState();
     ensureSystemAccounts();
-    syncUsageWindows();
     syncUserAlertState();
     console.info("[transchat] bootstrap:state-load:complete", {
       users: (appState.users || []).length,
@@ -1420,7 +1407,7 @@
   // Added: login/signup/profile copy for the dedicated auth screens and compact profile editing flow.
   Object.assign(DICTIONARY.ko, {
     landingNamePlaceholderSimple: "아이디를 작성하세요",
-    landingAuthSecondaryHint: "테스트 계정으로 간단히 로그인할 수 있습니다.",
+    landingAuthSecondaryHint: "계정으로 로그인하면 바로 대화를 시작할 수 있습니다.",
     landingBackToLogin: "로그인으로 돌아가기",
     signupScreenTitle: "회원가입",
     signupScreenCopy: "계정 정보와 모국어를 설정하면 바로 입장할 수 있습니다.",
@@ -1457,7 +1444,7 @@
 
   Object.assign(DICTIONARY.en, {
     landingNamePlaceholderSimple: "Enter your ID",
-    landingAuthSecondaryHint: "Log in quickly with a private test account.",
+    landingAuthSecondaryHint: "Sign in with your account and start chatting right away.",
     landingBackToLogin: "Back to login",
     signupScreenTitle: "Create account",
     signupScreenCopy: "Set your account details and native language before entering.",
@@ -1494,7 +1481,7 @@
 
   Object.assign(DICTIONARY.vi, {
     landingNamePlaceholderSimple: "Nhap ID cua ban",
-    landingAuthSecondaryHint: "Dang nhap nhanh bang tai khoan thu nghiem rieng.",
+    landingAuthSecondaryHint: "Dang nhap bang tai khoan cua ban de bat dau tro chuyen ngay.",
     landingBackToLogin: "Quay lai dang nhap",
     signupScreenTitle: "Dang ky",
     signupScreenCopy: "Hay cai dat thong tin tai khoan va ngon ngu me de truoc khi vao.",
@@ -1554,23 +1541,24 @@
   });
 
   Object.assign(DICTIONARY.ko, {
-    naturalTranslationBetaTitle: "자연스러운 번역 베타",
+    naturalTranslationBetaTitle: "자연스러운 번역",
     naturalTranslationBetaCopy: "최근 대화를 짧게 요약해 말투, 호칭, 관계 맥락을 번역에 반영합니다.",
   });
 
   Object.assign(DICTIONARY.en, {
-    naturalTranslationBetaTitle: "Natural translation beta",
+    naturalTranslationBetaTitle: "Natural translation",
     naturalTranslationBetaCopy: "Uses a short recent-chat summary to keep tone, names, and relationship context more natural.",
   });
 
   Object.assign(DICTIONARY.vi, {
-    naturalTranslationBetaTitle: "Ban dich tu nhien beta",
+    naturalTranslationBetaTitle: "Ban dich tu nhien",
     naturalTranslationBetaCopy: "Tom tat ngan cuoc tro chuyen gan day de giu xung ho, giong dieu va boi canh quan he tu nhien hon.",
   });
 
   // Translation tone labels stay centralized so the composer menu can switch concepts without hardcoded UI copy.
   Object.assign(DICTIONARY.ko, {
     translationPendingInline: "번역 중...",
+    translationUnavailableInline: "번역을 준비 중입니다.",
     translationConceptLabel: "번역 말투",
     translationConceptOffice: "사무",
     translationConceptGeneral: "일반",
@@ -1581,6 +1569,7 @@
 
   Object.assign(DICTIONARY.en, {
     translationPendingInline: "Translating...",
+    translationUnavailableInline: "Translation is being prepared.",
     translationConceptLabel: "Translation tone",
     translationConceptOffice: "Office",
     translationConceptGeneral: "Default",
@@ -1591,6 +1580,7 @@
 
   Object.assign(DICTIONARY.vi, {
     translationPendingInline: "Dang dich...",
+    translationUnavailableInline: "Ban dich dang duoc chuan bi.",
     translationConceptLabel: "Sac thai ban dich",
     translationConceptOffice: "Cong viec",
     translationConceptGeneral: "Thong thuong",
@@ -1726,7 +1716,7 @@
     toastAccountDeletedCopy: "{name} 계정과 관련 데이터가 삭제되었습니다.",
     toastAdminSelfDeleteBlocked: "관리자 본인은 삭제할 수 없습니다",
     toastAdminSelfDeleteBlockedCopy: "admin 계정은 직접 삭제할 수 없습니다.",
-    planUnlimitedTesterCopy: "테스트용 무제한 예외 계정",
+    planUnlimitedTesterCopy: "무제한 사용 가능",
     adminProfileEditTitle: "사용자 정보 수정",
     adminProfilePasswordLabel: "비밀번호",
     adminProfileSaveButton: "저장",
@@ -1741,7 +1731,7 @@
     toastAccountDeletedCopy: "{name} and related data were deleted.",
     toastAdminSelfDeleteBlocked: "You cannot delete the admin account",
     toastAdminSelfDeleteBlockedCopy: "The admin account cannot delete itself.",
-    planUnlimitedTesterCopy: "Unlimited tester bypass account",
+    planUnlimitedTesterCopy: "Unlimited access",
     adminProfileEditTitle: "Edit user profile",
     adminProfilePasswordLabel: "Password",
     adminProfileSaveButton: "Save",
@@ -1756,7 +1746,7 @@
     toastAccountDeletedCopy: "Tai khoan {name} va du lieu lien quan da bi xoa.",
     toastAdminSelfDeleteBlocked: "Khong the xoa tai khoan admin",
     toastAdminSelfDeleteBlockedCopy: "Tai khoan admin khong the tu xoa chinh no.",
-    planUnlimitedTesterCopy: "Tai khoan test khong gioi han",
+    planUnlimitedTesterCopy: "Su dung khong gioi han",
     adminProfileEditTitle: "Sua thong tin nguoi dung",
     adminProfilePasswordLabel: "Mat khau",
     adminProfileSaveButton: "Luu",
@@ -2035,7 +2025,6 @@
     const joinedAt = Number(accountOptions.joinedAt || Date.now());
     const normalizedLoginId = normalizeAccountId(accountOptions.loginId || normalizedName);
     const isAdmin = Boolean(accountOptions.isAdmin) || isAdminLoginId(normalizedLoginId);
-    const isUnlimitedTester = isUnlimitedTesterName(normalizedName);
     return {
       id: uid("user"),
       loginId: normalizedLoginId,
@@ -2045,13 +2034,9 @@
       age: Number(accountOptions.age || 0) || "",
       profileImage,
       isAdmin,
-      isUnlimitedTester,
-      isUnlimitedUser: isAdmin || isUnlimitedTester,
-      canBypassUsageLimit: isAdmin || isUnlimitedTester,
       preferredTranslationConcept: normalizeTranslationConcept(accountOptions.preferredTranslationConcept),
-      // Future auth expansion point: replace test-name identity with Google, magic-link, or phone-backed identities.
       auth: {
-        provider: "test-name",
+        provider: "local",
         subject: normalizedLoginId || normalizeLoginIdentity(normalizedName),
         email: null,
         phoneNumber: null,
@@ -2062,11 +2047,6 @@
       preferredChatLanguage: nativeLanguage,
       uiLanguage,
       password: String(accountOptions.password || ""),
-      planTier: ["monthly", "yearly"].includes(accountOptions.planTier) ? accountOptions.planTier : "free",
-      usage: sanitizeUsageState(accountOptions.usage, joinedAt),
-      planUpdatedAt: Number(accountOptions.planUpdatedAt || joinedAt),
-      planPolicyAcknowledgedAt: Number(accountOptions.planPolicyAcknowledgedAt || 0) || null,
-      enableNaturalTranslationBeta: Boolean(accountOptions.enableNaturalTranslationBeta),
       recoveryQuestionKey: accountOptions.recoveryQuestionKey || accountOptions.recoveryQuestion || getDeterministicRecoveryQuestionKey(normalizedName),
       recoveryQuestion:
         accountOptions.recoveryQuestion || accountOptions.recoveryQuestionKey || getDeterministicRecoveryQuestionKey(normalizedName),
@@ -2108,10 +2088,12 @@
       senderId,
       createdAt,
       originalText,
+      originalLanguage: sourceLanguage,
       sourceLanguage,
       translations,
       status,
       media,
+      languageProfile: null,
       deliveredTo: {},
       readBy: {},
     };
@@ -2136,19 +2118,32 @@
       return message;
     }
 
-  const originalText = normalizeDisplayText(message.originalText || message.text || "");
-    const translations = sanitizeTranslations(message.translations, originalText, message.sourceLanguage);
+    const originalText = normalizeDisplayText(message.originalText || message.text || "");
+    const storedSourceLanguage = normalizeMessageLanguageCode(message.originalLanguage || message.sourceLanguage, "ko");
+    const languageProfile = originalText ? buildMessageLanguageProfile(originalText, storedSourceLanguage, message.languageProfile) : createLanguageProfile(storedSourceLanguage);
+    const sourceLanguage = languageProfile.primaryLanguage;
+    const translations = sanitizeTranslations(message.translations, originalText, sourceLanguage);
 
     return {
       ...message,
       originalText,
+      originalLanguage: sourceLanguage,
+      sourceLanguage,
+      languageProfile,
       status: ["composing", "sent", "delivered", "read"].includes(message.status) ? message.status : "sent",
       media: sanitizeMediaState(message.media),
       deliveredTo: filterRecordByAllowedKeys(message.deliveredTo, allowedUserIds),
       readBy: filterRecordByAllowedKeys(message.readBy, allowedUserIds),
       translations,
-      translationMeta: sanitizeTranslationMeta(message.translationMeta, translations, message.sourceLanguage),
+      translationMeta: sanitizeTranslationMeta(message.translationMeta, translations, sourceLanguage, languageProfile),
     };
+  }
+
+  function normalizeMessageLanguageCode(value, fallback = "ko") {
+    const normalized = getTranslationVariantLanguage(value);
+    if (normalized) return normalized;
+    const fallbackLanguage = getTranslationVariantLanguage(fallback);
+    return fallbackLanguage || "ko";
   }
 
   function sanitizeTranslations(translations, originalText, sourceLanguage) {
@@ -2174,13 +2169,13 @@
     );
   }
 
-  function sanitizeTranslationMeta(meta, translations, sourceLanguage) {
+  function sanitizeTranslationMeta(meta, translations, sourceLanguage, languageProfile = null) {
     const requestedTargets = [...new Set(
       (Array.isArray(meta?.requestedTargets) ? meta.requestedTargets : Object.keys(translations || {}))
         .map((key) => String(key || "").trim())
         .filter((key) => {
           const language = getTranslationVariantLanguage(key);
-          return Boolean(language) && language !== sourceLanguage;
+          return Boolean(language) && shouldRequestTranslationForLanguage(language, sourceLanguage, languageProfile);
         })
     )];
     const provider = typeof meta?.provider === "string" ? meta.provider : "none";
@@ -2267,12 +2262,11 @@
     };
 
     const users = (parsed.users || [])
-      .filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user))
+      .filter((user) => !deletedUserIds.has(user.id))
       .map((user) => {
         const normalizedLoginId = normalizeAccountId(user?.loginId || user?.name);
         const normalizedName = normalizeDisplayText(user.name);
         const isAdmin = Boolean(user?.isAdmin) || isAdminLoginId(normalizedLoginId);
-        const isUnlimitedTester = isUnlimitedTesterName(normalizedName);
         return {
           ...user,
           loginId: normalizedLoginId,
@@ -2281,11 +2275,8 @@
           gender: user?.gender === "female" ? "female" : user?.gender === "male" ? "male" : "",
           age: Number(user?.age || 0) || "",
           isAdmin,
-          isUnlimitedTester,
-          isUnlimitedUser: Boolean(user?.isUnlimitedUser) || isAdmin || isUnlimitedTester,
-          canBypassUsageLimit: isAdmin || isUnlimitedTester,
           auth: {
-            provider: user?.auth?.provider || "test-name",
+            provider: user?.auth?.provider || "local",
             subject: user?.auth?.subject || normalizedLoginId,
             email: user?.auth?.email || null,
             phoneNumber: user?.auth?.phoneNumber || null,
@@ -2295,11 +2286,6 @@
           preferredChatLanguage: user.preferredChatLanguage || user.nativeLanguage || "ko",
           preferredTranslationConcept: normalizeTranslationConcept(user?.preferredTranslationConcept),
           password: typeof user?.password === "string" ? user.password : "",
-          planTier: ["monthly", "yearly"].includes(user?.planTier) ? user.planTier : "free",
-          usage: sanitizeUsageState(user?.usage, Number(parsed.updatedAt || Date.now())),
-          planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
-          planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
-          enableNaturalTranslationBeta: Boolean(user?.enableNaturalTranslationBeta),
           recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
             ? user.recoveryQuestionKey
             : RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestion)
@@ -2325,7 +2311,7 @@
     const userIds = new Set(users.map((user) => user.id));
 
     const rooms = (parsed.rooms || [])
-      .filter((room) => !deletedRoomIds.has(room.id) && !isDemoRoom(room) && !shouldDiscardRoom(room))
+      .filter((room) => !deletedRoomIds.has(room.id) && !shouldDiscardRoom(room))
       .map((room) => {
         const persistent = isPersistentRoom(room);
         const participants = deriveRoomParticipantIds(room, users);
@@ -2366,14 +2352,6 @@
       }));
 
     return nextState;
-  }
-
-  function isDemoUser(user) {
-    return DEMO_USER_NAMES.has(String(user?.name || "").trim());
-  }
-
-  function isDemoRoom(room) {
-    return DEMO_ROOM_IDS.has(room?.id) || DEMO_ROOM_TITLES.has(String(room?.title || "").trim());
   }
 
   function shouldDiscardRoom(room) {
@@ -2437,7 +2415,6 @@
   function persistState() {
     // Prototype policy note: chats and inline image previews live in local/browser state until a room is deleted or expires.
     syncSpecialUserFlags();
-    syncUsageWindows();
     syncUserAlertState();
     appState.updatedAt = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
@@ -2612,8 +2589,16 @@
     if (!shouldUseTranslationBackend()) return;
     clearTimeout(runtime.serverSyncTimer);
     runtime.serverSyncTimer = setTimeout(() => {
+      runtime.serverSyncTimer = null;
       syncStateToServer();
     }, 120);
+  }
+
+  function flushServerStateSync() {
+    if (!shouldUseTranslationBackend()) return;
+    clearTimeout(runtime.serverSyncTimer);
+    runtime.serverSyncTimer = null;
+    void syncStateToServer();
   }
 
   async function syncStateToServer() {
@@ -2627,7 +2612,7 @@
           messageId: traceMessage.messageId,
         });
       }
-      // Prototype sync note: the local Node server mirrors app state for test devices only; replace with DB access control in production.
+      // Sync note: the local Node server mirrors app state; replace this with DB-backed access control in production.
       const response = await fetch(CONFIG.stateApiPath, {
         method: "PUT",
         headers: {
@@ -2661,6 +2646,23 @@
     } catch (error) {
       return null;
     }
+  }
+
+  async function pollServerStateIfNeeded(options = {}) {
+    if (!shouldUseTranslationBackend() || document.hidden) return false;
+    if (!runtime.backend.serverReachable && !options.force) return false;
+    const now = Date.now();
+    if (!options.force && now - Number(runtime.lastServerStatePollAt || 0) < 2500) {
+      return false;
+    }
+    runtime.lastServerStatePollAt = now;
+    const serverState = await fetchServerState();
+    if (!serverState) return false;
+    if (!options.force && getStateTimestamp(serverState) <= getStateTimestamp(appState)) {
+      return false;
+    }
+    applyStateSnapshot(serverState, { source: "server" });
+    return true;
   }
 
   function getStateTimestamp(state) {
@@ -2798,7 +2800,7 @@
       findUserByLoginName(remembered.loginId, appState.users || []) ||
       null;
 
-    if (!user || appState.deletedUsers?.[user.id] || (!isAdminUser(user) && !isAllowedPrivateTester(user.name))) {
+    if (!user || appState.deletedUsers?.[user.id]) {
       if (options.clearOnMissing !== false) {
         clearAutoLoginState();
       }
@@ -2867,12 +2869,8 @@
       loginState: primary.loginState === "online" || secondary.loginState === "online" ? "online" : "offline",
       hasUnreadInvites: Boolean(primary.hasUnreadInvites || secondary.hasUnreadInvites),
       hasUnreadMessages: Boolean(primary.hasUnreadMessages || secondary.hasUnreadMessages),
-      enableNaturalTranslationBeta: Boolean(primary.enableNaturalTranslationBeta || secondary.enableNaturalTranslationBeta),
       currentRoomId: preferred.currentRoomId || fallback.currentRoomId || null,
       isAdmin: Boolean(primary.isAdmin || secondary.isAdmin),
-      isUnlimitedTester: Boolean(primary.isUnlimitedTester || secondary.isUnlimitedTester),
-      isUnlimitedUser: Boolean(primary.isUnlimitedUser || secondary.isUnlimitedUser),
-      canBypassUsageLimit: Boolean(primary.canBypassUsageLimit || secondary.canBypassUsageLimit),
     };
   }
 
@@ -3075,24 +3073,13 @@
     return normalizeAccountId(value) === BUILT_IN_ADMIN_ACCOUNT.loginId;
   }
 
-  function isUnlimitedTesterName(value) {
-    return UNLIMITED_TESTER_NAMES.has(normalizePolicyIdentity(value));
-  }
-
   function isAdminUser(user) {
     return Boolean(user?.isAdmin) || isAdminLoginId(user?.loginId);
-  }
-
-  function canBypassUsageLimit(user) {
-    return Boolean(user) && (isAdminUser(user) || Boolean(user?.isUnlimitedTester) || Boolean(user?.isUnlimitedUser) || isUnlimitedTesterName(user?.name));
   }
 
   function applySpecialUserFlags(user) {
     if (!user) return user;
     user.isAdmin = Boolean(user.isAdmin) || isAdminLoginId(user.loginId);
-    user.isUnlimitedTester = isUnlimitedTesterName(user.name);
-    user.isUnlimitedUser = user.isUnlimitedTester;
-    user.canBypassUsageLimit = user.isAdmin || user.isUnlimitedTester;
     return user;
   }
 
@@ -3115,7 +3102,6 @@
           loginId: BUILT_IN_ADMIN_ACCOUNT.loginId,
           password: BUILT_IN_ADMIN_ACCOUNT.password,
           isAdmin: true,
-          planTier: "yearly",
         }
       );
       appState.users.unshift(adminUser);
@@ -3133,145 +3119,6 @@
 
   function getUserDisplayName(user) {
     return normalizeDisplayText(user?.nickname || user?.name || user?.loginId || "");
-  }
-
-  function getUsageWindowInfo(now = Date.now()) {
-    const current = new Date(now);
-    const resetPoint = new Date(current);
-    resetPoint.setHours(CONFIG.freeResetHour, 0, 0, 0);
-
-    let windowStart = resetPoint;
-    let nextReset = new Date(resetPoint);
-    if (current < resetPoint) {
-      windowStart = new Date(resetPoint);
-      windowStart.setDate(windowStart.getDate() - 1);
-      nextReset = resetPoint;
-    } else {
-      nextReset = new Date(resetPoint);
-      nextReset.setDate(nextReset.getDate() + 1);
-    }
-
-    const key = [
-      windowStart.getFullYear(),
-      String(windowStart.getMonth() + 1).padStart(2, "0"),
-      String(windowStart.getDate()).padStart(2, "0"),
-      CONFIG.freeResetHour,
-    ].join("-");
-
-    return {
-      key,
-      windowStartAt: windowStart.getTime(),
-      nextResetAt: nextReset.getTime(),
-    };
-  }
-
-  function sanitizeUsageState(value, now = Date.now()) {
-    const info = getUsageWindowInfo(now);
-    if (!value || value.windowKey !== info.key) {
-      return {
-        windowKey: info.key,
-        totalMessages: 0,
-        softLimitNotified: false,
-        lastUpdatedAt: now,
-      };
-    }
-
-    return {
-      windowKey: info.key,
-      totalMessages: Math.max(0, Number(value.totalMessages || 0)),
-      softLimitNotified: Boolean(value.softLimitNotified),
-      lastUpdatedAt: Number(value.lastUpdatedAt || now),
-    };
-  }
-
-  function ensureUserUsageState(user, now = Date.now()) {
-    if (!user) return getUsageWindowInfo(now);
-    const info = getUsageWindowInfo(now);
-    user.planTier = ["free", "monthly", "yearly"].includes(user.planTier) ? user.planTier : "free";
-    user.usage = sanitizeUsageState(user.usage, now);
-    return {
-      ...info,
-      usage: user.usage,
-    };
-  }
-
-  function syncUsageWindows() {
-    appState.users.forEach((user) => ensureUserUsageState(user));
-  }
-
-  function isPremiumPlan(user) {
-    return ["monthly", "yearly"].includes(user?.planTier);
-  }
-
-  function getPlanLabel(planTier) {
-    return t(
-      planTier === "monthly"
-        ? "planMonthlyLabel"
-        : planTier === "yearly"
-          ? "planYearlyLabel"
-          : "planFreeLabel"
-    );
-  }
-
-  function formatPriceLabel(amount, type) {
-    const formatted = `${new Intl.NumberFormat("ko-KR").format(amount)}원`;
-    return t(type === "monthly" ? "planMonthlyPrice" : "planYearlyPrice", { price: formatted });
-  }
-
-  function formatPlanResetTime(timestamp) {
-    return new Intl.DateTimeFormat(getLocale(), {
-      hour: "numeric",
-      minute: "2-digit",
-    }).format(new Date(timestamp));
-  }
-
-  function getPlanUsageSummary(user) {
-    const info = ensureUserUsageState(user);
-    const used = Number(user?.usage?.totalMessages || 0);
-    const remaining = Math.max(0, CONFIG.freeDailyMessageLimit - used);
-    return {
-      used,
-      remaining,
-      nextResetAt: info.nextResetAt,
-    };
-  }
-
-  function getMessageLimitState(user) {
-    const summary = getPlanUsageSummary(user);
-    if (canBypassUsageLimit(user)) {
-      return { blocked: false, kind: "ok", summary };
-    }
-    if (!isPremiumPlan(user) && summary.used >= CONFIG.freeDailyMessageLimit) {
-      return { blocked: true, kind: "free", summary };
-    }
-    if (isPremiumPlan(user) && summary.used >= CONFIG.premiumHardLimit) {
-      return { blocked: true, kind: "premium", summary };
-    }
-    return { blocked: false, kind: "ok", summary };
-  }
-
-  function maybeFlagPremiumSoftLimit(user) {
-    if (canBypassUsageLimit(user)) return false;
-    if (!isPremiumPlan(user)) return false;
-    ensureUserUsageState(user);
-    if (Number(user.usage.totalMessages || 0) < CONFIG.premiumSoftLimit) return false;
-    if (user.usage.softLimitNotified) return false;
-    user.usage.softLimitNotified = true;
-    return true;
-  }
-
-  function recordMessageUsage(room, senderId, createdAt = Date.now()) {
-    const affectedUserIds = new Set(deriveRoomParticipantIds(room));
-    affectedUserIds.add(senderId);
-
-    affectedUserIds.forEach((userId) => {
-      const user = appState.users.find((item) => item.id === userId);
-      if (!user) return;
-      if (canBypassUsageLimit(user)) return;
-      ensureUserUsageState(user, createdAt);
-      user.usage.totalMessages = Math.max(0, Number(user.usage.totalMessages || 0)) + 1;
-      user.usage.lastUpdatedAt = createdAt;
-    });
   }
 
   function openNoticeModal(titleKey, messageKey, params = {}) {
@@ -3360,13 +3207,6 @@
 
   function getRandomRecoveryQuestionKey() {
     return RECOVERY_QUESTION_KEYS[Math.floor(Math.random() * RECOVERY_QUESTION_KEYS.length)] || RECOVERY_QUESTION_KEYS[0];
-  }
-
-  function isAllowedPrivateTester(name) {
-    if (CONFIG.accessGateMode !== "whitelist") {
-      return true;
-    }
-    return PRIVATE_TEST_GATE_NAMES.has(normalizePolicyIdentity(name)) || isAdminLoginId(name);
   }
 
   // Added: web standard file-picker validation so only user-selected images are processed in memory.
@@ -4023,7 +3863,6 @@
       uiState.drafts[roomId] = {
         text: "",
         attachment: null,
-        failTranslation: false,
         processing: false,
         translationConcept: DEFAULT_TRANSLATION_CONCEPT,
       };
@@ -4045,6 +3884,17 @@
   function normalizeTranslationConcept(value) {
     const normalized = String(value || "").trim().toLowerCase();
     return TRANSLATION_CONCEPTS.some((entry) => entry.id === normalized) ? normalized : DEFAULT_TRANSLATION_CONCEPT;
+  }
+
+  function describeTranslationConcept(concept) {
+    return (
+      {
+        office: "professional, polite, and exact without dropping any source nuance",
+        general: "neutral everyday conversation with high fidelity to the source wording and emphasis",
+        friend: "casual and friendly while still preserving the original wording, order, and emphasis closely",
+        lover: "gentle, warm, affectionate romantic-partner language while preserving the original wording, order, and emphasis closely",
+      }[normalizeTranslationConcept(concept)] || "gentle, warm, affectionate romantic-partner language while preserving the original wording, order, and emphasis closely"
+    );
   }
 
   function getTranslationVariantLanguage(value) {
@@ -4390,7 +4240,7 @@
       return false;
     }
 
-    return Date.now() - runtime.lastComposerInputAt < 900;
+    return Date.now() - runtime.lastComposerInputAt < 240;
   }
 
   function renderSafelyDuringInput(delay = 180) {
@@ -5125,7 +4975,7 @@
             <button class="landing-text-button" type="button" data-action="open-landing-reset">${escapeHtml(t("passwordChangeButton"))}</button>
           </div>
           <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
-            ${escapeHtml(uiState.landing.error || t("landingAuthSecondaryHint"))}
+            ${escapeHtml(uiState.landing.error || "")}
           </p>
         </form>
         ${renderLandingUiLanguageRow(true)}
@@ -5232,7 +5082,7 @@
             <button class="button button-primary landing-auth-button" type="button" data-action="submit-landing-signup">${escapeHtml(t("signupCompleteButton"))}</button>
           </div>
           <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
-            ${escapeHtml(uiState.landing.error || t("landingAccessHint"))}
+            ${escapeHtml(uiState.landing.error || "")}
           </p>
         </form>
         ${renderLandingUiLanguageRow(true)}
@@ -5306,7 +5156,7 @@
             </button>
           </div>
           <p class="landing-inline-helper ${uiState.landing.error ? "error" : ""}">
-            ${escapeHtml(uiState.landing.error || t("landingAccessHint"))}
+            ${escapeHtml(uiState.landing.error || "")}
           </p>
         </form>
         ${renderLandingUiLanguageRow(true)}
@@ -5517,7 +5367,6 @@
 
   function renderMyInfoScreenMobile(currentUser) {
     const profileEditor = syncProfileEditor(currentUser);
-    const planSummary = getPlanUsageSummary(currentUser);
     const adminView = isAdminUser(currentUser);
 
     return `
@@ -5526,7 +5375,6 @@
           <h2>${escapeHtml(t("tabMyInfo"))}</h2>
         </div>
         <div class="screen-body mobile-list-body my-info-mobile" data-scroll-key="my-info">
-          ${renderPlanSummaryCard(currentUser, planSummary)}
           ${adminView
             ? ""
             : `
@@ -5592,50 +5440,11 @@
               </select>
             </div>
           </div>
-          ${renderNaturalTranslationBetaCard(currentUser)}
           ${renderPushSettingsCard(currentUser)}
           ${renderPwaInstallCard()}
           <button class="button button-danger logout-inline-button" data-action="logout-current-user">${escapeHtml(t("logoutButton"))}</button>
         </div>
       </section>
-    `;
-  }
-
-  function renderPlanSummaryCard(currentUser, summary) {
-    const currentPlanLabel = getPlanLabel(currentUser.planTier);
-    const premiumPlan = isPremiumPlan(currentUser);
-    const unlimitedTester = canBypassUsageLimit(currentUser);
-    return `
-      <div class="setting-card compact plan-summary-card">
-        <div class="plan-summary-head">
-          <div>
-            <strong>${escapeHtml(t("planSectionTitle"))}</strong>
-            <span class="helper">${escapeHtml(t("planCurrentLabel"))} : ${escapeHtml(currentPlanLabel)}</span>
-          </div>
-          <button class="button button-secondary compact-action-button" type="button" data-action="open-modal" data-modal="plan">${escapeHtml(t("planChangeButton"))}</button>
-        </div>
-        ${unlimitedTester
-          ? `
-            <div class="plan-usage-copy">
-              <span>${escapeHtml(t("planUnlimitedTesterCopy"))}</span>
-              <span>${escapeHtml(t("planResetAt", { time: formatPlanResetTime(summary.nextResetAt) }))}</span>
-            </div>
-          `
-          : premiumPlan
-          ? `
-            <div class="plan-usage-copy">
-              <span>${escapeHtml(t("planPremiumUsageCopy"))}</span>
-              <span>${escapeHtml(t("planPremiumGuardCopy"))}</span>
-            </div>
-          `
-          : `
-            <div class="plan-usage-copy">
-              <span>${escapeHtml(t("planRemainingMessages", { count: summary.remaining }))}</span>
-              <span>${escapeHtml(t("planFreeTrialHint"))}</span>
-              <span>${escapeHtml(t("planResetAt", { time: formatPlanResetTime(summary.nextResetAt) }))}</span>
-            </div>
-          `}
-      </div>
     `;
   }
 
@@ -5645,7 +5454,6 @@
     const permission = getPushPermissionState();
     const disabled = permission === "unsupported";
     const tokenRegistered = Boolean(currentUser && runtime.push.token && runtime.push.tokenUserId === currentUser.id);
-    const testDisabled = !currentUser || permission !== "granted" || !tokenRegistered;
     const registrationStateKey = permission === "granted" ? (tokenRegistered ? "pushTokenReady" : "pushTokenPending") : "";
     return `
       <div class="setting-card compact">
@@ -5661,43 +5469,8 @@
           >
             ${escapeHtml(t("pushEnableButton"))}
           </button>
-          <button
-            class="button button-secondary"
-            type="button"
-            data-action="send-push-test"
-            data-push-type="message"
-            ${testDisabled ? "disabled" : ""}
-          >
-            ${escapeHtml(t("pushTestMessageButton"))}
-          </button>
-          <button
-            class="button button-secondary"
-            type="button"
-            data-action="send-push-test"
-            data-push-type="invite"
-            ${testDisabled ? "disabled" : ""}
-          >
-            ${escapeHtml(t("pushTestInviteButton"))}
-          </button>
         </div>
         <span class="helper">${escapeHtml(t(pushStatus.helperKey))}</span>
-      </div>
-    `;
-  }
-
-  function renderNaturalTranslationBetaCard(currentUser) {
-    return `
-      <div class="setting-card compact">
-        <div class="settings-switch-row">
-          <div class="settings-switch-copy">
-            <strong>${escapeHtml(t("naturalTranslationBetaTitle"))}</strong>
-            <span class="helper">${escapeHtml(t("naturalTranslationBetaCopy"))}</span>
-          </div>
-          <label class="settings-switch" aria-label="${escapeHtml(t("naturalTranslationBetaTitle"))}">
-            <input type="checkbox" data-input="natural-translation-beta" ${currentUser.enableNaturalTranslationBeta ? "checked" : ""}>
-            <span class="settings-switch-slider"></span>
-          </label>
-        </div>
       </div>
     `;
   }
@@ -6590,15 +6363,13 @@
 
         const sender = appState.users.find((user) => user.id === message.senderId);
         const isMine = sender?.id === currentUser.id;
-        if (!isMine) {
-          queueMissingViewerTranslation(room, message, currentUser);
-        }
+        queueMissingViewerTranslation(room, message, currentUser);
         const translated = getDisplayTranslation(message, currentUser);
         const showOriginal = Boolean(uiState.originalVisibility[message.id]);
-        const viewerLanguage = isMine ? message.sourceLanguage : getPreferredTranslationLanguage(currentUser, message) || message.sourceLanguage;
+        const viewerLanguage = getViewerDisplayLanguage(currentUser, message);
         const messageStatus = isMine ? getOutgoingMessageStatus(room, message, currentUser) : "";
         const candidateDisplayText =
-          translated.pending && !isMine
+          translated.pending
             ? t("translationPendingInline")
             : translated.text || (translated.failed ? message.originalText : "");
         const renderableText = translated.pending
@@ -6636,7 +6407,7 @@
                 ${translated.failed && !encodingCorrupted ? `<span class="tiny-pill pill-danger compact-meta-pill" title="${escapeHtml(t("translationFailedBadge"))}" aria-label="${escapeHtml(t("translationFailedBadge"))}">⚠️</span>` : ""}
                 ${translated.mocked ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationMockBadge"))}" aria-label="${escapeHtml(t("translationMockBadge"))}">🧪</span>` : ""}
                 ${translated.disabled ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationDisabledBadge"))}" aria-label="${escapeHtml(t("translationDisabledBadge"))}">⏸️</span>` : ""}
-                ${message.originalText && translated.translated && !translated.failed && !isMine && !translated.mocked ? `<span class="tiny-pill pill-accent compact-meta-pill" title="${escapeHtml(t("translatedBadge"))}" aria-label="${escapeHtml(t("translatedBadge"))}">✅</span>` : ""}
+                ${message.originalText && translated.translated && !translated.failed && !translated.mocked ? `<span class="tiny-pill pill-accent compact-meta-pill" title="${escapeHtml(t("translatedBadge"))}" aria-label="${escapeHtml(t("translatedBadge"))}">✅</span>` : ""}
                 ${shouldShowToggle ? `<button class="text-button" data-action="toggle-original" data-message-id="${message.id}">${escapeHtml(showOriginal ? t("hideOriginal") : t("showOriginal"))}</button>` : ""}
               </div>
             </div>
@@ -6710,15 +6481,20 @@
     return Date.now() - startedAt > CONFIG.translationPendingTimeoutMs;
   }
 
+  function getUserDisplayLanguage(user, fallbackLanguage = "ko") {
+    return normalizeMessageLanguageCode(user?.nativeLanguage || user?.preferredChatLanguage, fallbackLanguage);
+  }
+
+  function getViewerDisplayLanguage(currentUser, message) {
+    const sourceLanguage = normalizeMessageLanguageCode(message?.originalLanguage || message?.sourceLanguage, currentUser?.nativeLanguage || "ko");
+    return getUserDisplayLanguage(currentUser, sourceLanguage) || sourceLanguage;
+  }
+
   function getDisplayTranslation(message, currentUser) {
-    if (message.senderId === currentUser.id || !message.originalText) {
-      const hasSuccessfulTarget = Object.entries(message.translations || {}).some(([key, entry]) => {
-        const language = getTranslationVariantLanguage(key);
-        return language && language !== message.sourceLanguage && hasUsableTranslationEntry(entry) && !entry.failed;
-      });
+    if (!message.originalText) {
       return {
         text: message.originalText,
-        failed: !hasSuccessfulTarget && (message.translationMeta?.state === "failed" || message.translationMeta?.state === "partial"),
+        failed: false,
         pending: false,
         mocked: false,
         disabled: false,
@@ -6726,21 +6502,21 @@
       };
     }
 
+    const viewerLanguage = getViewerDisplayLanguage(currentUser, message);
     const preferredLanguage = getPreferredTranslationLanguage(currentUser, message);
     const preferredConcept = getUserTranslationConcept(currentUser);
-    const preferredKey = preferredLanguage ? buildTranslationVariantKey(preferredLanguage, preferredConcept) : "";
     const requestedTargets =
       Array.isArray(message.translationMeta?.requestedTargets) && message.translationMeta.requestedTargets.length
         ? message.translationMeta.requestedTargets
-        : Object.keys(message.translations || {}).filter((key) => getTranslationVariantLanguage(key) !== message.sourceLanguage);
+        : Object.keys(message.translations || {}).filter((key) => shouldRequestTranslationForLanguage(getTranslationVariantLanguage(key), message.sourceLanguage, message.languageProfile));
     const storedTranslation = preferredLanguage ? findStoredTranslationForLanguage(message, preferredLanguage, preferredConcept) : { key: "", entry: null };
     const translation = storedTranslation.entry;
-    const requestedForCurrentUser = Boolean(preferredLanguage) && requestedTargets.some((target) => getTranslationVariantLanguage(target) === preferredLanguage);
+    const requestedForCurrentUser = Boolean(preferredLanguage);
     const state = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
     const disabled = message.translationMeta?.reason === "service_disabled";
     const mocked = message.translationMeta?.provider === "mock";
 
-    if (!preferredLanguage) {
+    if (!viewerLanguage || !preferredLanguage) {
       return {
         text: message.originalText,
         failed: false,
@@ -6752,17 +6528,13 @@
     }
 
     if (!translation) {
-      if (state === "pending" && requestedForCurrentUser && !isTranslationPendingStale(message)) {
-        return { text: "", failed: false, pending: true, mocked: false, disabled, translated: false };
-      }
-      if (mocked && requestedForCurrentUser) {
-        return { text: message.originalText, failed: false, pending: false, mocked: true, disabled: false, translated: false };
-      }
-      if (disabled && requestedForCurrentUser) {
-        return { text: message.originalText, failed: false, pending: false, mocked: false, disabled: true, translated: false };
-      }
-      if ((state === "failed" || state === "partial") && requestedForCurrentUser) {
-        return { text: message.originalText, failed: true, pending: false, mocked: false, disabled, translated: false };
+      if (requestedForCurrentUser) {
+        if (disabled || state === "failed" || state === "partial") {
+          return { text: t("translationUnavailableInline"), failed: true, pending: false, mocked: false, disabled, translated: false };
+        }
+        if ((state === "pending" && !isTranslationPendingStale(message)) || state === "idle" || mocked) {
+          return { text: t("translationPendingInline"), failed: false, pending: true, mocked: Boolean(mocked), disabled: false, translated: false };
+        }
       }
       return { text: message.originalText, failed: false, pending: false, mocked: false, disabled: false, translated: false };
     }
@@ -6778,15 +6550,30 @@
   }
 
   function getPreferredTranslationLanguage(currentUser, message) {
-    const fallbackLanguage = currentUser?.nativeLanguage || message?.sourceLanguage;
-    const preferredLanguages = [...new Set([currentUser?.preferredChatLanguage, fallbackLanguage].filter(Boolean))];
-    return preferredLanguages.find((language) => language && language !== message?.sourceLanguage) || null;
+    const viewerLanguage = getViewerDisplayLanguage(currentUser, message);
+    return shouldRequestTranslationForLanguage(viewerLanguage, message?.sourceLanguage, message?.languageProfile) ? viewerLanguage : null;
+  }
+
+  function shouldPauseFailedTranslationRetry(message, targetKey) {
+    if (!message || !targetKey) return false;
+    const requestedTargets = new Set(Array.isArray(message.translationMeta?.requestedTargets) ? message.translationMeta.requestedTargets : []);
+    if (!requestedTargets.has(targetKey)) return false;
+
+    const translationState = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
+    if (!(translationState === "failed" || translationState === "partial")) return false;
+
+    const failureReason = String(message.translationMeta?.reason || "").trim();
+    const completedAt = Number(message.translationMeta?.completedAt || 0) || 0;
+    const recentFailure = completedAt > 0 && Date.now() - completedAt < CONFIG.translationRetryCooldownMs;
+    if (!runtime.backend.liveTranslationEnabled) return true;
+
+    return recentFailure && ["service_disabled", "live_request_failed", "live_request_rejected", "client_exception", "server_unreachable"].includes(failureReason);
   }
 
   function queueMissingViewerTranslation(room, message, currentUser) {
-    if (!room || !message || message.kind !== "user" || message.senderId === currentUser?.id || !message.originalText) return;
+    if (!room || !message || message.kind !== "user" || !message.originalText) return;
     const targetLanguage = getPreferredTranslationLanguage(currentUser, message);
-    if (!targetLanguage || targetLanguage === message.sourceLanguage) return;
+    if (!shouldRequestTranslationForLanguage(targetLanguage, message.sourceLanguage, message.languageProfile)) return;
     if (isEncodingCorruptedText(message.originalText, message.sourceLanguage)) {
       const liveRoom = appState.rooms.find((entry) => entry.id === room.id);
       const liveMessage = liveRoom?.messages?.find((entry) => entry.id === message.id);
@@ -6813,6 +6600,7 @@
     const translationState = message.translationMeta?.state || (message.translationMeta?.pending ? "pending" : "idle");
     const stalePending = isTranslationPendingStale(message);
     if (translationState === "pending" && requestedTargets.has(targetKey) && !stalePending) return;
+    if (shouldPauseFailedTranslationRetry(message, targetKey)) return;
 
     const taskKey = `${room.id}:${message.id}:${targetKey}`;
     if (runtime.translationTasks.has(taskKey)) return;
@@ -6856,12 +6644,12 @@
           liveMessage.originalText,
           liveMessage.senderId,
           liveMessage.sourceLanguage,
-          false,
           [targetLanguage],
           {
+            languageProfile: liveMessage.languageProfile,
             translationConcept: viewerConcept,
-            naturalTranslationEnabled: isNaturalTranslationEnabledForUser(),
-            contextSummary: getRoomNaturalTranslationSummary(liveRoom),
+            naturalTranslationEnabled: isNaturalTranslationEnabledForUser(currentUser),
+            contextSummary: getRoomNaturalTranslationSummary(liveRoom, liveMessage.senderId),
           }
         );
         const nextEntry =
@@ -7013,6 +6801,9 @@
       const changed = refreshMessageReceipts(options);
       if (changed) {
         persistState();
+        if (options.force) {
+          flushServerStateSync();
+        }
         if (shouldDeferNonCriticalRender()) {
           renderSafelyDuringInput();
         } else {
@@ -7366,11 +7157,9 @@
     const modalType = uiState.modal.type;
     const body =
       modalType === "create-room"
-        ? renderCreateRoomModal()
-        : modalType === "room-settings"
+      ? renderCreateRoomModal()
+      : modalType === "room-settings"
           ? renderRoomSettingsModal()
-        : modalType === "plan"
-          ? renderPlanModal()
         : modalType === "password"
           ? renderPasswordModal()
           : modalType === "invite"
@@ -7379,8 +7168,6 @@
               ? renderParticipantsModal()
               : modalType === "media"
                 ? renderMediaModal()
-                : modalType === "usage-limit"
-                  ? renderUsageLimitModal()
                 : modalType === "profile-preview"
                   ? renderProfilePreviewModal()
                   : modalType === "profile-image-editor"
@@ -7523,71 +7310,6 @@
         <div class="modal-footer">
           <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
           <button class="button button-primary" type="button" data-action="submit-room-settings">${escapeHtml(t("applyButton"))}</button>
-        </div>
-      </section>
-    `;
-  }
-
-  function renderPlanModal() {
-    const currentUser = getCurrentUser();
-    if (!currentUser) return "";
-    const plans = [
-      {
-        tier: "free",
-        label: t("planFreeLabel"),
-        price: `${new Intl.NumberFormat("ko-KR").format(0)}원`,
-        lines: [t("planRemainingMessages", { count: Math.max(0, CONFIG.freeDailyMessageLimit - getPlanUsageSummary(currentUser).used) }), t("planResetAt", { time: formatPlanResetTime(getPlanUsageSummary(currentUser).nextResetAt) })],
-      },
-      {
-        tier: "monthly",
-        label: t("planMonthlyLabel"),
-        price: t("planMonthlyPrice", { price: `${new Intl.NumberFormat("ko-KR").format(CONFIG.monthlyPlanPrice)}원` }),
-        lines: [t("planMonthlyCopyPrimary"), t("planMonthlyCopySecondary")],
-      },
-      {
-        tier: "yearly",
-        label: t("planYearlyLabel"),
-        price: t("planYearlyPrice", { price: `${new Intl.NumberFormat("ko-KR").format(CONFIG.yearlyPlanPrice)}원` }),
-        lines: [t("planYearlyCopyPrimary"), t("planYearlyCopySecondary")],
-      },
-    ];
-    return `
-      <section class="modal plan-modal">
-        <div class="modal-header">
-          <h3>${escapeHtml(t("planModalTitle"))}</h3>
-          <p>${escapeHtml(t("planModalCopy"))}</p>
-        </div>
-        <div class="modal-body plan-modal-body">
-          ${plans
-            .map(
-              (plan) => `
-                <article class="plan-option-card ${currentUser.planTier === plan.tier ? "current" : ""}">
-                  <div class="plan-option-top">
-                    <strong>${escapeHtml(plan.label)}</strong>
-                    ${currentUser.planTier === plan.tier ? `<span class="status-pill pill-accent">${escapeHtml(t("planCurrentBadge"))}</span>` : ""}
-                  </div>
-                  <div class="plan-option-price">${escapeHtml(plan.price)}</div>
-                  <div class="plan-usage-copy">
-                    ${plan.lines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
-                  </div>
-                  <div class="plan-option-actions">
-                    <button class="button button-primary" type="button" data-action="apply-plan-selection" data-plan-tier="${plan.tier}">
-                      ${escapeHtml(currentUser.planTier === plan.tier ? t("planCurrentBadge") : t("planApplyPreview"))}
-                    </button>
-                    <button class="button button-ghost" type="button" data-action="open-checkout-placeholder">${escapeHtml(t("planCheckoutPlaceholder"))}</button>
-                  </div>
-                </article>
-              `
-            )
-            .join("")}
-          <div class="plan-policy-block">
-            <strong>${escapeHtml(t("planPolicyTitle"))}</strong>
-            <p>${escapeHtml(t("planPolicyCopy"))}</p>
-            <button class="button button-ghost" type="button" data-action="open-plan-policy">${escapeHtml(t("planPolicyButton"))}</button>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
         </div>
       </section>
     `;
@@ -7920,30 +7642,6 @@
     `;
   }
 
-  function renderUsageLimitModal() {
-    const data = uiState.modal?.data || {};
-    const isFree = data.kind === "free";
-    const lines = t(isFree ? "planFreeExceededCopy" : "planPremiumAbuseCopy", {
-      time: formatPlanResetTime(data.nextResetAt || getUsageWindowInfo().nextResetAt),
-    })
-      .split("\n")
-      .filter(Boolean);
-    return `
-      <section class="modal notice-modal">
-        <div class="modal-header">
-          <h3>${escapeHtml(t(isFree ? "planFreeExceededTitle" : "planPremiumAbuseTitle"))}</h3>
-        </div>
-        <div class="modal-body">
-          ${lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
-        </div>
-        <div class="modal-footer">
-          <button class="button button-secondary" type="button" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
-          <button class="button button-primary" type="button" data-action="open-modal" data-modal="plan">${escapeHtml(t("planChangeButton"))}</button>
-        </div>
-      </section>
-    `;
-  }
-
   function renderToastStack() {
     if (!uiState.toasts.length) return "";
     return `
@@ -8056,6 +7754,7 @@
     const distanceFromBottom = Math.max(0, scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop);
     return {
       roomId: uiState.activeRoomId || null,
+      scrollTop: scroll.scrollTop,
       distanceFromBottom,
       anchoredToBottom: distanceFromBottom <= 48,
     };
@@ -8082,6 +7781,13 @@
     if (!chatScrollState || chatScrollState.roomId !== (uiState.activeRoomId || null) || chatScrollState.anchoredToBottom) {
       scroll.scrollTop = scroll.scrollHeight;
       runtime.chatPinnedToBottom = true;
+      return;
+    }
+
+    if (typeof chatScrollState.scrollTop === "number") {
+      const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+      scroll.scrollTop = Math.max(0, Math.min(chatScrollState.scrollTop, maxScrollTop));
+      runtime.chatPinnedToBottom = isScrollNearBottom(scroll);
       return;
     }
 
@@ -8167,7 +7873,7 @@
       return;
     }
 
-    if (!(force || runtime.chatPinnedToBottom || isComposerFocused())) {
+    if (!(force || runtime.chatPinnedToBottom)) {
       return;
     }
 
@@ -8201,9 +7907,27 @@
     if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || target.dataset.input !== "composer") {
       return;
     }
-    runtime.chatPinnedToBottom = true;
-    keepChatBottomVisible(true);
+    const scroll = document.getElementById("chat-scroll");
+    runtime.chatPinnedToBottom = isScrollNearBottom(scroll, 120);
+    if (runtime.chatPinnedToBottom) {
+      keepChatBottomVisible(true);
+    }
     scheduleReceiptRefresh({ force: true, delay: 40 });
+  }
+
+  function createOptimisticMessageMedia(attachment) {
+    if (!attachment) return null;
+    return {
+      kind: attachment.kind,
+      name: attachment.name,
+      size: attachment.size,
+      mimeType: attachment.mimeType || "",
+      storage: attachment.kind === "file" ? "inline" : "pending",
+      mediaId: String(attachment.mediaId || "").trim() || null,
+      uploadedAt: Number(attachment.uploadedAt || Date.now()),
+      expiresAt: Number(attachment.expiresAt || 0) || null,
+      expired: false,
+    };
   }
 
   function escapeSelector(value) {
@@ -8437,29 +8161,6 @@
       void submitProfileImageCrop();
       return;
     }
-    if (action === "apply-plan-selection") {
-      const currentUser = getCurrentUser();
-      const planTier = actionTarget.dataset.planTier;
-      if (!currentUser || !["free", "monthly", "yearly"].includes(planTier)) return;
-      currentUser.planTier = planTier;
-      currentUser.planUpdatedAt = Date.now();
-      currentUser.planPolicyAcknowledgedAt = Date.now();
-      persistState();
-      pushToast("planUpdatedTitle", "planUpdatedCopy");
-      uiState.modal = null;
-      render();
-      return;
-    }
-    if (action === "open-plan-policy") {
-      openNoticeModal("planPolicyTitle", "planPolicyCopy");
-      render();
-      return;
-    }
-    if (action === "open-checkout-placeholder") {
-      openNoticeModal("planModalTitle", "planModalCopy");
-      render();
-      return;
-    }
     if (action === "open-drawer") {
       uiState.drawer = actionTarget.dataset.drawer;
       render();
@@ -8555,16 +8256,6 @@
       }
       return;
     }
-    if (action === "toggle-fail-translation") {
-      const roomId = actionTarget.dataset.roomId;
-      const draft = getDraft(roomId);
-      setDraft(roomId, { failTranslation: !draft.failTranslation });
-      if (!draft.failTranslation) {
-        pushToast("toastTranslationFailed", "toastTranslationFailedCopy");
-      }
-      render();
-      return;
-    }
     if (action === "submit-invite") {
       handleInviteSubmit();
       return;
@@ -8593,10 +8284,6 @@
     }
     if (action === "trigger-pwa-install") {
       void triggerPwaInstallFlow();
-      return;
-    }
-    if (action === "send-push-test") {
-      void sendPushTestToCurrentUser(actionTarget.dataset.pushType || "message");
       return;
     }
     if (action === "open-profile-preview") {
@@ -8709,13 +8396,6 @@
     if (action === "logout-current-user") {
       logoutCurrentUser();
       return;
-    }
-    if (action === "reset-demo") {
-      resetDemo();
-      return;
-    }
-    if (action === "fast-forward-room") {
-      fastForwardRoom(actionTarget.dataset.roomId);
     }
   }
 
@@ -8864,15 +8544,7 @@
       const currentUser = getCurrentUser();
       if (currentUser) {
         currentUser.nativeLanguage = target.value;
-        persistState();
-        render();
-      }
-      return;
-    }
-    if (target.dataset.input === "natural-translation-beta") {
-      const currentUser = getCurrentUser();
-      if (currentUser) {
-        currentUser.enableNaturalTranslationBeta = Boolean(target.checked);
+        currentUser.preferredChatLanguage = target.value;
         persistState();
         render();
       }
@@ -9207,7 +8879,7 @@
       user.profileImage = uiState.landing.profileImage;
     }
     user.auth = {
-      provider: user?.auth?.provider || "test-name",
+      provider: user?.auth?.provider || "local",
       subject: normalizeAccountId(user.loginId || user.name),
       email: user?.auth?.email || null,
       phoneNumber: user?.auth?.phoneNumber || null,
@@ -9260,13 +8932,6 @@
       return;
     }
 
-    if (!isAdminUser(existingUser) && !isAllowedPrivateTester(existingUser.name)) {
-      uiState.landing.error = t("toastAccessDeniedCopy");
-      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
-      render();
-      return;
-    }
-
     if (String(existingUser.password || "") !== password) {
       uiState.landing.error = t("authLoginPasswordMismatch");
       render();
@@ -9289,12 +8954,6 @@
     }
     if (!realName) {
       uiState.landing.error = t("authSignupNameRequired");
-      render();
-      return;
-    }
-    if (!isAllowedPrivateTester(realName)) {
-      uiState.landing.error = t("toastAccessDeniedCopy");
-      pushToast("toastAccessDenied", "toastAccessDeniedCopy");
       render();
       return;
     }
@@ -9495,33 +9154,6 @@
     };
     markUserPresence(user.currentRoomId || null);
     pushToast("toastUserSwitched", "toastUserSwitchedCopy", { name: user.name });
-    render();
-  }
-
-  function resetDemo() {
-    stopTypingForRoom(uiState.activeRoomId);
-    Array.from(runtime.videoUrls.keys()).forEach((runtimeId) => revokeRuntimeVideo(runtimeId));
-    appState = createInitialState();
-    sessionStorage.removeItem(SESSION_USER_KEY);
-    clearAutoLoginState();
-    uiState.activeRoomId = null;
-    uiState.modal = null;
-    uiState.drawer = null;
-    uiState.directoryTab = "chat";
-    uiState.chatDetailsOpen = false;
-    uiState.attachmentMenuOpen = false;
-    uiState.mobileRoomsOpen = false;
-    uiState.drafts = {};
-    uiState.profileEditor = {
-      userId: null,
-      name: "",
-      nickname: "",
-      gender: "",
-      age: "",
-    };
-    uiState.landing.nativeAccordionOpen = false;
-    uiState.landing.profileImage = null;
-    persistState();
     render();
   }
 
@@ -9945,21 +9577,10 @@
     const text = normalizeDisplayText(liveText).trim();
     const attachment = draft.attachment;
     const translationConcept = getUserTranslationConcept(currentUser);
-    const failTranslation = Boolean(draft.failTranslation);
+    const languageProfile = text ? buildMessageLanguageProfile(text, currentUser.nativeLanguage) : createLanguageProfile(currentUser.nativeLanguage);
+    const sourceLanguage = languageProfile.primaryLanguage;
     if (!text && !attachment) {
       pushToast("toastEmptyDraft", "toastEmptyDraftCopy");
-      return;
-    }
-    const limitState = getMessageLimitState(currentUser);
-    if (limitState.blocked) {
-      uiState.modal = {
-        type: "usage-limit",
-        data: {
-          kind: limitState.kind,
-          nextResetAt: limitState.summary.nextResetAt,
-        },
-      };
-      render();
       return;
     }
     stopTypingForRoom(roomId);
@@ -9967,53 +9588,28 @@
     const draftSnapshot = {
       text: liveText,
       attachment,
-      failTranslation,
       translationConcept,
     };
-    if (composerInput instanceof HTMLInputElement || composerInput instanceof HTMLTextAreaElement) {
-      composerInput.value = "";
-    }
-    setDraft(roomId, {
-      text: "",
-      attachment: null,
-      failTranslation: false,
-      processing: true,
-      translationConcept,
-    });
-    uiState.attachmentMenuOpen = false;
-    render();
-    ensureParticipant(room, currentUser.id, false);
     const messageId = uid("msg");
-    let storedAttachment = null;
-    try {
-      storedAttachment = attachment ? await persistDraftAttachmentForMessage(attachment, room.id, messageId) : null;
-    } catch (error) {
-      setDraft(roomId, {
-        ...draftSnapshot,
-        processing: false,
-      });
-      pushToast("toastMediaStorageFailed", "toastMediaStorageFailedCopy");
-      render();
-      return;
-    }
-
+    const createdAt = Date.now();
     const message = userMessage(
       messageId,
       currentUser.id,
       text,
-      currentUser.nativeLanguage,
+      sourceLanguage,
       {},
-      Date.now(),
+      createdAt,
       "sent",
-      storedAttachment
+      createOptimisticMessageMedia(attachment)
     );
+    message.languageProfile = languageProfile;
     message.translationConcept = translationConcept;
     logEncodingTrace("client-draft", text, {
       roomId,
       messageId,
-      sourceLanguage: currentUser.nativeLanguage,
+      sourceLanguage,
     });
-    const requestedTargetLanguages = text ? getNeededTargetLanguages(room, currentUser.id, currentUser.nativeLanguage) : [];
+    const requestedTargetLanguages = text ? getNeededTargetLanguages(room, currentUser.id, sourceLanguage, languageProfile) : [];
     const requestedTargetKeys = requestedTargetLanguages.map((language) => buildTranslationVariantKey(language, translationConcept));
     message.translationMeta = text
       ? {
@@ -10025,7 +9621,7 @@
           reason: null,
           errorDetail: null,
           requestedTargets: requestedTargetKeys,
-          startedAt: Date.now(),
+          startedAt: createdAt,
           completedAt: null,
         }
       : {
@@ -10038,29 +9634,62 @@
           errorDetail: null,
           requestedTargets: [],
           startedAt: null,
-          completedAt: Date.now(),
+          completedAt: createdAt,
         };
+    if (composerInput instanceof HTMLInputElement || composerInput instanceof HTMLTextAreaElement) {
+      composerInput.value = "";
+    }
+    setDraft(roomId, {
+      text: "",
+      attachment: null,
+      processing: true,
+      translationConcept,
+    });
+    uiState.attachmentMenuOpen = false;
+    ensureParticipant(room, currentUser.id, false);
     room.messages.push(message);
-    room.lastMessageAt = Date.now();
+    room.lastMessageAt = createdAt;
     currentUser.currentRoomId = room.id;
-    currentUser.lastSeenAt = Date.now();
-    recordMessageUsage(room, currentUser.id, message.createdAt);
-    const softLimitWarning = maybeFlagPremiumSoftLimit(currentUser);
+    currentUser.lastSeenAt = createdAt;
+    persistState();
+    flushServerStateSync();
+    scheduleReceiptRefresh({ delay: 90 });
+    render();
+    let storedAttachment = message.media;
+    try {
+      storedAttachment = attachment ? await persistDraftAttachmentForMessage(attachment, room.id, messageId) : message.media;
+      const liveRoomAfterPersist = appState.rooms.find((entry) => entry.id === roomId);
+      const liveMessageAfterPersist = liveRoomAfterPersist?.messages?.find((entry) => entry.id === messageId);
+      if (liveMessageAfterPersist && storedAttachment) {
+        liveMessageAfterPersist.media = storedAttachment;
+        persistState();
+        renderSafelyDuringInput(40);
+      }
+    } catch (error) {
+      room.messages = room.messages.filter((entry) => entry.id !== messageId);
+      room.lastMessageAt = Math.max(
+        Number(room.createdAt || 0),
+        ...room.messages.map((entry) => Number(entry.createdAt || 0))
+      );
+      setDraft(roomId, {
+        ...draftSnapshot,
+        processing: false,
+      });
+      persistState();
+      flushServerStateSync();
+      pushToast("toastMediaStorageFailed", "toastMediaStorageFailedCopy");
+      render();
+      return;
+    }
     markRoomRead(room.id, currentUser.id);
     room.participants.forEach((participantId) => {
       if (participantId !== currentUser.id) {
         room.unreadByUser[participantId] = (room.unreadByUser[participantId] || 0) + 1;
       }
     });
-    persistState();
-    scheduleReceiptRefresh({ delay: 90 });
     setDraft(roomId, { processing: false });
-    if (softLimitWarning) {
-      pushToast("planPremiumAbuseTitle", "planSoftLimitToast");
-    }
-    if (failTranslation) {
-      pushToast("toastTranslationFailed", "toastTranslationFailedCopy");
-    }
+    persistState();
+    flushServerStateSync();
     render();
 
     if (!text) {
@@ -10070,7 +9699,7 @@
     Promise.resolve()
       .then(async () => {
         let translationBundle = {
-          translations: { [currentUser.nativeLanguage]: { text, failed: false } },
+          translations: { [sourceLanguage]: { text, failed: false } },
           meta: {
             provider: "none",
             model: null,
@@ -10078,7 +9707,7 @@
             state: "idle",
             reason: "not-needed",
             errorDetail: null,
-            requestedTargets: requestedTargetLanguages,
+            requestedTargets: requestedTargetKeys,
             completedAt: Date.now(),
           },
         };
@@ -10088,27 +9717,29 @@
             room,
             text,
             currentUser.id,
-            currentUser.nativeLanguage,
-            failTranslation,
+            sourceLanguage,
             requestedTargetLanguages,
             {
+              languageProfile,
               translationConcept,
               naturalTranslationEnabled: isNaturalTranslationEnabledForUser(currentUser),
-              contextSummary: getRoomNaturalTranslationSummary(room),
+              contextSummary: getRoomNaturalTranslationSummary(room, currentUser.id),
             }
           );
         } catch (error) {
           console.warn("[translation] unexpected client failure", {
             messageId,
-            sourceLanguage: currentUser.nativeLanguage,
+            sourceLanguage,
             requestedTargetLanguages,
             translationConcept,
             error: String(error?.message || error),
           });
           translationBundle = {
             translations: {
-              [currentUser.nativeLanguage]: { text, failed: false },
-              ...Object.fromEntries(requestedTargetLanguages.map((language) => [language, { text, failed: true }])),
+              [sourceLanguage]: { text, failed: false },
+              ...Object.fromEntries(
+                requestedTargetLanguages.map((language) => [buildTranslationVariantKey(language, translationConcept) || language, { text, failed: true }])
+              ),
             },
             meta: {
               provider: "client-error",
@@ -10117,7 +9748,7 @@
               state: "failed",
               reason: "client_exception",
               errorDetail: String(error?.message || error || "translation_error"),
-              requestedTargets: requestedTargetLanguages,
+              requestedTargets: requestedTargetKeys,
               completedAt: Date.now(),
             },
           };
@@ -10137,6 +9768,7 @@
         };
         liveMessage.status = liveMessage.status === "composing" ? "sent" : liveMessage.status || "sent";
         persistState();
+        flushServerStateSync();
         renderSafelyDuringInput();
       })
       .catch((error) => {
@@ -10156,7 +9788,7 @@
       : {};
   }
 
-  function getNeededTargetLanguages(room, senderId, fromLanguage) {
+  function getNeededTargetLanguages(room, senderId, fromLanguage, languageProfile = null) {
     if (!room) return [];
 
     const audienceIds = new Set(deriveRoomParticipantIds(room));
@@ -10173,12 +9805,17 @@
     });
 
     const needed = new Set();
+    const sender = (appState.users || []).find((user) => user.id === senderId) || null;
+    const senderDisplayLanguage = getUserDisplayLanguage(sender, fromLanguage);
+    if (shouldRequestTranslationForLanguage(senderDisplayLanguage, fromLanguage, languageProfile)) {
+      needed.add(senderDisplayLanguage);
+    }
     audienceIds.forEach((participantId) => {
       if (participantId === senderId) return;
       const participant = appState.users.find((user) => user.id === participantId);
       if (!participant) return;
-      const targetLanguage = participant.preferredChatLanguage || participant.nativeLanguage;
-      if (targetLanguage && targetLanguage !== fromLanguage) {
+      const targetLanguage = getUserDisplayLanguage(participant, fromLanguage);
+      if (shouldRequestTranslationForLanguage(targetLanguage, fromLanguage, languageProfile)) {
         needed.add(targetLanguage);
       }
     });
@@ -10186,8 +9823,150 @@
     return [...needed];
   }
 
+  function stripLeadingTranslationLabel(text) {
+    const normalized = String(text || "").normalize("NFC");
+    const translationLabelPattern = /^(?:\s|\u200b)*(?:(?:\uBC88\uC5ED(?:\uBCF8|\uBB38|\uACB0\uACFC)?|\uC6D0\uBB38|\uCC38\uACE0|\uC790\uB3D9\s*\uBC88\uC5ED|translated(?:\s+message|\s+text)?|translation|original|reference|note|b\u1EA3n d\u1ECBch|ban dich)\s*[:：]\s*)+/iu;
+    return normalized
+      .replace(translationLabelPattern, "")
+      .trim();
+  }
+
+  function splitTextForLanguageAnalysis(text) {
+    return String(text || "")
+      .split(/[\r\n]+|(?<=[.!?…])\s+|[,:;|/]+/u)
+      .map((segment) => segment.trim())
+      .filter(Boolean)
+      .flatMap((segment) =>
+        segment
+          .split(/(?<=[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af])\s+(?=[A-Za-z\u00C0-\u024F\u1E00-\u1EFF])|(?<=[A-Za-z\u00C0-\u024F\u1E00-\u1EFF])\s+(?=[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af])/u)
+          .map((part) => part.trim())
+          .filter(Boolean)
+      );
+  }
+
+  function detectSegmentLanguages(text, fallbackLanguage = "ko") {
+    const normalizedText = stripLeadingTranslationLabel(String(text || "").normalize("NFC")).trim();
+    const fallback = normalizeMessageLanguageCode(fallbackLanguage, "ko");
+    if (!normalizedText) return [];
+
+    const languages = new Set([detectMessageLanguage(normalizedText, fallback)]);
+    const sanitizedTokenText = ` ${sanitizeToken(normalizedText)} `;
+    const precomputedHangulCount = countMatches(normalizedText, /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/g);
+    const expressiveHangulCount = countMatches(normalizedText, /[?뗣뀕?졼뀥]/g);
+    const koreanSignalCount = Math.max(0, precomputedHangulCount - expressiveHangulCount);
+    const vietnameseAccentCount = countMatches(normalizedText, /[훯횂횎횚?특휂훱창챗척퉤튼휃횁?梳▣꺻틺梳?별梳꿍병梳뜬벡梳╇벰梳め벵횋횊梳뷘볼梳멜봅沼沼귗퍍沼녍띊뚡퍑칩沼듑벭믟퍗횛沼뚡퍙沼믟퍝沼뽥퍡沼싡퍥沼왾퍩沼▣싀쇹빴큠沼ㅱ빻沼め뺄沼?뺐횦沼꿍뻑沼멜뺨]/gu);
+    const vietnameseCharCount = countMatches(normalizedText, /[훱창휃챗척퉤튼찼횪梳Ｃａ벙梳α벨梳⒰벴梳?변梳긔볐梳듄볜챕챔梳삔봄梳밞봇沼곢퍌沼끷퍐챠챙沼됂⒰퍔처챵沼뤓듄퍖沼묃퍜沼뺗퍠沼쇹퍤沼앩퍨沼■빰첬첫沼㎶⒰빳沼⒰뺀沼?뺏沼궁써뺙沼료뻘沼?]/gi);
+    const vietnameseWordHitCount = countMatches(sanitizedTokenText, /\b(anh|em|toi|ban|minh|nha|nhe|roi|duoc|khong|yeu|thuong|nho|chua|vay|cho|lam|lan|sau|ngu|ngon|me|con|thay|co)\b/gi);
+    const englishWordHitCount = countMatches(sanitizedTokenText, /\b(i|you|we|they|love|miss|hello|hi|please|thanks|okay|can|are|is|am)\b/gi);
+
+    if (koreanSignalCount > 0) languages.add("ko");
+    if (vietnameseAccentCount > 0 || vietnameseCharCount > 0 || vietnameseWordHitCount >= 1) languages.add("vi");
+    if (englishWordHitCount >= 2) languages.add("en");
+    return [...languages].filter(Boolean);
+  }
+
+  function createLanguageProfile(primaryLanguage, detectedLanguages = null) {
+    const normalizedPrimary = normalizeMessageLanguageCode(primaryLanguage, "ko");
+    const normalizedDetected = [...new Set(
+      (Array.isArray(detectedLanguages) ? detectedLanguages : [normalizedPrimary])
+        .map((language) => getTranslationVariantLanguage(language))
+        .filter(Boolean)
+    )];
+    if (!normalizedDetected.includes(normalizedPrimary)) {
+      normalizedDetected.unshift(normalizedPrimary);
+    }
+    return {
+      primaryLanguage: normalizedPrimary,
+      detectedLanguages: normalizedDetected,
+      mixed: normalizedDetected.length > 1,
+    };
+  }
+
+  function buildMessageLanguageProfile(text, fallbackLanguage = "ko", existingProfile = null) {
+    const normalizedText = stripLeadingTranslationLabel(String(text || "").normalize("NFC")).trim();
+    const fallback = normalizeMessageLanguageCode(fallbackLanguage, "ko");
+    if (!normalizedText) {
+      return createLanguageProfile(fallback);
+    }
+
+    const primaryLanguage = detectMessageLanguage(normalizedText, fallback);
+    const storedDetectedLanguages = Array.isArray(existingProfile?.detectedLanguages) ? existingProfile.detectedLanguages : [];
+    const segmentedLanguages = splitTextForLanguageAnalysis(normalizedText)
+      .flatMap((segment) => detectSegmentLanguages(segment, fallback))
+      .filter(Boolean);
+    const detectedLanguages = [...new Set([
+      primaryLanguage,
+      ...storedDetectedLanguages.map((language) => getTranslationVariantLanguage(language)).filter(Boolean),
+      ...detectSegmentLanguages(normalizedText, fallback),
+      ...segmentedLanguages,
+    ])];
+
+    return createLanguageProfile(primaryLanguage, detectedLanguages);
+  }
+
+  function shouldRequestTranslationForLanguage(targetLanguage, sourceLanguage, languageProfile = null) {
+    const normalizedTarget = getTranslationVariantLanguage(targetLanguage);
+    const normalizedSource = normalizeMessageLanguageCode(sourceLanguage, "ko");
+    if (!normalizedTarget) return false;
+    if (normalizedTarget !== normalizedSource) return true;
+    const profile = createLanguageProfile(normalizedSource, languageProfile?.detectedLanguages);
+    return profile.detectedLanguages.some((language) => language && language !== normalizedTarget);
+  }
+
+  function detectMessageLanguage(text, fallbackLanguage = "ko") {
+    const normalizedText = stripLeadingTranslationLabel(String(text || "").normalize("NFC")).trim();
+    const fallback = normalizeMessageLanguageCode(fallbackLanguage, "ko");
+    if (!normalizedText) return fallback;
+
+    const sanitizedTokenText = ` ${sanitizeToken(normalizedText)} `;
+    const precomputedHangulCount = countMatches(normalizedText, /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/g);
+    const expressiveHangulCount = countMatches(normalizedText, /[ㅋㅎㅠㅜ]/g);
+    const koreanSignalCount = Math.max(0, precomputedHangulCount - expressiveHangulCount);
+    const vietnameseAccentCount = countMatches(normalizedText, /[ĂÂÊÔƠƯĐăâêôơưđÁÀẢÃẠẮẰẲẴẶẤẦẨẪẬÉÈẺẼẸẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘỚỜỞỠỢÚÙỦŨỤỨỪỬỮỰÝỲỶỸỴ]/gu);
+    const vietnameseWordHitCount = countMatches(sanitizedTokenText, /\b(anh|em|toi|ban|minh|nha|nhe|roi|duoc|khong|yeu|thuong|nho|chua|vay|cho|lam|lan|sau|ngu|ngon)\b/gi);
+    if (vietnameseAccentCount > 0 || vietnameseWordHitCount >= 2) {
+      return "vi";
+    }
+    if (koreanSignalCount >= 2) {
+      return "ko";
+    }
+    const englishWordHitCount = countMatches(sanitizedTokenText, /\b(i|you|we|they|love|miss|hello|hi|please|thanks|okay|can|are|is|am)\b/gi);
+    if (englishWordHitCount >= 2) {
+      return "en";
+    }
+
+    const hangulCount = (normalizedText.match(/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/g) || []).length;
+    if (hangulCount > 0) {
+      return "ko";
+    }
+
+    const vietnameseCharCount = (
+      normalizedText.match(/[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/gi) || []
+    ).length;
+    if (vietnameseCharCount > 0) {
+      return "vi";
+    }
+
+    const normalizedTokenText = ` ${sanitizeToken(normalizedText)} `;
+    const vietnameseWordPattern = /\b(anh|em|toi|ban|minh|nha|nhe|roi|duoc|khong|yeu|thuong|nho|chua|vay)\b/i;
+    const englishWordPattern = /\b(i|you|we|they|love|miss|hello|hi|please|thanks|okay|can|are|is|am)\b/i;
+    if (vietnameseWordPattern.test(normalizedTokenText)) {
+      return "vi";
+    }
+    if (englishWordPattern.test(normalizedTokenText)) {
+      return "en";
+    }
+
+    const latinCount = (normalizedText.match(/[A-Za-z]/g) || []).length;
+    if (latinCount > 0) {
+      return fallback === "vi" ? "vi" : "en";
+    }
+
+    return fallback;
+  }
+
   function isNaturalTranslationEnabledForUser(user = getCurrentUser()) {
-    return Boolean(user?.enableNaturalTranslationBeta);
+    return Boolean(user);
   }
 
   function normalizeContextSnippet(text) {
@@ -10197,19 +9976,185 @@
       .slice(0, 56);
   }
 
-  function getRoomNaturalTranslationSummary(room) {
+  function describeContextLanguage(code) {
+    return (
+      {
+        ko: "Korean",
+        en: "English",
+        vi: "Vietnamese",
+      }[normalizeMessageLanguageCode(code, "ko")] || code || "Unknown"
+    );
+  }
+
+  function tokenizeReferenceContext(text) {
+    return sanitizeToken(stripLeadingTranslationLabel(normalizeDisplayText(text || "")))
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  function pickDominantReferencePronoun(scoreMap, excluded = []) {
+    const blocked = new Set(excluded.filter(Boolean));
+    const ranked = Object.entries(scoreMap || {})
+      .filter(([key, score]) => key && !blocked.has(key) && Number(score || 0) > 0)
+      .sort((a, b) => b[1] - a[1]);
+    if (!ranked.length) return "";
+    const [topKey, topScore] = ranked[0];
+    const secondScore = Number(ranked[1]?.[1] || 0);
+    if (topScore < 2) return "";
+    if (secondScore && topScore <= secondScore) return "";
+    return topKey;
+  }
+
+  function getReferenceConfidence(scoreMap, pronoun) {
+    if (!pronoun) return "low";
+    const ranked = Object.entries(scoreMap || {})
+      .filter(([, score]) => Number(score || 0) > 0)
+      .sort((a, b) => b[1] - a[1]);
+    const topScore = Number(ranked[0]?.[1] || 0);
+    const secondScore = Number(ranked[1]?.[1] || 0);
+    if (topScore >= 4 && topScore - secondScore >= 2) return "high";
+    if (topScore >= 2) return "medium";
+    return "low";
+  }
+
+  function inferConversationRelationshipType(recentMessages, preferredConcept) {
+    const tokens = (recentMessages || [])
+      .flatMap((message) => tokenizeReferenceContext(message.originalText || message.text || ""))
+      .filter(Boolean);
+    const familyTerms = new Set(["me", "con", "bo", "ba", "cha", "anhai", "chi", "emgai", "엄마", "아빠", "아들", "딸"]);
+    const schoolTerms = new Set(["thay", "co", "giaovien", "hocsinh", "선생님", "학생", "숙제", "수업"]);
+    const familyHits = tokens.filter((token) => familyTerms.has(token)).length;
+    const schoolHits = tokens.filter((token) => schoolTerms.has(token)).length;
+
+    if (familyHits >= 2) return { type: "family", confidence: "high" };
+    if (schoolHits >= 2) return { type: "teacher-student", confidence: "high" };
+    if (preferredConcept === "lover") return { type: "lover", confidence: "medium" };
+    if (preferredConcept === "friend") return { type: "friend", confidence: "medium" };
+    if (preferredConcept === "office") return { type: "general", confidence: "medium" };
+    return { type: "general", confidence: "low" };
+  }
+
+  function analyzeVietnameseReferenceProfile(messages, participantId) {
+    const pronouns = new Set(["anh", "em", "chi", "co", "chu", "bac", "toi", "ban", "minh", "me", "con", "thay"]);
+    const subjectFollowers = new Set(["da", "dang", "se", "muon", "nho", "yeu", "thuong", "biet", "thay", "so", "goi", "nhac", "can", "muon", "ngu", "an", "ve", "doi"]);
+    const objectLeaders = new Set(["cho", "voi", "gap", "nho", "yeu", "thuong", "goi", "nhac", "xinloi", "tha", "bao", "noi", "tra", "gui"]);
+    const observedPronouns = new Set();
+    const selfScores = {};
+    const addressScores = {};
+    let analyzedMessages = 0;
+
+    (messages || []).forEach((message) => {
+      if (message?.senderId !== participantId || message?.kind !== "user") return;
+      const sourceLanguage = normalizeMessageLanguageCode(message.originalLanguage || message.sourceLanguage, "ko");
+      const tokens = tokenizeReferenceContext(message.originalText || message.text || "");
+      if (!tokens.length) return;
+      const likelyVietnamese = sourceLanguage === "vi" || tokens.some((token) => pronouns.has(token));
+      if (!likelyVietnamese) return;
+      analyzedMessages += 1;
+
+      tokens.forEach((token, index) => {
+        if (!pronouns.has(token)) return;
+        observedPronouns.add(token);
+        const previous = tokens[index - 1] || "";
+        const next = tokens[index + 1] || "";
+
+        if (index === 0 || subjectFollowers.has(next)) {
+          selfScores[token] = (selfScores[token] || 0) + 2;
+        }
+        if (objectLeaders.has(previous) || next === "oi" || next === "a" || next === "nhe" || next === "nha") {
+          addressScores[token] = (addressScores[token] || 0) + 2;
+        }
+        if ((previous === "cho" || previous === "de") && ["nhac", "biet", "xem", "noi", "goi", "tra", "viet"].includes(next)) {
+          selfScores[token] = (selfScores[token] || 0) + 1;
+        }
+      });
+    });
+
+    const selfPronoun = pickDominantReferencePronoun(selfScores);
+    const addressPronoun = pickDominantReferencePronoun(addressScores, selfPronoun ? [selfPronoun] : []);
+    return {
+      participantId,
+      observedPronouns: [...observedPronouns],
+      analyzedMessages,
+      selfPronoun,
+      addressPronoun,
+      selfConfidence: getReferenceConfidence(selfScores, selfPronoun),
+      addressConfidence: getReferenceConfidence(addressScores, addressPronoun),
+      selfScores,
+      addressScores,
+    };
+  }
+
+  function inferRoomParticipantReferenceFacts(room, recentMessages) {
+    const participantIds = [...new Set([...deriveRoomParticipantIds(room), room?.creatorId].filter(Boolean))];
+    const participants = participantIds
+      .map((participantId) => appState.users.find((user) => user.id === participantId))
+      .filter(Boolean);
+    const profiles = participants.map((participant) => ({
+      user: participant,
+      displayName: getUserDisplayName(participant) || participant.loginId || participant.id,
+      ...analyzeVietnameseReferenceProfile(recentMessages, participant.id),
+    }));
+
+    if (profiles.length === 2) {
+      const [first, second] = profiles;
+      if (!first.addressPronoun && second.selfPronoun) first.addressPronoun = second.selfPronoun;
+      if (!second.addressPronoun && first.selfPronoun) second.addressPronoun = first.selfPronoun;
+      if (!first.selfPronoun && second.addressPronoun) first.selfPronoun = second.addressPronoun;
+      if (!second.selfPronoun && first.addressPronoun) second.selfPronoun = first.addressPronoun;
+    }
+
+    return profiles;
+  }
+
+  function buildParticipantReferenceSummary(profile, allProfiles, senderId) {
+    if (!profile?.user) return "";
+    const counterpartNames = allProfiles
+      .filter((entry) => entry.user.id !== profile.user.id)
+      .map((entry) => entry.displayName)
+      .filter(Boolean);
+    const counterpartLabel =
+      counterpartNames.length === 1
+        ? counterpartNames[0]
+        : counterpartNames.length > 1
+          ? "the other participants"
+          : "the other side";
+
+    const roleFacts = [];
+    if (profile.selfPronoun) {
+      roleFacts.push(`refers to self as "${profile.selfPronoun}" (confidence ${profile.selfConfidence || "low"})`);
+    }
+    if (profile.addressPronoun) {
+      roleFacts.push(`addresses ${counterpartLabel} as "${profile.addressPronoun}" (confidence ${profile.addressConfidence || "low"})`);
+    }
+    if (!roleFacts.length && profile.observedPronouns.length) {
+      roleFacts.push(`uses Vietnamese reference terms ${profile.observedPronouns.slice(0, 4).map((entry) => `"${entry}"`).join(", ")}`);
+    }
+    if (!roleFacts.length) return "";
+
+    const focusPrefix = profile.user.id === senderId ? "Current speaker base facts" : "Participant base facts";
+    return `${focusPrefix}: ${profile.displayName} ${roleFacts.join(" and ")}.`;
+  }
+
+  function getRoomNaturalTranslationSummary(room, senderId = "") {
     if (!room || !isNaturalTranslationEnabledForUser()) {
       return "";
     }
 
     const recentMessages = (room.messages || [])
       .filter((message) => message?.kind === "user" && String(message?.originalText || message?.text || "").trim())
-      .slice(-6);
+      .slice(-18);
     if (!recentMessages.length) {
       return "";
     }
 
-    const signature = recentMessages.map((message) => `${message.id}:${message.translationConcept || DEFAULT_TRANSLATION_CONCEPT}`).join("|");
+    const participantSignature = [...new Set([...deriveRoomParticipantIds(room), room?.creatorId].filter(Boolean))]
+      .map((participantId) => {
+        const participant = appState.users.find((user) => user.id === participantId);
+        return `${participantId}:${participant?.nativeLanguage || ""}:${participant?.gender || ""}:${participant?.name || ""}`;
+      })
+      .join("|");
+    const signature = `${senderId || "none"}::${participantSignature}::${recentMessages.map((message) => `${message.id}:${message.translationConcept || DEFAULT_TRANSLATION_CONCEPT}`).join("|")}`;
     if (room.naturalTranslationContextCache?.signature === signature && room.naturalTranslationContextCache?.summary) {
       return room.naturalTranslationContextCache.summary;
     }
@@ -10225,10 +10170,25 @@
       const speaker = appState.users.find((user) => user.id === message.senderId);
       const snippet = normalizeContextSnippet(message.originalText || message.text || "");
       if (!snippet) return "";
-      return `${speaker?.name || "User"}: ${snippet}`;
+      return `${getUserDisplayName(speaker) || "User"}: ${snippet}`;
     }).filter(Boolean);
+    const participantProfiles = inferRoomParticipantReferenceFacts(room, recentMessages);
+    const participantFacts = participantProfiles
+      .map((profile) => {
+        const gender = profile.user?.gender === "male" ? "male" : profile.user?.gender === "female" ? "female" : "";
+        return `${profile.displayName} uses ${describeContextLanguage(profile.user?.nativeLanguage)}${gender ? `, gender ${gender}` : ""}`;
+      })
+      .filter(Boolean);
+    const referenceFacts = participantProfiles
+      .map((profile) => buildParticipantReferenceSummary(profile, participantProfiles, senderId))
+      .filter(Boolean);
+    const relationshipType = inferConversationRelationshipType(recentMessages, preferredConcept);
     const summary = [
+      `Conversation persona context: relation ${relationshipType.type} (confidence ${relationshipType.confidence}).`,
       `Relationship tone hint: ${describeTranslationConcept(preferredConcept)}.`,
+      participantFacts.length ? `Participant facts: ${participantFacts.join(" | ")}` : "",
+      referenceFacts.length ? referenceFacts.join(" ") : "",
+      senderId ? "If Vietnamese subjects or pronouns are omitted, keep the current speaker and addressee roles above fixed unless this message clearly overrides them." : "",
       recentLines.length ? `Recent lines: ${recentLines.join(" | ")}` : "",
     ].filter(Boolean).join("\n");
 
@@ -10240,10 +10200,11 @@
     return summary;
   }
 
-  async function buildTranslations(room, text, senderId, fromLanguage, forceFail, requestedTargetLanguages = null, options = {}) {
+  async function buildTranslations(room, text, senderId, fromLanguage, requestedTargetLanguages = null, options = {}) {
+    const languageProfile = options.languageProfile || null;
     const targetLanguages = Array.isArray(requestedTargetLanguages)
-      ? [...new Set(requestedTargetLanguages.filter((language) => language && language !== fromLanguage))]
-      : getNeededTargetLanguages(room, senderId, fromLanguage);
+      ? [...new Set(requestedTargetLanguages.filter((language) => shouldRequestTranslationForLanguage(language, fromLanguage, languageProfile)))]
+      : getNeededTargetLanguages(room, senderId, fromLanguage, languageProfile);
     const result = createBaseTranslationMap(text, fromLanguage);
     const translationConcept = normalizeTranslationConcept(options.translationConcept);
     const translationKeys = targetLanguages.map((language) => buildTranslationVariantKey(language, translationConcept));
@@ -10254,6 +10215,7 @@
       senderId,
       sourceLanguage: fromLanguage,
       targetLanguages,
+      detectedLanguages: languageProfile?.detectedLanguages || [fromLanguage],
       translationConcept,
       naturalTranslationEnabled,
       contextSummaryLength: contextSummary.length,
@@ -10296,27 +10258,8 @@
       };
     }
 
-    if (forceFail || /#fail\b/i.test(text)) {
-      targetLanguages.forEach((targetLanguage) => {
-        const targetKey = buildTranslationVariantKey(targetLanguage, translationConcept);
-        result[targetKey] = { text, failed: true };
-      });
-      return {
-        translations: result,
-        meta: {
-          provider: "forced-failure",
-          model: null,
-          live: false,
-          state: "failed",
-          reason: "forced_failure",
-          errorDetail: "Forced translation failure for debugging.",
-          requestedTargets: translationKeys,
-          completedAt: Date.now(),
-        },
-      };
-    }
-
     const liveTranslations = await requestServerTranslations(text, fromLanguage, targetLanguages, {
+      languageProfile,
       translationConcept,
       contextSummary,
     });
@@ -10387,7 +10330,7 @@
 
     for (const targetLanguage of targetLanguages) {
       try {
-        const translated = await mockTranslate(text, fromLanguage, targetLanguage, { forceFail: false });
+        const translated = await mockTranslate(text, fromLanguage, targetLanguage);
         result[buildTranslationVariantKey(targetLanguage, translationConcept)] = { text: translated, failed: false };
       } catch (error) {
         result[buildTranslationVariantKey(targetLanguage, translationConcept)] = { text, failed: true };
@@ -10419,8 +10362,10 @@
     }
 
     const translationConcept = normalizeTranslationConcept(options.translationConcept);
+    const languageProfile = options.languageProfile || null;
     const requestKey = JSON.stringify({
       sourceLanguage,
+      detectedLanguages: Array.isArray(languageProfile?.detectedLanguages) ? [...languageProfile.detectedLanguages].sort() : [],
       targetLanguages: [...targetLanguages].sort(),
       translationConcept,
       text,
@@ -10454,6 +10399,7 @@
               body: JSON.stringify({
                 text,
                 sourceLanguage,
+                detectedLanguages: Array.isArray(languageProfile?.detectedLanguages) ? languageProfile.detectedLanguages : [sourceLanguage],
                 targetLanguages,
                 translationConcept,
                 contextSummary: String(options.contextSummary || "").trim(),
@@ -10483,7 +10429,7 @@
             updateBackendStatus({
               serverReachable: true,
               liveTranslationEnabled: false,
-              translationConfigured: payload?.error === "missing_api_key" ? false : runtime.backend.translationConfigured,
+              translationConfigured: ["missing_api_key", "invalid_api_key_format"].includes(payload?.error) ? false : runtime.backend.translationConfigured,
               lastTranslationError: payload?.error || reason,
               lastTranslationErrorDetail: payload?.detail || payload?.message || `Translation request failed with ${response.status}.`,
               checkedAt: Date.now(),
@@ -10560,6 +10506,7 @@
   function normalizeTranslationFailureReason(errorCode, statusCode) {
     if (errorCode === "encoding_corrupted") return "encoding_corrupted";
     if (errorCode === "missing_api_key") return "service_disabled";
+    if (errorCode === "invalid_api_key_format") return "service_disabled";
     if (Number(statusCode) >= 500) return "live_request_failed";
     return "live_request_rejected";
   }
@@ -10772,7 +10719,41 @@
       previous.lastTranslationErrorDetail !== merged.lastTranslationErrorDetail;
 
     runtime.backend = merged;
+    const becameRecoveryReady =
+      (!previous.serverReachable && merged.serverReachable) ||
+      (!previous.liveTranslationEnabled && merged.liveTranslationEnabled) ||
+      (!previous.translationConfigured && merged.translationConfigured) ||
+      (Boolean(previous.lastTranslationError) && !merged.lastTranslationError);
+    if (becameRecoveryReady) {
+      scheduleTranslationRecoveryScan();
+    }
     return changed;
+  }
+
+  function scheduleTranslationRecoveryScan(delay = 420) {
+    if (runtime.translationRecoveryTimer) {
+      window.clearTimeout(runtime.translationRecoveryTimer);
+    }
+    runtime.translationRecoveryTimer = window.setTimeout(() => {
+      runtime.translationRecoveryTimer = null;
+      retryRecoverableTranslations();
+    }, delay);
+  }
+
+  function retryRecoverableTranslations() {
+    const currentUser = getCurrentUser();
+    if (!currentUser || !runtime.backend.serverReachable || !runtime.backend.liveTranslationEnabled) {
+      return;
+    }
+    const activeRoomId = uiState.activeRoomId || currentUser.currentRoomId || "";
+    if (!activeRoomId) return;
+    const room = appState.rooms.find((entry) => entry.id === activeRoomId);
+    if (!room) return;
+
+    room.messages.forEach((message) => {
+      if (message?.kind !== "user" || !message.originalText) return;
+      queueMissingViewerTranslation(room, message, currentUser);
+    });
   }
 
   function isPushSupported() {
@@ -11056,58 +11037,11 @@
     return registered;
   }
 
-  async function sendPushTestToCurrentUser(type = "message") {
-    const currentUser = getCurrentUser();
-    const pushType = type === "invite" ? "invite" : "message";
-    if (!currentUser) {
-      pushToast("pushTestFailedTitle", "pushTestFailedCopy");
-      return false;
-    }
-
-    console.info("[push-test] request", {
-      userId: currentUser.id,
-      pushType,
-      permission: getPushPermissionState(),
-      tokenRegistered: Boolean(runtime.push.token && runtime.push.tokenUserId === currentUser.id),
-    });
-
-    try {
-      if (getPushPermissionState() === "granted" && !(runtime.push.token && runtime.push.tokenUserId === currentUser.id)) {
-        await registerPushTokenForCurrentUser({ force: true });
-      }
-
-      const response = await fetch(CONFIG.pushTestApiPath, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          userId: currentUser.id,
-          type: pushType,
-        }),
-      });
-
-      const payload = await readJsonResponseBody(response);
-      if (!response.ok || !payload?.ok) {
-        throw new Error(payload?.error || `push_test_failed_${response.status}`);
-      }
-
-      console.info("[push-test] delivered", payload);
-      if (payload?.delivered > 0 && document.visibilityState === "visible") {
-        showLocalPushTestPreview(pushType, payload);
-      }
-      pushToast("pushTestSuccessTitle", "pushTestSuccessCopy", {
-        type: pushType === "invite" ? t("pushTestInviteButton") : t("pushTestMessageButton"),
-      });
-      return true;
-    } catch (error) {
-      console.warn("[push-test] failed", String(error?.message || error || "push_test_failed"));
-      pushToast("pushTestFailedTitle", "pushTestFailedCopy");
-      return false;
-    }
+  async function requestPushRegistrationRefresh() {
+    return false;
   }
 
-  function showLocalPushTestPreview(type, payload = {}) {
+  function showLocalPushPreview(type, payload = {}) {
     const previewPayload =
       type === "invite"
         ? {
@@ -11121,9 +11055,9 @@
         : {
             type: "message",
             senderName: "TRANSCHAT",
-            previewText: "테스트 푸시 알림입니다.",
+            previewText: "새 메시지 알림입니다.",
             title: t("pushToastMessageTitle"),
-            body: t("pushToastMessageCopy", { name: "TRANSCHAT", preview: "테스트 푸시 알림입니다." }),
+            body: t("pushToastMessageCopy", { name: "TRANSCHAT", preview: "새 메시지 알림입니다." }),
             roomId: payload?.roomId || "",
           };
 
@@ -11308,12 +11242,9 @@
     }
   }
 
-  async function mockTranslate(text, fromLanguage, targetLanguage, options = {}) {
+  async function mockTranslate(text, fromLanguage, targetLanguage) {
     // Front-end fallback used when the local Node translation server or OpenAI API is unavailable.
     await wait(320);
-    if (options.forceFail || /#fail\b/i.test(text)) {
-      throw new Error("Mock translation failure");
-    }
     const direct = findPhraseTranslation(text, targetLanguage);
     if (direct) return direct;
 
@@ -11724,17 +11655,6 @@
     render();
   }
 
-  function fastForwardRoom(roomId) {
-    if (!CONFIG.roomAutoExpirationEnabled) return;
-    const room = appState.rooms.find((item) => item.id === roomId);
-    if (!room || room.status === "expired" || room.disableExpiration) return;
-    room.lastMessageAt = Date.now() - 31 * 60 * 1000;
-    persistState();
-    pushToast("toastRoomFastForward", "toastRoomFastForwardCopy");
-    checkRoomExpirations();
-    render();
-  }
-
   function checkRoomExpirations() {
     if (!CONFIG.roomAutoExpirationEnabled) {
       return;
@@ -11763,9 +11683,15 @@
 
   function syncViewport() {
     const visual = window.visualViewport;
-    const viewportHeight = visual ? visual.height : window.innerHeight;
-    const viewportBottom = visual ? visual.height + visual.offsetTop : window.innerHeight;
-    runtime.viewportBaseHeight = Math.max(runtime.viewportBaseHeight || 0, viewportBottom, window.innerHeight || 0);
+    const layoutViewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const viewportHeight = visual ? visual.height : layoutViewportHeight;
+    const viewportBottom = visual ? visual.height + visual.offsetTop : viewportHeight;
+    const keyboardClosed = !visual || viewportBottom >= layoutViewportHeight - 24;
+    if (!runtime.viewportBaseHeight || keyboardClosed) {
+      runtime.viewportBaseHeight = Math.max(viewportBottom, layoutViewportHeight, viewportHeight);
+    } else {
+      runtime.viewportBaseHeight = Math.max(runtime.viewportBaseHeight, viewportBottom, layoutViewportHeight, viewportHeight);
+    }
     runtime.keyboardOffset = Math.max(0, runtime.viewportBaseHeight - viewportBottom);
     document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
     document.documentElement.style.setProperty("--keyboard-offset", `${runtime.keyboardOffset}px`);
@@ -11775,7 +11701,6 @@
     runtime.viewportSyncFrame = requestAnimationFrame(() => {
       runtime.viewportSyncFrame = 0;
       updateChatLayoutMetrics();
-      keepChatBottomVisible(Boolean(runtime.keyboardOffset));
     });
   }
 
@@ -11948,6 +11873,7 @@
     runtime.eventSource.addEventListener("error", () => {
       runtime.serverEventsConnected = false;
       closeServerEvents();
+      void pollServerStateIfNeeded({ force: true });
       renderSafelyDuringInput();
     });
   }
@@ -11966,6 +11892,7 @@
     clearInterval(runtime.heartbeatTimer);
     clearInterval(runtime.healthTimer);
     clearInterval(runtime.mediaCleanupTimer);
+    clearInterval(runtime.serverStatePollTimer);
     runtime.countdownInterval = setInterval(() => {
       if (pruneTypingSignals()) {
         renderSafelyDuringInput();
@@ -11991,6 +11918,10 @@
       cleanupExpiredChatMedia();
       refreshStorageEstimate();
     }, CONFIG.mediaCleanupIntervalMs);
+    runtime.serverStatePollTimer = setInterval(() => {
+      if (!getCurrentUser() || runtime.serverEventsConnected) return;
+      void pollServerStateIfNeeded();
+    }, 3000);
   }
 
   async function bootApplication() {

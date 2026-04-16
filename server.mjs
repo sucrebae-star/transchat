@@ -11,7 +11,8 @@ const STATE_SCHEMA_VERSION = 2;
 const PUSH_TOKEN_SCHEMA_VERSION = 1;
 
 const PORT = Number(process.env.PORT || 3000);
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_API_KEY = normalizeOpenAIApiKey(process.env.OPENAI_API_KEY || "");
+const OPENAI_API_KEY_VALID = isValidOpenAIApiKey(OPENAI_API_KEY);
 const OPENAI_MODEL = process.env.OPENAI_TRANSLATION_MODEL || "gpt-5-mini";
 const FIREBASE_WEB_CONFIG_FALLBACK = {
   apiKey: "AIzaSyB9ZcnjW7n0WVNVg3ELHvSUfnYK_BfK3_0",
@@ -30,9 +31,6 @@ const TYPING_SIGNAL_TTL_MS = 4500;
 const PRESENCE_SIGNAL_TTL_MS = 2 * 60 * 1000;
 const ALLOWED_LANGUAGES = new Set(["ko", "en", "vi"]);
 const DEFAULT_TRANSLATION_CONCEPT = "lover";
-const DEMO_USER_NAMES = new Set(["Hana", "Alex", "Linh", "Yuna"]);
-const DEMO_ROOM_IDS = new Set(["room-lounge", "room-travel", "room-brainstorm"]);
-const DEMO_ROOM_TITLES = new Set(["Global Lounge", "Weekend Passport", "Night Shift Ideas"]);
 const PERSISTENT_ROOM_TITLE_KEYS = new Set(["호아와현태", "호아와현태의방"]);
 const RECOVERY_QUESTION_KEYS = [
   "recoveryFavoriteColor",
@@ -72,6 +70,19 @@ const translationCache = new Map();
 let firebaseMessagingPromise = null;
 let lastTranslationError = null;
 let lastTranslationErrorDetail = null;
+
+function normalizeOpenAIApiKey(value) {
+  return String(value || "")
+    .replace(/^['"`]+|['"`]+$/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function isValidOpenAIApiKey(value) {
+  if (!value) return false;
+  if (!value.startsWith("sk-")) return false;
+  return /^[\x21-\x7E]+$/.test(value);
+}
 
 function normalizeDisplayText(value) {
   const normalized = String(value ?? "").normalize("NFC");
@@ -185,11 +196,11 @@ const server = createServer(async (req, res) => {
   if (req.method === "GET" && requestUrl.pathname === "/api/health") {
     return sendJson(res, 200, {
       ok: true,
-      liveTranslationEnabled: Boolean(OPENAI_API_KEY) && !lastTranslationError,
+      liveTranslationEnabled: OPENAI_API_KEY_VALID,
       model: OPENAI_MODEL,
       sharedStateEnabled: true,
       hasServerState: Boolean(serverState),
-      translationConfigured: Boolean(OPENAI_API_KEY),
+      translationConfigured: OPENAI_API_KEY_VALID,
       lastTranslationError,
       lastTranslationErrorDetail,
     });
@@ -205,10 +216,6 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "POST" && requestUrl.pathname === "/api/push/unregister") {
     return handlePushUnregister(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/push/send-test") {
-    return handlePushSendTest(req, res);
   }
 
   if (req.method === "POST" && requestUrl.pathname === "/api/translate") {
@@ -253,10 +260,21 @@ async function handleTranslate(req, res) {
         message: "Set OPENAI_API_KEY to enable live translation.",
       });
     }
+    if (!OPENAI_API_KEY_VALID) {
+      return sendJson(res, 503, {
+        error: "invalid_api_key_format",
+        message: "OPENAI_API_KEY is malformed. Re-enter it in one line using plain ASCII characters only.",
+      });
+    }
 
     const body = await readJsonBody(req);
     const text = normalizeDisplayText(body?.text).trim();
     const sourceLanguage = String(body?.sourceLanguage || "").trim();
+    const detectedLanguages = [...new Set(
+      (Array.isArray(body?.detectedLanguages) ? body.detectedLanguages : [sourceLanguage])
+        .map((item) => String(item || "").trim())
+        .filter((language) => ALLOWED_LANGUAGES.has(language))
+    )];
     const targetLanguages = Array.isArray(body?.targetLanguages) ? body.targetLanguages : [];
     const translationConcept = normalizeTranslationConcept(body?.translationConcept);
     const contextSummary = String(body?.contextSummary || "").trim().slice(0, 800);
@@ -273,7 +291,7 @@ async function handleTranslate(req, res) {
     }
 
     const normalizedTargets = [...new Set(targetLanguages.map((item) => String(item).trim()))]
-      .filter((language) => ALLOWED_LANGUAGES.has(language) && language !== sourceLanguage);
+      .filter((language) => ALLOWED_LANGUAGES.has(language) && (language !== sourceLanguage || detectedLanguages.some((entry) => entry !== language)));
 
     if (!normalizedTargets.length) {
       return sendJson(res, 200, { translations: {} });
@@ -281,6 +299,7 @@ async function handleTranslate(req, res) {
 
     console.info("[translate] request", {
       sourceLanguage,
+      detectedLanguages,
       targetLanguages: normalizedTargets,
       translationConcept,
       contextSummaryLength: contextSummary.length,
@@ -294,6 +313,7 @@ async function handleTranslate(req, res) {
     const translationResult = await requestOpenAITranslations({
       text,
       sourceLanguage,
+      detectedLanguages,
       targetLanguages: normalizedTargets,
       translationConcept,
       contextSummary,
@@ -373,56 +393,6 @@ async function handlePushUnregister(req, res) {
   } catch (error) {
     console.error("[push-unregister]", error);
     return sendJson(res, 500, { error: "push_unregister_failed" });
-  }
-}
-
-async function handlePushSendTest(req, res) {
-  try {
-    const body = await readJsonBody(req);
-    const userId = String(body?.userId || "").trim();
-    const type = String(body?.type || "message").trim().toLowerCase();
-
-    if (!userId || !["message", "invite"].includes(type)) {
-      return sendJson(res, 400, { error: "invalid_push_test_request" });
-    }
-
-    const targetUser = (serverState?.users || []).find((user) => user.id === userId);
-    if (!targetUser) {
-      return sendJson(res, 404, { error: "user_not_found" });
-    }
-
-    const tokenEntries = getPushTokensForUser(userId);
-    if (!tokenEntries.length) {
-      return sendJson(res, 409, {
-        error: "push_token_not_found",
-        message: "No push token is registered for this user.",
-      });
-    }
-
-    const payload = buildTestPushPayload(userId, type);
-    const result = await sendPushToUser(userId, payload);
-    console.info("[push-test]", {
-      userId,
-      type,
-      attempted: result.attempted,
-      delivered: result.delivered,
-      errors: result.errors || [],
-    });
-
-    return sendJson(res, 200, {
-      ok: true,
-      type,
-      userId,
-      attempted: result.attempted,
-      delivered: result.delivered,
-      errors: result.errors || [],
-      reason: result.reason || "",
-      roomId: payload.roomId || "",
-      inviteId: payload.inviteId || "",
-    });
-  } catch (error) {
-    console.error("[push-test]", error);
-    return sendJson(res, 500, { error: "push_test_failed" });
   }
 }
 
@@ -867,44 +837,44 @@ function isInvalidPushTokenError(error) {
   return code.includes("registration-token-not-registered") || code.includes("invalid-registration-token");
 }
 
-function getPushTestRoomForUser(userId) {
+function getPushRoomForUser(userId) {
   const rooms = (serverState?.rooms || []).filter((room) => room?.status === "active");
   return rooms.find((room) => deriveRoomParticipantIds(room, serverState?.users || []).includes(userId)) || null;
 }
 
-function getPushTestInviteForUser(userId) {
+function getPushInviteForUser(userId) {
   return (serverState?.invites || []).find((invite) => invite.inviteeId === userId && invite.status === "pending") || null;
 }
 
-function buildTestPushPayload(userId, type) {
+function buildPushPayloadSnapshot(userId, type) {
   const now = Date.now();
   if (type === "invite") {
-    const invite = getPushTestInviteForUser(userId);
+    const invite = getPushInviteForUser(userId);
     return {
       type: "invite",
-      inviteId: invite?.id || `test-invite-${now}`,
-      senderId: "system-test",
+      inviteId: invite?.id || `invite-${now}`,
+      senderId: "system",
       senderName: "TRANSCHAT",
-      previewText: invite?.previewRoomTitle || "테스트 초대 알림입니다.",
+      previewText: invite?.previewRoomTitle || "새 초대 알림입니다.",
       createdAt: now,
       title: "새 초대",
       body: "TRANSCHAT님이 채팅 초대를 보냈어요",
-      tag: invite?.id ? `invite:${invite.id}` : `invite:test:${userId}`,
+      tag: invite?.id ? `invite:${invite.id}` : `invite:${userId}`,
       clickPath: "/?pushType=invite",
     };
   }
 
-  const room = getPushTestRoomForUser(userId);
+  const room = getPushRoomForUser(userId);
   return {
     type: "message",
     roomId: room?.id || "",
-    senderId: "system-test",
+    senderId: "system",
     senderName: "TRANSCHAT",
-    previewText: "테스트 푸시 알림입니다.",
+    previewText: "새 메시지 알림입니다.",
     createdAt: now,
     title: "새 메시지",
-    body: "TRANSCHAT: 테스트 푸시 알림입니다.",
-    tag: room?.id ? `room:${room.id}` : `room:test:${userId}`,
+    body: "TRANSCHAT: 새 메시지 알림입니다.",
+    tag: room?.id ? `room:${room.id}` : `room:${userId}`,
     clickPath: room?.id ? `/?pushType=message&roomId=${encodeURIComponent(room.id)}` : "/",
   };
 }
@@ -1150,7 +1120,7 @@ function normalizeTranslationError(error) {
   return "translation_error";
 }
 
-async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+async function requestOpenAITranslations({ text, sourceLanguage, detectedLanguages = null, targetLanguages, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
   if (!targetLanguages.length) {
     return {
       translations: {},
@@ -1163,6 +1133,7 @@ async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages
       const translatedText = await requestSingleOpenAITranslation({
         text,
         sourceLanguage,
+        detectedLanguages,
         targetLanguage,
         translationConcept,
         contextSummary,
@@ -1183,10 +1154,11 @@ async function requestOpenAITranslations({ text, sourceLanguage, targetLanguages
   };
 }
 
-async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
   const cacheKey = JSON.stringify({
     model: OPENAI_MODEL,
     sourceLanguage,
+    detectedLanguages,
     targetLanguage,
     translationConcept,
     contextSummary,
@@ -1208,54 +1180,116 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, targetLang
     input: buildTranslationPrompt({
       text,
       sourceLanguage,
+      detectedLanguages,
       targetLanguage,
       translationConcept,
       contextSummary,
     }),
   };
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI API error ${response.status}: ${errorText}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        const requestError = new Error(`OpenAI API error ${response.status}: ${errorText}`);
+        if (shouldRetryTranslationResponse(response.status) && attempt < 2) {
+          await delayTranslationRetry(attempt);
+          lastError = requestError;
+          continue;
+        }
+        throw requestError;
+      }
+
+      const data = await response.json();
+      const outputText = normalizeTranslatedText(extractResponseText(data), text);
+      translationCache.set(cacheKey, outputText);
+      return outputText;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= 2 || !shouldRetryTranslationError(error)) {
+        break;
+      }
+      await delayTranslationRetry(attempt);
+    }
   }
 
-  const data = await response.json();
-  const outputText = normalizeTranslatedText(extractResponseText(data), text);
-  translationCache.set(cacheKey, outputText);
-  return outputText;
+  throw lastError || new Error("translation_request_failed");
 }
 
-function buildTranslationPrompt({ text, sourceLanguage, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+function shouldRetryTranslationResponse(statusCode) {
+  const status = Number(statusCode || 0);
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function shouldRetryTranslationError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  if (!message) return false;
+  if (message.includes("invalid_api_key")) return false;
+  if (message.includes("model_not_found") || message.includes("unsupported model") || message.includes("does not have access")) return false;
+  if (message.includes("openai api error")) {
+    const match = message.match(/openai api error (\d+)/);
+    return shouldRetryTranslationResponse(match?.[1]);
+  }
+  return ["fetch failed", "network", "timeout", "socket", "econnreset", "ecanceled", "terminated"].some((keyword) => message.includes(keyword));
+}
+
+async function delayTranslationRetry(attempt) {
+  const waitMs = 220 * (attempt + 1);
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+}
+
+function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
   const normalizedConcept = normalizeTranslationConcept(translationConcept);
+  const normalizedDetectedLanguages = [...new Set(
+    (Array.isArray(detectedLanguages) ? detectedLanguages : [sourceLanguage])
+      .map((language) => String(language || "").trim())
+      .filter((language) => ALLOWED_LANGUAGES.has(language))
+  )];
+  const mixedLanguageRequest = normalizedDetectedLanguages.length > 1;
   const romanticDirectionHint =
-    normalizedConcept === "lover" && sourceLanguage === "ko" && targetLanguage === "vi"
-      ? "Default relationship context: a Korean male speaker addressing a Vietnamese female romantic partner. Keep the partner-facing tone warm and affectionate, but preserve the source wording and structure first."
-      : normalizedConcept === "lover"
-        ? "Default relationship context: private romantic partners. Preserve caring, reassuring, affectionate tone exactly without rewriting for extra smoothness."
-        : "";
+    normalizedConcept === "lover"
+      ? "Default relationship context: private romantic partners. Preserve caring, reassuring, affectionate tone exactly without rewriting for extra smoothness."
+      : "";
+  const pairSpecificRules = buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, normalizedConcept);
 
   return [
-    "You are a professional translator for a private romantic chat app.",
-    `Translate the user's message accurately from ${describeLanguage(sourceLanguage)} to ${describeLanguage(targetLanguage)}.`,
+    "You are a professional translator for a multilingual private chat app.",
+    mixedLanguageRequest && sourceLanguage === targetLanguage
+      ? `Normalize the user's mixed-language message into natural ${describeLanguage(targetLanguage)}.`
+      : `Translate the user's message accurately from ${describeLanguage(sourceLanguage)} to ${describeLanguage(targetLanguage)}.`,
     "",
     "Rules:",
     "- Preserve the original meaning as closely as possible.",
     "- Do not omit names, vocatives, calling expressions, or emotional emphasis.",
+    "- Ignore leading meta labels such as '번역본:', '원문:', 'reference:', or 'translation:' when deciding meaning; they are metadata, not the main sentence content.",
     "- Keep emphasis such as '꼭', '항상', '정말', '많이', and '절대' whenever the target language can express it naturally.",
-    "- Keep sentence structure as close to the original as possible.",
+    "- Keep sentence structure as close to the original as possible, but allow minimal restructuring when natural subject omission or pronoun choice in the target language requires it.",
     "- Preserve romantic, caring, reassuring tone exactly.",
     "- Do not paraphrase, summarize, soften, or rewrite creatively.",
     "- Fidelity is more important than stylistic freedom.",
+    "- Do not invent unstated quantities, containers, objects, or reasons. If the source stays unspecific, keep the translation equally unspecific.",
     "- Preserve URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
+    "- Treat any participant-role or pronoun facts in the context summary as fixed reference facts unless the current message clearly overrides them.",
+    "- When Vietnamese subjects or pronouns are omitted or ambiguous, keep the established speaker/addressee roles from the context summary instead of re-guessing them.",
+    "- Relationship tone affects warmth and register, but must not force extra pronouns, vocatives, or partner-role wording that the source text does not imply.",
+    "- Do not force an explicit subject pronoun in the translation if the target language sounds more natural with the subject omitted.",
+    "- If the source leaves the subject implicit, preserve that natural implicitness whenever the target language allows it.",
+    "- If the context summary gives a stable role term or pronoun with medium/high confidence, prefer it before re-guessing. If confidence is low, prefer neutral wording over forcing a wrong kinship term.",
+    "- Analyze the message clause by clause. If the message mixes Korean, Vietnamese, or other foreign fragments, reconstruct the full meaning first and then produce one natural final sentence in the target language.",
+    mixedLanguageRequest
+      ? `- The source message contains mixed-language fragments (${normalizedDetectedLanguages.map((language) => describeLanguage(language)).join(", ")}). Translate or normalize every fragment into ${describeLanguage(targetLanguage)}; do not leave foreign words untranslated just because the dominant language already matches the target.`
+      : "",
+    ...pairSpecificRules,
     `- Apply this recipient-facing tone only within the fidelity rules: ${describeTranslationConcept(normalizedConcept)}.`,
     romanticDirectionHint ? `- ${romanticDirectionHint}` : "",
     contextSummary ? "Context summary (use only to keep names, relationship tone, and honorific consistency; never override the source wording):" : "",
@@ -1266,6 +1300,47 @@ function buildTranslationPrompt({ text, sourceLanguage, targetLanguage, translat
     "Message:",
     text,
   ].filter(Boolean).join("\n");
+}
+
+function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT) {
+  const rules = [];
+
+  if (sourceLanguage === "ko" && targetLanguage === "vi") {
+    rules.push(
+      "- For Korean-to-Vietnamese reflective prose or narration, prefer fluent Vietnamese syntax over rigid Korean clause order while preserving the exact meaning.",
+      "- In Korean-to-Vietnamese family dialogue such as parent-child conversation, use warm everyday Vietnamese. Parent lines should sound caring but gently guiding, and child lines should sound respectful and natural without becoming overly formal.",
+      "- Do not mechanically calque Korean expressions into unnatural Vietnamese phrasing such as 'uống bắt đầu ngày', 'theo con đường của mình', or 'một ngày ... cảm thấy quý giá nhất'. Rewrite them into idiomatic Vietnamese sentences with the same meaning.",
+      "- Do not use verbs like 'cảm thấy' with non-human subjects such as weather, air, or scenery when Vietnamese would normally use 'trở nên', 'dường như', 'mang lại cảm giác', or another natural predicate.",
+      "- If the Korean source omits the subject, do not automatically insert 'anh', 'em', or 'toi'. Add an explicit Vietnamese subject only when the source or context summary clearly fixes the speaker role and the sentence genuinely needs it.",
+      "- In Korean-to-Vietnamese dialogue, if the speaker role is known from the context summary, keep one consistent Vietnamese self/addressee term throughout the message instead of switching pronouns sentence by sentence.",
+      "- In Korean-to-Vietnamese narration, inner monologue, weather description, or scene description, prefer omitted subjects or neutral sentence openings when natural rather than forcing 'anh', 'em', or another kinship pronoun.",
+      "- If an explicit Vietnamese pronoun is needed, choose the most established role term from the context summary first; do not invent a new subject role for a single sentence without evidence in the message.",
+      "- Preserve Korean interpersonal particles and soft corrective tones such as '-잖아', '-해야지', '-지?', and '-거야' with natural Vietnamese discourse markers when appropriate; do not flatten the relationship nuance.",
+      "- Do not invent concrete details that the Korean source leaves open. For example, if the source only says 'it seems like you did not even eat half', do not add a bowl, plate, or portion unless it is explicitly stated.",
+      "- Interpret Korean abstract nouns such as '모습', '마음', '과정', or evaluative praise like '기특해' by context. Prefer natural Vietnamese expressions for the underlying meaning rather than literal but awkward physical-image wording.",
+      "- If the source is descriptive or diary-like narration rather than direct address, keep the Vietnamese output neutral and literary; even in lover mode, do not force romantic vocatives or first-person kinship pronouns into plain scene description."
+    );
+  }
+
+  if (sourceLanguage === "vi" && targetLanguage === "ko") {
+    rules.push(
+      "- For Vietnamese-to-Korean, resolve kinship pronouns such as 'anh', 'em', 'chi', and 'co' from the context summary before translating; do not flatten them into one generic Korean subject.",
+      "- In teacher-student, elder-younger, or other authority dialogue, choose natural spoken Korean endings that match the relationship: teacher-to-student lines should sound like live speech, and student-to-teacher lines should stay polite without becoming stiff written prose.",
+      "- When Vietnamese omits the subject or object, preserve the established speaker/addressee roles from context and produce natural Korean without unnecessary repeated pronouns.",
+      "- Do not translate Vietnamese role nouns such as 'thay', 'co', or 'con' into repeated explicit Korean subjects like '선생님은' or '학생은' in every sentence when Korean would normally omit them.",
+      "- Do not over-translate every Vietnamese pronoun into an explicit Korean subject such as '나는', '내가', '너는', or '그는'. Korean often sounds more natural with the subject omitted once the referent is clear.",
+      "- If Vietnamese repeats 'anh' or 'em' mainly for Vietnamese grammar, compress that repetition into natural Korean and keep only the amount of subject marking that Korean genuinely needs.",
+      "- If the Vietnamese source is reflective narration rather than direct dialogue, produce natural Korean narrative prose instead of mirroring Vietnamese word order."
+    );
+  }
+
+  if (translationConcept === "lover") {
+    rules.push(
+      "- In lover mode, keep affectionate warmth only where the source already supports it. Do not romanticize plain observation, weather description, or neutral inner monologue."
+    );
+  }
+
+  return rules;
 }
 
 function normalizeTranslationConcept(value) {
@@ -1339,15 +1414,6 @@ function summarizeTranslationError(error) {
   return raw.slice(0, 320);
 }
 
-function sanitizeUsageState(value) {
-  return {
-    windowKey: typeof value?.windowKey === "string" ? value.windowKey : "",
-    totalMessages: Math.max(0, Number(value?.totalMessages || 0)),
-    softLimitNotified: Boolean(value?.softLimitNotified),
-    lastUpdatedAt: Number(value?.lastUpdatedAt || Date.now()),
-  };
-}
-
 function sanitizeMessageState(message, allowedUserIds) {
   if (!message) {
     return message;
@@ -1368,18 +1434,28 @@ function sanitizeMessageState(message, allowedUserIds) {
   }
 
   const originalText = normalizeDisplayText(message.originalText || message.text || "");
-  const translations = sanitizeTranslations(message.translations, originalText, message.sourceLanguage);
+  const sourceLanguage = normalizeMessageLanguageCode(message.originalLanguage || message.sourceLanguage, "ko");
+  const translations = sanitizeTranslations(message.translations, originalText, sourceLanguage);
 
   return {
     ...message,
     originalText,
+    originalLanguage: sourceLanguage,
+    sourceLanguage,
     media: sanitizeMediaState(message.media),
     status: ["composing", "sent", "delivered", "read"].includes(message.status) ? message.status : "sent",
     deliveredTo: filterRecordByAllowedKeys(message.deliveredTo, allowedUserIds),
     readBy: filterRecordByAllowedKeys(message.readBy, allowedUserIds),
     translations,
-    translationMeta: sanitizeTranslationMeta(message.translationMeta, translations, message.sourceLanguage),
+    translationMeta: sanitizeTranslationMeta(message.translationMeta, translations, sourceLanguage),
   };
+}
+
+function normalizeMessageLanguageCode(value, fallback = "ko") {
+  const normalized = getTranslationVariantLanguage(value);
+  if (normalized) return normalized;
+  const fallbackLanguage = getTranslationVariantLanguage(fallback);
+  return fallbackLanguage || "ko";
 }
 
 function getTranslationVariantLanguage(value) {
@@ -1475,7 +1551,7 @@ function sanitizeSharedState(state) {
   const deletedRoomIds = new Set(Object.keys(deletedRooms));
 
   const users = (state.users || [])
-    .filter((user) => !deletedUserIds.has(user.id) && !isDemoUser(user))
+    .filter((user) => !deletedUserIds.has(user.id))
     .map((user) => ({
       ...user,
       loginId: normalizeDisplayText(user?.loginId || user?.name).trim().toLowerCase(),
@@ -1484,7 +1560,7 @@ function sanitizeSharedState(state) {
       gender: user?.gender === "female" ? "female" : user?.gender === "male" ? "male" : "",
       age: Number(user?.age || 0) || "",
       auth: {
-        provider: user?.auth?.provider || "test-name",
+        provider: user?.auth?.provider || "local",
         subject: user?.auth?.subject || normalizeDisplayText(user?.loginId || user?.name).trim().toLowerCase(),
         email: user?.auth?.email || null,
         phoneNumber: user?.auth?.phoneNumber || null,
@@ -1493,21 +1569,7 @@ function sanitizeSharedState(state) {
       blockedUserIds: Array.isArray(user?.blockedUserIds) ? user.blockedUserIds : [],
       password: typeof user?.password === "string" ? user.password : "",
       preferredTranslationConcept: normalizeTranslationConcept(user?.preferredTranslationConcept),
-      planTier: ["monthly", "yearly"].includes(user?.planTier) ? user.planTier : "free",
-      usage: sanitizeUsageState(user?.usage),
-      planUpdatedAt: Number(user?.planUpdatedAt || user?.joinedAt || user?.createdAt || Date.now()),
-      planPolicyAcknowledgedAt: Number(user?.planPolicyAcknowledgedAt || 0) || null,
-      enableNaturalTranslationBeta: Boolean(user?.enableNaturalTranslationBeta),
       isAdmin: Boolean(user?.isAdmin) || normalizeDisplayText(user?.loginId || "").trim().toLowerCase() === "admin",
-      isUnlimitedTester: Boolean(user?.isUnlimitedTester) || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "hoa" || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "현태",
-      isUnlimitedUser: Boolean(user?.isUnlimitedUser) || Boolean(user?.isUnlimitedTester) || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "hoa" || normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "현태",
-      canBypassUsageLimit:
-        Boolean(user?.canBypassUsageLimit) ||
-        Boolean(user?.isAdmin) ||
-        Boolean(user?.isUnlimitedTester) ||
-        normalizeDisplayText(user?.loginId || "").trim().toLowerCase() === "admin" ||
-        normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "hoa" ||
-        normalizeDisplayText(user?.name || "").replace(/\s+/g, "").trim().toLowerCase() === "현태",
       recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
         ? user.recoveryQuestionKey
         : RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestion)
@@ -1532,7 +1594,7 @@ function sanitizeSharedState(state) {
   const userIds = new Set(users.map((user) => user.id));
 
   const rooms = (state.rooms || [])
-    .filter((room) => !deletedRoomIds.has(room.id) && !isDemoRoom(room) && !shouldDiscardRoom(room))
+    .filter((room) => !deletedRoomIds.has(room.id) && !shouldDiscardRoom(room))
     .map((room) => {
       const persistent = isPersistentRoom(room);
       const participants = deriveRoomParticipantIds(room, users);
@@ -1578,14 +1640,6 @@ function sanitizeSharedState(state) {
       })),
     rooms,
   };
-}
-
-function isDemoUser(user) {
-  return DEMO_USER_NAMES.has(String(user?.name || "").trim());
-}
-
-function isDemoRoom(room) {
-  return DEMO_ROOM_IDS.has(room?.id) || DEMO_ROOM_TITLES.has(String(room?.title || "").trim());
 }
 
 function shouldDiscardRoom(room) {
@@ -1750,8 +1804,10 @@ function readJsonBody(req) {
 server.listen(PORT, () => {
   console.log(`TRANSCHAT local server running at http://localhost:${PORT}`);
   console.log(
-    OPENAI_API_KEY
+    OPENAI_API_KEY_VALID
       ? `Live translation enabled with model ${OPENAI_MODEL}.`
-      : "OPENAI_API_KEY is missing. The client will fall back to mock translation."
+      : OPENAI_API_KEY
+        ? "OPENAI_API_KEY is malformed. Re-enter it in one line using ASCII characters only. The client will fall back to mock translation."
+        : "OPENAI_API_KEY is missing. The client will fall back to mock translation."
   );
 });
