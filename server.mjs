@@ -1128,7 +1128,7 @@ async function requestOpenAITranslations({ text, sourceLanguage, detectedLanguag
     };
   }
 
-  const translatedEntries = await Promise.all(
+  const translatedEntries = await Promise.allSettled(
     targetLanguages.map(async (targetLanguage) => {
       const translatedText = await requestSingleOpenAITranslation({
         text,
@@ -1148,8 +1148,27 @@ async function requestOpenAITranslations({ text, sourceLanguage, detectedLanguag
     })
   );
 
+  const successfulEntries = translatedEntries
+    .filter((entry) => entry.status === "fulfilled")
+    .map((entry) => entry.value);
+  if (!successfulEntries.length) {
+    const firstFailure = translatedEntries.find((entry) => entry.status === "rejected");
+    throw firstFailure?.reason || new Error("translation_request_failed");
+  }
+
+  const failedEntries = translatedEntries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.status === "rejected")
+    .map(({ index }) => [
+      targetLanguages[index],
+      {
+        text: "",
+        failed: true,
+      },
+    ]);
+
   return {
-    translations: Object.fromEntries(translatedEntries),
+    translations: Object.fromEntries([...successfulEntries, ...failedEntries]),
     model: OPENAI_MODEL,
   };
 }
