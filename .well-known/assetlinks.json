@@ -5,9 +5,9 @@
     ],
     "target": {
       "namespace": "android_app",
-      "package_name": "com.transchat.chat",
+      "package_name": "com.transchat.app",
       "sha256_cert_fingerprints": [
-        "REPLACE_WITH_PLAY_APP_SIGNING_SHA256"
+        "84:74:06:FB:36:13:D8:B1:95:9C:01:32:1B:2A:BC:95:21:2E:A6:EC:F8:11:AD:C0:43:20:63:62:26:DB:FD:17"
       ]
     }
   }
