@@ -11133,6 +11133,7 @@
           userId: currentUser.id,
           token,
           platform: "web",
+          origin: window.location.origin,
         }),
       });
 

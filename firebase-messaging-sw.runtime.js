@@ -45,12 +45,17 @@ async function ensureMessagingReady() {
 
     const messaging = firebase.messaging();
     messaging.onBackgroundMessage((payload) => {
+      if (payload?.notification?.title || payload?.notification?.body) {
+        return;
+      }
       const normalized = normalizePushPayload(payload);
       const title = normalized.title || "TRANSCHAT";
       const body = normalized.body || normalized.previewText || "";
       return self.registration.showNotification(title, {
         body,
         tag: normalized.tag || (normalized.type === "message" ? `room:${normalized.roomId}` : `invite:${normalized.inviteId}`),
+        icon: "/icons/icon-192.png",
+        badge: "/icons/icon-192.png",
         data: normalized,
       });
     });

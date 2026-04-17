@@ -26,6 +26,7 @@ const FIREBASE_VAPID_KEY_FALLBACK = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTt
 const FIREBASE_WEB_CONFIG_JSON = process.env.FIREBASE_WEB_CONFIG_JSON || JSON.stringify(FIREBASE_WEB_CONFIG_FALLBACK);
 const FIREBASE_VAPID_KEY = process.env.FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY_FALLBACK;
 const FIREBASE_SERVICE_ACCOUNT_PATH = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "";
+const PUSH_PUBLIC_ORIGIN = normalizePushOrigin(process.env.PUSH_PUBLIC_ORIGIN || "https://transchat.xyz");
 const ROOM_AUTO_EXPIRATION_ENABLED = false;
 const TYPING_SIGNAL_TTL_MS = 4500;
 const PRESENCE_SIGNAL_TTL_MS = 2 * 60 * 1000;
@@ -358,6 +359,7 @@ async function handlePushRegister(req, res) {
     const userId = String(body?.userId || "").trim();
     const token = String(body?.token || "").trim();
     const platform = String(body?.platform || "web").trim() || "web";
+    const origin = normalizePushOrigin(body?.origin || "");
 
     if (!userId || !token) {
       return sendJson(res, 400, { error: "invalid_push_registration" });
@@ -367,13 +369,14 @@ async function handlePushRegister(req, res) {
       return sendJson(res, 404, { error: "user_not_found" });
     }
 
-    upsertPushToken({ userId, token, platform });
+    upsertPushToken({ userId, token, platform, origin });
     await savePushTokenState(pushTokenState);
     const userTokenCount = getPushTokensForUser(userId).length;
     const registeredAt = Date.now();
     console.info("[push-register]", {
       userId,
       platform,
+      origin: origin || PUSH_PUBLIC_ORIGIN,
       tokenTail: token.slice(-12),
       userTokenCount,
     });
@@ -724,6 +727,7 @@ function sanitizePushTokenState(parsed) {
       token,
       userId,
       platform: String(entry?.platform || "web").trim() || "web",
+      origin: normalizePushOrigin(entry?.origin || ""),
       updatedAt: Number(entry?.updatedAt || Date.now()),
     };
     if (!previous || nextEntry.updatedAt >= previous.updatedAt) {
@@ -758,6 +762,7 @@ function upsertPushToken(entry) {
     token: String(entry?.token || "").trim(),
     userId: String(entry?.userId || "").trim(),
     platform: String(entry?.platform || "web").trim() || "web",
+    origin: normalizePushOrigin(entry?.origin || ""),
     updatedAt: Date.now(),
   };
   if (!nextEntry.token || !nextEntry.userId) return false;
@@ -846,6 +851,28 @@ function normalizePushPayload(payload) {
   );
 }
 
+function normalizePushOrigin(origin) {
+  const value = String(origin || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    if (!/^https?:$/i.test(parsed.protocol)) return "";
+    return parsed.origin;
+  } catch (error) {
+    return "";
+  }
+}
+
+function buildPushTargetUrl(entry, payload) {
+  const baseOrigin = normalizePushOrigin(entry?.origin || "") || PUSH_PUBLIC_ORIGIN;
+  const clickPath = String(payload?.clickPath || "/").trim() || "/";
+  try {
+    return new URL(clickPath, baseOrigin).toString();
+  } catch (error) {
+    return baseOrigin;
+  }
+}
+
 function isInvalidPushTokenError(error) {
   const code = String(error?.code || error?.errorInfo?.code || "").toLowerCase();
   return code.includes("registration-token-not-registered") || code.includes("invalid-registration-token");
@@ -919,6 +946,7 @@ async function sendPushToUser(userId, payload) {
 
   for (const entry of tokens) {
     try {
+      const link = buildPushTargetUrl(entry, payload);
       await messaging.send({
         token: entry.token,
         data: normalizePushPayload(payload),
@@ -926,6 +954,16 @@ async function sendPushToUser(userId, payload) {
           headers: {
             Urgency: "high",
             TTL: "120",
+          },
+          notification: {
+            title: String(payload?.title || "TRANSCHAT"),
+            body: String(payload?.body || payload?.previewText || ""),
+            icon: "/icons/icon-192.png",
+            badge: "/icons/icon-192.png",
+            tag: String(payload?.tag || ""),
+          },
+          fcmOptions: {
+            link,
           },
         },
       });
