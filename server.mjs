@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,8 +7,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SERVER_STATE_FILE = path.join(__dirname, "transchat-server-state.json");
 const PUSH_TOKEN_STATE_FILE = path.join(__dirname, "transchat-push-tokens.json");
+const MEDIA_STORAGE_DIR = path.join(__dirname, "transchat-media");
 const STATE_SCHEMA_VERSION = 2;
 const PUSH_TOKEN_SCHEMA_VERSION = 1;
+const MEDIA_UPLOAD_MAX_BYTES = 60 * 1024 * 1024;
 
 const PORT = Number(process.env.PORT || 3000);
 const OPENAI_API_KEY = normalizeOpenAIApiKey(process.env.OPENAI_API_KEY || "");
@@ -47,6 +49,14 @@ const MIME_TYPES = {
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".webm": "video/webm",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".pdf": "application/pdf",
 };
 
 const STATIC_FILES = new Map([
@@ -224,6 +234,10 @@ const server = createServer(async (req, res) => {
     return handleTranslate(req, res);
   }
 
+  if (req.method === "POST" && requestUrl.pathname === "/api/media") {
+    return handleMediaUpload(req, res);
+  }
+
   if (req.method === "POST" && requestUrl.pathname === "/api/typing") {
     return handleTypingUpdate(req, res);
   }
@@ -244,6 +258,10 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "GET" && requestUrl.pathname === "/api/events") {
     return handleEventStream(req, res);
+  }
+
+  if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname.startsWith("/media/")) {
+    return serveUploadedMedia(requestUrl.pathname, res, req.method === "HEAD");
   }
 
   if (req.method === "GET" || req.method === "HEAD") {
@@ -409,6 +427,71 @@ async function handlePushUnregister(req, res) {
   } catch (error) {
     console.error("[push-unregister]", error);
     return sendJson(res, 500, { error: "push_unregister_failed" });
+  }
+}
+
+function sanitizeMediaId(value) {
+  const normalized = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{4,120}$/.test(normalized) ? normalized : "";
+}
+
+function getFileExtensionFromName(fileName = "") {
+  const ext = path.extname(String(fileName || "").trim()).toLowerCase();
+  return ext && /^[.][a-z0-9]{1,10}$/.test(ext) ? ext : "";
+}
+
+function getMediaFileExtension(mimeType, fileName = "") {
+  const normalizedMimeType = String(mimeType || "").trim().toLowerCase();
+  const byMimeType = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "video/webm": ".webm",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "application/pdf": ".pdf",
+  };
+  return byMimeType[normalizedMimeType] || getFileExtensionFromName(fileName) || ".bin";
+}
+
+async function handleMediaUpload(req, res) {
+  try {
+    const mediaId = sanitizeMediaId(req.headers["x-media-id"]);
+    const kind = String(req.headers["x-media-kind"] || "").trim().toLowerCase();
+    const rawFileName = String(req.headers["x-media-name"] || "").trim();
+    const fileName = rawFileName ? decodeURIComponent(rawFileName) : "";
+    const mimeType = String(req.headers["x-media-mime-type"] || "application/octet-stream").trim().toLowerCase();
+
+    if (!mediaId || !["image", "video", "file"].includes(kind)) {
+      return sendJson(res, 400, { error: "invalid_media_upload" });
+    }
+
+    const body = await readBinaryBody(req, MEDIA_UPLOAD_MAX_BYTES);
+    if (!body.length) {
+      return sendJson(res, 400, { error: "media_body_missing" });
+    }
+
+    await mkdir(MEDIA_STORAGE_DIR, { recursive: true });
+    const extension = getMediaFileExtension(mimeType, fileName);
+    const safeFileName = `${mediaId}${extension}`;
+    const absolutePath = path.join(MEDIA_STORAGE_DIR, safeFileName);
+    const uploadedAt = Date.now();
+    const expiresAt = kind === "image" || kind === "video" ? uploadedAt + 24 * 60 * 60 * 1000 : null;
+
+    await writeFile(absolutePath, body);
+
+    return sendJson(res, 200, {
+      ok: true,
+      mediaId,
+      url: `/media/${safeFileName}`,
+      uploadedAt,
+      expiresAt,
+    });
+  } catch (error) {
+    console.error("[media-upload]", error);
+    return sendJson(res, 500, { error: "media_upload_failed" });
   }
 }
 
@@ -947,17 +1030,30 @@ async function sendPushToUser(userId, payload) {
   for (const entry of tokens) {
     try {
       const link = buildPushTargetUrl(entry, payload);
+      const notificationTitle = String(payload?.title || "TRANSCHAT");
+      const notificationBody = String(payload?.body || payload?.previewText || "");
       await messaging.send({
         token: entry.token,
         data: normalizePushPayload(payload),
+        notification: {
+          title: notificationTitle,
+          body: notificationBody,
+        },
+        android: {
+          priority: "high",
+          notification: {
+            defaultSound: true,
+            defaultVibrateTimings: true,
+          },
+        },
         webpush: {
           headers: {
             Urgency: "high",
-            TTL: "120",
+            TTL: "3600",
           },
           notification: {
-            title: String(payload?.title || "TRANSCHAT"),
-            body: String(payload?.body || payload?.previewText || ""),
+            title: notificationTitle,
+            body: notificationBody,
             icon: "/icons/icon-192.png",
             badge: "/icons/icon-192.png",
             tag: String(payload?.tag || ""),
@@ -1912,6 +2008,30 @@ async function serveStatic(requestPath, res, headOnly) {
   }
 }
 
+async function serveUploadedMedia(requestPath, res, headOnly) {
+  const requestedName = path.basename(String(requestPath || "").replace(/^\/media\//, ""));
+  if (!requestedName || requestedName.includes("..")) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+    return;
+  }
+
+  const absolutePath = path.join(MEDIA_STORAGE_DIR, requestedName);
+  const ext = path.extname(requestedName).toLowerCase();
+
+  try {
+    const fileBuffer = await readFile(absolutePath);
+    res.writeHead(200, {
+      "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
+      "Cache-Control": "public, max-age=31536000, immutable",
+    });
+    res.end(headOnly ? undefined : fileBuffer);
+  } catch (error) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+  }
+}
+
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
@@ -1945,6 +2065,27 @@ function readJsonBody(req) {
       }
     });
 
+    req.on("error", reject);
+  });
+}
+
+function readBinaryBody(req, maxBytes = MEDIA_UPLOAD_MAX_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let totalBytes = 0;
+
+    req.on("data", (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.length;
+      if (totalBytes > maxBytes) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(buffer);
+    });
+
+    req.on("end", () => resolve(chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0)));
     req.on("error", reject);
   });
 }

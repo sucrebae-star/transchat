@@ -2,6 +2,7 @@ importScripts("https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js
 importScripts("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js");
 
 let messagingReadyPromise = null;
+const recentNotificationKeys = new Map();
 
 function normalizePushPayload(payload) {
   const data = payload?.data || payload || {};
@@ -28,6 +29,52 @@ async function fetchPushConfig() {
   return response.json();
 }
 
+function buildNotificationKey(payload) {
+  return [
+    payload?.tag || "",
+    payload?.roomId || "",
+    payload?.inviteId || "",
+    payload?.createdAt || "",
+    payload?.title || "",
+    payload?.body || payload?.previewText || "",
+  ].join("::");
+}
+
+function pruneRecentNotificationKeys(now = Date.now()) {
+  recentNotificationKeys.forEach((timestamp, key) => {
+    if (now - timestamp > 10_000) {
+      recentNotificationKeys.delete(key);
+    }
+  });
+}
+
+async function presentPushNotification(rawPayload) {
+  const normalized = normalizePushPayload(rawPayload);
+  const title = normalized.title || rawPayload?.notification?.title || "TRANSCHAT";
+  const body = normalized.body || rawPayload?.notification?.body || normalized.previewText || "";
+  const tag = normalized.tag || (normalized.type === "message" ? `room:${normalized.roomId}` : `invite:${normalized.inviteId}`);
+  const key = buildNotificationKey({ ...normalized, title, body, tag });
+  const now = Date.now();
+
+  pruneRecentNotificationKeys(now);
+  if (recentNotificationKeys.has(key)) {
+    return;
+  }
+  recentNotificationKeys.set(key, now);
+
+  const existing = await self.registration.getNotifications({ tag });
+  existing.forEach((notification) => notification.close());
+
+  await self.registration.showNotification(title, {
+    body,
+    tag,
+    renotify: true,
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    data: normalized,
+  });
+}
+
 async function ensureMessagingReady() {
   if (messagingReadyPromise) {
     return messagingReadyPromise;
@@ -45,19 +92,7 @@ async function ensureMessagingReady() {
 
     const messaging = firebase.messaging();
     messaging.onBackgroundMessage((payload) => {
-      if (payload?.notification?.title || payload?.notification?.body) {
-        return;
-      }
-      const normalized = normalizePushPayload(payload);
-      const title = normalized.title || "TRANSCHAT";
-      const body = normalized.body || normalized.previewText || "";
-      return self.registration.showNotification(title, {
-        body,
-        tag: normalized.tag || (normalized.type === "message" ? `room:${normalized.roomId}` : `invite:${normalized.inviteId}`),
-        icon: "/icons/icon-192.png",
-        badge: "/icons/icon-192.png",
-        data: normalized,
-      });
+      return presentPushNotification(payload);
     });
 
     return messaging;
@@ -107,6 +142,26 @@ self.addEventListener("notificationclick", (event) => {
 
     if (clients.openWindow) {
       await clients.openWindow(targetUrl);
+    }
+  })());
+});
+
+self.addEventListener("push", (event) => {
+  if (!event.data) {
+    return;
+  }
+
+  event.waitUntil((async () => {
+    try {
+      const payload = event.data.json();
+      await presentPushNotification(payload);
+    } catch (error) {
+      try {
+        const text = event.data.text();
+        await presentPushNotification({ data: { body: text, previewText: text } });
+      } catch (secondaryError) {
+        console.error("[push-sw] push event handling failed", secondaryError || error);
+      }
     }
   })());
 });
