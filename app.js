@@ -142,6 +142,7 @@
     profileImageCropDrag: null,
     historyBound: false,
     historyRoomId: null,
+    historyExitArmed: false,
   };
 
   function ensureAppRoot() {
@@ -7185,8 +7186,88 @@
                     ? renderImageSourceModal()
                   : modalType === "notice"
                     ? renderNoticeModal()
+                    : modalType === "exit-confirm"
+                      ? renderAppExitConfirmModal()
                 : "";
     return `<div class="modal-layer">${body}</div>`;
+  }
+
+  function renderExitConfirmModal() {
+    const uiLanguage = getUiLanguage();
+    const title =
+      uiLanguage === "en"
+        ? "Do you want to close the app?"
+        : uiLanguage === "vi"
+          ? "Ban co muon thoat ung dung khong?"
+          : "앱을 종료하시겠습니까?";
+    const message =
+      uiLanguage === "en"
+        ? "If you go back from the chat list, the app will close."
+        : uiLanguage === "vi"
+          ? "Khi dang o danh sach phong chat, nhan nut quay lai de thoat ung dung."
+          : "채팅 목록에서 뒤로가기를 누르면 앱을 종료할 수 있습니다.";
+    const confirmLabel =
+      uiLanguage === "en"
+        ? "Yes"
+        : uiLanguage === "vi"
+          ? "Co"
+          : "예";
+    return `
+      <section class="modal notice-modal">
+        <div class="modal-header">
+          <h3>${escapeHtml(title)}</h3>
+        </div>
+        <div class="modal-body">
+          <p>${escapeHtml(message)}</p>
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" data-action="close-modal">${escapeHtml(t("cancel"))}</button>
+          <button class="button button-primary" data-action="confirm-exit-app">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderAppExitConfirmModal() {
+    const uiLanguage = getUiLanguage();
+    const title =
+      uiLanguage === "en"
+        ? "Do you want to close the app?"
+        : uiLanguage === "vi"
+          ? "Ban co muon thoat ung dung khong?"
+          : "\uC571\uC744 \uC885\uB8CC\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C?";
+    const message =
+      uiLanguage === "en"
+        ? "If you go back from the chat list, the app will close."
+        : uiLanguage === "vi"
+          ? "Khi dang o danh sach phong chat, nhan nut quay lai de thoat ung dung."
+          : "\uCC44\uD305 \uBAA9\uB85D\uC5D0\uC11C \uB4A4\uB85C\uAC00\uAE30\uB97C \uB204\uB974\uBA74 \uC571\uC774 \uC885\uB8CC\uB429\uB2C8\uB2E4.";
+    const cancelLabel =
+      uiLanguage === "en"
+        ? "No"
+        : uiLanguage === "vi"
+          ? "Khong"
+          : "\uC544\uB2C8\uC624";
+    const confirmLabel =
+      uiLanguage === "en"
+        ? "Yes"
+        : uiLanguage === "vi"
+          ? "Co"
+          : "\uC608";
+    return `
+      <section class="modal notice-modal">
+        <div class="modal-header">
+          <h3>${escapeHtml(title)}</h3>
+        </div>
+        <div class="modal-body">
+          <p>${escapeHtml(message)}</p>
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" data-action="close-modal">${escapeHtml(cancelLabel)}</button>
+          <button class="button button-primary" data-action="confirm-exit-app">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </section>
+    `;
   }
 
   function renderProfileImageEditorModal() {
@@ -7676,7 +7757,7 @@
     if (currentState?.__transchat) {
       return;
     }
-    window.history.replaceState({ __transchat: true, screen: "chat-list", roomId: null }, "", window.location.href);
+    window.history.replaceState({ __transchat: true, screen: "app-root", roomId: null }, "", window.location.href);
   }
 
   function syncBrowserHistoryForActiveRoom() {
@@ -7684,9 +7765,17 @@
       return;
     }
 
+    const currentUser = getCurrentUser();
+    if (!currentUser) {
+      runtime.historyRoomId = null;
+      runtime.historyExitArmed = false;
+      return;
+    }
+
     ensureBrowserHistoryState();
-    const roomId = uiState.activeRoomId || null;
     const currentState = window.history.state;
+    const roomId = uiState.activeRoomId || null;
+    const isChatListView = !roomId && uiState.directoryTab === "chat";
     if (roomId) {
       if (currentState?.__transchat && currentState.screen === "room" && currentState.roomId === roomId) {
         runtime.historyRoomId = roomId;
@@ -7695,14 +7784,31 @@
       if (runtime.historyRoomId === roomId) {
         return;
       }
+      if (currentState?.__transchat && currentState.screen === "room") {
+        window.history.replaceState({ __transchat: true, screen: "room", roomId }, "", window.location.href);
+        runtime.historyRoomId = roomId;
+        return;
+      }
       window.history.pushState({ __transchat: true, screen: "room", roomId }, "", window.location.href);
       runtime.historyRoomId = roomId;
       return;
     }
 
     runtime.historyRoomId = null;
-    if (!(currentState?.__transchat && currentState.screen === "chat-list")) {
+    if (isChatListView) {
+      if (currentState?.__transchat && currentState.screen === "chat-list") {
+        return;
+      }
+      if (currentState?.__transchat && currentState.screen === "app-root") {
+        window.history.pushState({ __transchat: true, screen: "chat-list", roomId: null }, "", window.location.href);
+        return;
+      }
       window.history.replaceState({ __transchat: true, screen: "chat-list", roomId: null }, "", window.location.href);
+      return;
+    }
+
+    if (!(currentState?.__transchat && currentState.screen === "app-root")) {
+      window.history.replaceState({ __transchat: true, screen: "app-root", roomId: null }, "", window.location.href);
     }
   }
 
@@ -7741,14 +7847,52 @@
     closeActiveRoomView();
   }
 
-  function onWindowPopState(event) {
-    if (!uiState.activeRoomId) {
+  function confirmExitApp() {
+    uiState.modal = null;
+    uiState.previewMedia = null;
+    clearProfileCropDrag();
+    if (typeof window === "undefined" || !window.history) {
+      render();
       return;
     }
+    runtime.historyExitArmed = true;
+    window.history.back();
+  }
+
+  function onWindowPopState(event) {
     const nextState = event.state;
-    const isRoomState = Boolean(nextState?.__transchat && nextState.screen === "room");
-    if (!isRoomState) {
-      closeActiveRoomView({ updateHistory: false });
+    if (runtime.historyExitArmed) {
+      runtime.historyExitArmed = false;
+      const shouldContinueExit = !nextState || (nextState.__transchat && nextState.screen === "app-root");
+      if (shouldContinueExit) {
+        setTimeout(() => {
+          if (typeof window !== "undefined" && window.history) {
+            window.history.back();
+          }
+        }, 0);
+      }
+      return;
+    }
+
+    if (uiState.activeRoomId) {
+      const isRoomState = Boolean(nextState?.__transchat && nextState.screen === "room");
+      if (!isRoomState) {
+        closeActiveRoomView({ updateHistory: false });
+      }
+      return;
+    }
+
+    const currentUser = getCurrentUser();
+    const shouldGuardExit = Boolean(currentUser && uiState.directoryTab === "chat");
+    const isChatListState = Boolean(nextState?.__transchat && nextState.screen === "chat-list");
+    if (shouldGuardExit && !isChatListState) {
+      uiState.modal = { type: "exit-confirm" };
+      uiState.previewMedia = null;
+      clearProfileCropDrag();
+      if (typeof window !== "undefined" && window.history && typeof window.history.pushState === "function") {
+        window.history.pushState({ __transchat: true, screen: "chat-list", roomId: null }, "", window.location.href);
+      }
+      render();
     }
   }
 
@@ -8099,18 +8243,11 @@
       return;
     }
     if (action === "back-to-chat-list") {
-      const currentUser = getCurrentUser();
-      stopTypingForRoom(uiState.activeRoomId);
-      uiState.activeRoomId = null;
-      uiState.directoryTab = "chat";
-      uiState.chatDetailsOpen = false;
-      uiState.attachmentMenuOpen = false;
-      markUserPresence(null);
-      if (currentUser) {
-        markAllChatNotificationsSeen(currentUser.id);
-        persistState();
-      }
-      render();
+      handleRoomBackNavigation();
+      return;
+    }
+    if (action === "confirm-exit-app") {
+      confirmExitApp();
       return;
     }
     if (action === "toggle-chat-details") {
@@ -11722,6 +11859,10 @@
     APP_ROOT.addEventListener("compositionend", onRootCompositionEnd);
     APP_ROOT.addEventListener("change", onRootChange);
     APP_ROOT.addEventListener("submit", onRootSubmit);
+    if (!runtime.historyBound) {
+      window.addEventListener("popstate", onWindowPopState);
+      runtime.historyBound = true;
+    }
     if (!runtime.pwa.listenersBound) {
       window.addEventListener("beforeinstallprompt", (event) => {
         event.preventDefault();
