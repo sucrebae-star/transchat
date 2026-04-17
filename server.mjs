@@ -1339,6 +1339,11 @@ function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, trans
     rules.push(
       "- For Korean-to-Vietnamese reflective prose or narration, prefer fluent Vietnamese syntax over rigid Korean clause order while preserving the exact meaning.",
       "- In Korean-to-Vietnamese family dialogue such as parent-child conversation, use warm everyday Vietnamese. Parent lines should sound caring but gently guiding, and child lines should sound respectful and natural without becoming overly formal.",
+      "- In Korean-to-Vietnamese parent-child dialogue, prefer everyday family role terms such as 'Me:' and 'Con:' for speaker labels. Do not literalize a dialogue label like '아들:' or '딸:' into stiff forms such as 'Con trai:' or 'Con gai:' unless that gender distinction is genuinely needed for meaning.",
+      "- In ordinary caring or mildly scolding parent-to-child dialogue, do not use harsh Vietnamese second-person forms such as 'may' unless the Korean source is clearly angry, insulting, or intentionally severe. Prefer the normal family register built around 'con'.",
+      "- Preserve the Korean tone of gentle parental guidance. Expressions like '-해야지', '-거잖아', or '어떡해' should sound like natural family admonition in Vietnamese, not like a lecture or a blunt reprimand.",
+      "- For Korean family-life lines, prefer idiomatic household Vietnamese such as 'xem dien thoai', 'phai biet sap xep thoi gian', or 'tat dien thoai roi di ngu' when those match the meaning. Avoid stiff literal renderings that sound translated instead of spoken at home.",
+      "- When the child replies to a parent, use 'con' naturally and add particles like 'a' only where spoken Vietnamese would actually use them. Do not force 'a' into every clause or make the child sound unnaturally ceremonial.",
       "- Do not mechanically calque Korean expressions into unnatural Vietnamese phrasing such as 'uống bắt đầu ngày', 'theo con đường của mình', or 'một ngày ... cảm thấy quý giá nhất'. Rewrite them into idiomatic Vietnamese sentences with the same meaning.",
       "- Do not use verbs like 'cảm thấy' with non-human subjects such as weather, air, or scenery when Vietnamese would normally use 'trở nên', 'dường như', 'mang lại cảm giác', or another natural predicate.",
       "- If the Korean source omits the subject, do not automatically insert 'anh', 'em', or 'toi'. Add an explicit Vietnamese subject only when the source or context summary clearly fixes the speaker role and the sentence genuinely needs it.",
@@ -1418,10 +1423,22 @@ function normalizeTranslatedText(outputText, originalText, options = {}) {
   ) {
     normalized = normalized.slice(1, -1).trim() || String(originalText || "");
   }
+  if (options.targetLanguage === "vi") {
+    normalized = normalizeVietnameseFamilySpeakerLabels(normalized, options);
+  }
   if (options.targetLanguage === "ko") {
     normalized = normalizeKoreanVietnameseRoleArtifactsSafe(normalized, options);
   }
   return normalized;
+}
+
+function normalizeVietnameseFamilySpeakerLabels(outputText, options = {}) {
+  let normalized = String(outputText || "").trim();
+  if (!normalized) return normalized;
+  if (String(options.sourceLanguage || "").trim() !== "ko") return normalized;
+  return normalized
+    .replace(/(^|\n)\s*Con trai\s*:/giu, "$1Con:")
+    .replace(/(^|\n)\s*Con g(?:ai|ái)\s*:/giu, "$1Con:");
 }
 
 function normalizeKoreanVietnameseRoleArtifactsSafe(outputText, options = {}) {
