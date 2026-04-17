@@ -1230,7 +1230,11 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLa
       }
 
       const data = await response.json();
-      const outputText = normalizeTranslatedText(extractResponseText(data), text);
+      const outputText = normalizeTranslatedText(extractResponseText(data), text, {
+        sourceLanguage,
+        targetLanguage,
+        detectedLanguages,
+      });
       translationCache.set(cacheKey, outputText);
       return outputText;
     } catch (error) {
@@ -1279,7 +1283,7 @@ function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null
     normalizedConcept === "lover"
       ? "Default relationship context: private romantic partners. Preserve caring, reassuring, affectionate tone exactly without rewriting for extra smoothness."
       : "";
-  const pairSpecificRules = buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, normalizedConcept);
+  const pairSpecificRules = buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, normalizedConcept, normalizedDetectedLanguages);
 
   return [
     "You are a professional translator for a multilingual private chat app.",
@@ -1321,10 +1325,17 @@ function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null
   ].filter(Boolean).join("\n");
 }
 
-function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT) {
+function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, detectedLanguages = null) {
   const rules = [];
+  const normalizedDetectedLanguages = [...new Set(
+    (Array.isArray(detectedLanguages) ? detectedLanguages : [sourceLanguage])
+      .map((language) => String(language || "").trim())
+      .filter(Boolean)
+  )];
+  const includesVietnamese = normalizedDetectedLanguages.includes("vi");
+  const includesKorean = normalizedDetectedLanguages.includes("ko");
 
-  if (sourceLanguage === "ko" && targetLanguage === "vi") {
+  if ((sourceLanguage === "ko" || includesKorean) && targetLanguage === "vi") {
     rules.push(
       "- For Korean-to-Vietnamese reflective prose or narration, prefer fluent Vietnamese syntax over rigid Korean clause order while preserving the exact meaning.",
       "- In Korean-to-Vietnamese family dialogue such as parent-child conversation, use warm everyday Vietnamese. Parent lines should sound caring but gently guiding, and child lines should sound respectful and natural without becoming overly formal.",
@@ -1341,7 +1352,7 @@ function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, trans
     );
   }
 
-  if (sourceLanguage === "vi" && targetLanguage === "ko") {
+  if ((sourceLanguage === "vi" || includesVietnamese) && targetLanguage === "ko") {
     rules.push(
       "- For Vietnamese-to-Korean, resolve kinship pronouns such as 'anh', 'em', 'chi', and 'co' from the context summary before translating; do not flatten them into one generic Korean subject.",
       "- In teacher-student, elder-younger, or other authority dialogue, choose natural spoken Korean endings that match the relationship: teacher-to-student lines should sound like live speech, and student-to-teacher lines should stay polite without becoming stiff written prose.",
@@ -1349,6 +1360,9 @@ function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, trans
       "- Do not translate Vietnamese role nouns such as 'thay', 'co', or 'con' into repeated explicit Korean subjects like '선생님은' or '학생은' in every sentence when Korean would normally omit them.",
       "- Do not over-translate every Vietnamese pronoun into an explicit Korean subject such as '나는', '내가', '너는', or '그는'. Korean often sounds more natural with the subject omitted once the referent is clear.",
       "- If Vietnamese repeats 'anh' or 'em' mainly for Vietnamese grammar, compress that repetition into natural Korean and keep only the amount of subject marking that Korean genuinely needs.",
+      "- Never leave Vietnamese kinship pronouns literally inside Korean output. Do not produce forms such as 'anh은', 'em을', 'anh(em)', or Korean particles attached to raw Vietnamese words.",
+      "- For affectionate lines such as 'anh yeu em rat nhieu', prefer natural Korean like '정말 많이 사랑해', '정말 많이 사랑해요', or another context-appropriate Korean sentence. Do not translate it as 'anh은 em을 정말 많이 사랑해'.",
+      "- If a vocative name such as 'Hoa,' appears, keep the name naturally in Korean and render the rest of the sentence as fluent Korean. Example direction: 'Hoa, anh yeu em rat nhieu ^^' should read like '호아, 정말 많이 사랑해요 ^^', not a word-for-word pronoun mapping.",
       "- If the Vietnamese source is reflective narration rather than direct dialogue, produce natural Korean narrative prose instead of mirroring Vietnamese word order."
     );
   }
@@ -1394,16 +1408,62 @@ function describeLanguage(code) {
   );
 }
 
-function normalizeTranslatedText(outputText, originalText) {
+function normalizeTranslatedText(outputText, originalText, options = {}) {
   const trimmed = String(outputText || "").trim();
   if (!trimmed) return String(originalText || "");
+  let normalized = trimmed;
   if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    (normalized.startsWith('"') && normalized.endsWith('"')) ||
+    (normalized.startsWith("'") && normalized.endsWith("'"))
   ) {
-    return trimmed.slice(1, -1).trim() || String(originalText || "");
+    normalized = normalized.slice(1, -1).trim() || String(originalText || "");
   }
-  return trimmed;
+  if (options.targetLanguage === "ko") {
+    normalized = normalizeKoreanVietnameseRoleArtifactsSafe(normalized, options);
+  }
+  return normalized;
+}
+
+function normalizeKoreanVietnameseRoleArtifactsSafe(outputText, options = {}) {
+  let normalized = String(outputText || "").trim();
+  if (!normalized) return normalized;
+  const detectedLanguages = Array.isArray(options.detectedLanguages) ? options.detectedLanguages : [options.sourceLanguage];
+  const includesVietnamese = detectedLanguages.includes("vi") || options.sourceLanguage === "vi";
+  if (!includesVietnamese) return normalized;
+  if (!/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/.test(normalized)) return normalized;
+  if (!/\b(?:anh|em|chi|ch\u1ecb|co|c\u00f4|thay|th\u1ea7y|me|m\u1eb9|con)\b/iu.test(normalized)) return normalized;
+
+  normalized = normalized
+    .replace(/\b(?:anh|em|chi|ch\u1ecb|co|c\u00f4|thay|th\u1ea7y|me|m\u1eb9|con)\s*(?:\uC740|\uB294|\uC774|\uAC00|\uC744|\uB97C|\uC5D0\uAC8C|\uD55C\uD14C)\s*/giu, "")
+    .replace(/\(\s*(?:anh|em|chi|ch\u1ecb|co|c\u00f4|thay|th\u1ea7y|me|m\u1eb9|con)\s*\)/giu, "")
+    .replace(/\b(?:anh|em|chi|ch\u1ecb|co|c\u00f4|thay|th\u1ea7y|me|m\u1eb9|con)\b/giu, "")
+    .replace(/\s+,/g, ",")
+    .replace(/,\s*,/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return normalized;
+}
+
+function normalizeKoreanVietnameseRoleArtifacts(outputText, options = {}) {
+  let normalized = String(outputText || "").trim();
+  if (!normalized) return normalized;
+  const detectedLanguages = Array.isArray(options.detectedLanguages) ? options.detectedLanguages : [options.sourceLanguage];
+  const includesVietnamese = detectedLanguages.includes("vi") || options.sourceLanguage === "vi";
+  if (!includesVietnamese) return normalized;
+  if (!/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/.test(normalized)) return normalized;
+  if (!/\b(?:anh|em|chi|chị|co|cô|thay|thầy|me|mẹ|con)\b/iu.test(normalized)) return normalized;
+
+  normalized = normalized
+    .replace(/\b(?:anh|em|chi|chị|co|cô|thay|thầy|me|mẹ|con)\s*(?:은|는|이|가|을|를|에게|한테)\s*/giu, "")
+    .replace(/\(\s*(?:anh|em|chi|chị|co|cô|thay|thầy|me|mẹ|con)\s*\)/giu, "")
+    .replace(/\b(?:anh|em|chi|chị|co|cô|thay|thầy|me|mẹ|con)\b/giu, "")
+    .replace(/\s+,/g, ",")
+    .replace(/,\s*,/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return normalized;
 }
 
 function extractResponseText(data) {
