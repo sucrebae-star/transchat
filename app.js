@@ -87,6 +87,7 @@
     softRenderTimer: null,
     mediaCleanupTimer: null,
     eventSource: null,
+    resumeStateSyncPromise: null,
     serverEventsConnected: false,
     compositionActive: false,
     compositionTarget: null,
@@ -2680,6 +2681,30 @@
     }
     applyStateSnapshot(serverState, { source: "server" });
     return true;
+  }
+
+  async function refreshServerStateAfterResume(options = {}) {
+    if (!shouldUseTranslationBackend()) {
+      if (options.renderIfUnchanged) {
+        renderSafelyDuringInput();
+      }
+      return false;
+    }
+    if (runtime.resumeStateSyncPromise) {
+      return runtime.resumeStateSyncPromise;
+    }
+
+    runtime.resumeStateSyncPromise = (async () => {
+      const applied = await pollServerStateIfNeeded({ force: true });
+      if (!applied && options.renderIfUnchanged) {
+        renderSafelyDuringInput();
+      }
+      return applied;
+    })().finally(() => {
+      runtime.resumeStateSyncPromise = null;
+    });
+
+    return runtime.resumeStateSyncPromise;
   }
 
   function getStateTimestamp(state) {
@@ -12008,6 +12033,7 @@
     window.addEventListener("focus", () => {
       syncPushPermissionState({ render: true });
       void requestPushRegistrationRefresh();
+      void refreshServerStateAfterResume({ renderIfUnchanged: true });
     });
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncViewport);
@@ -12036,10 +12062,14 @@
         refreshStorageEstimate();
         scheduleReceiptRefresh({ force: true, delay: 0 });
         flushPendingPushNavigation();
-        render();
+        void refreshServerStateAfterResume({ renderIfUnchanged: true });
         return;
       }
       persistPresenceSnapshotIfNeeded(Date.now(), { force: true });
+    });
+    window.addEventListener("pageshow", () => {
+      if (document.hidden) return;
+      void refreshServerStateAfterResume({ renderIfUnchanged: true });
     });
     window.addEventListener("pagehide", () => {
       const timestamp = Date.now();
