@@ -1310,7 +1310,7 @@
     applyButton: "적용",
     toastRoomSettingsSaved: "방 설정이 저장되었습니다",
     toastRoomSettingsSavedCopy: "{title} 설정이 반영되었습니다.",
-    roomDeleteConfirm: "방장이 나가면 대화방과 내용이 모두 삭제됩니다. 계속할까요?",
+    roomDeleteConfirm: "방을 나가시겠어요? 다른 참여자가 남아 있으면 방장은 자동으로 변경되고, 마지막 참여자면 방이 삭제됩니다.",
   });
 
   Object.assign(DICTIONARY.en, {
@@ -1358,7 +1358,7 @@
     applyButton: "Apply",
     toastRoomSettingsSaved: "Room settings saved",
     toastRoomSettingsSavedCopy: "{title} has been updated.",
-    roomDeleteConfirm: "If the creator leaves, this room and all of its contents are deleted. Continue?",
+    roomDeleteConfirm: "Leave this room? If other participants remain, ownership is transferred automatically. If you are the last participant, the room is deleted.",
   });
 
   Object.assign(DICTIONARY.vi, {
@@ -1406,7 +1406,7 @@
     applyButton: "Ap dung",
     toastRoomSettingsSaved: "Da luu cai dat phong",
     toastRoomSettingsSavedCopy: "{title} da duoc cap nhat.",
-    roomDeleteConfirm: "Neu chu phong roi di, phong va toan bo noi dung se bi xoa. Tiep tuc?",
+    roomDeleteConfirm: "Ban co muon roi phong khong? Neu van con nguoi trong phong, chu phong se duoc chuyen tu dong. Neu ban la nguoi cuoi cung, phong se bi xoa.",
   });
 
   // Added: login/signup/profile copy for the dedicated auth screens and compact profile editing flow.
@@ -9396,6 +9396,35 @@
     }
   }
 
+  function getRemainingRoomParticipantIds(room, excludedUserId = "") {
+    const excluded = String(excludedUserId || "").trim();
+    return deriveRoomParticipantIds(room).filter((participantId) => participantId && participantId !== excluded);
+  }
+
+  function transferRoomOwnershipIfNeeded(room, departingUserId) {
+    if (!room || room.creatorId !== departingUserId) {
+      return {
+        deleted: false,
+        transferredTo: "",
+      };
+    }
+
+    const remainingParticipantIds = getRemainingRoomParticipantIds(room, departingUserId);
+    if (!remainingParticipantIds.length) {
+      deleteRoom(room.id);
+      return {
+        deleted: true,
+        transferredTo: "",
+      };
+    }
+
+    room.creatorId = remainingParticipantIds[0];
+    return {
+      deleted: false,
+      transferredTo: room.creatorId,
+    };
+  }
+
   function markRoomRead(roomId, userId) {
     const room = appState.rooms.find((item) => item.id === roomId);
     if (!room) return;
@@ -9499,14 +9528,21 @@
     const room = appState.rooms.find((item) => item.id === roomId);
     const currentUser = getCurrentUser();
     if (!room || !currentUser || room.status === "expired") return;
-    if (room.creatorId === currentUser.id) {
-      deleteRoom(roomId);
+
+    room.participants = (room.participants || []).filter((participantId) => participantId !== currentUser.id);
+    const ownershipChange = transferRoomOwnershipIfNeeded(room, currentUser.id);
+
+    if (ownershipChange.deleted) {
+      currentUser.currentRoomId = null;
+      if (uiState.activeRoomId === roomId) {
+        uiState.activeRoomId = null;
+      }
       persistState();
       pushToast("toastRoomDeleted", "toastRoomDeletedCopy", { title: room.title });
       render();
       return;
     }
-    room.participants = room.participants.filter((participantId) => participantId !== currentUser.id);
+
     room.messages.push(systemMessage(uid("sys"), "systemUserLeft", { name: currentUser.name }, Date.now()));
     currentUser.currentRoomId = null;
     if (uiState.activeRoomId === room.id) {
@@ -9568,10 +9604,7 @@
     if (isAdminUser(user)) return;
     const mediaIdsToDelete = [];
 
-    const ownedRoomIds = appState.rooms.filter((room) => room.creatorId === userId).map((room) => room.id);
-    ownedRoomIds.forEach((roomId) => deleteRoom(roomId));
-
-    appState.rooms.forEach((room) => {
+    [...appState.rooms].forEach((room) => {
       if ((room.participants || []).includes(userId)) {
         room.participants = room.participants.filter((participantId) => participantId !== userId);
       }
@@ -9601,8 +9634,9 @@
             }
           : message
       );
+      transferRoomOwnershipIfNeeded(room, userId);
     });
-    appState.rooms = appState.rooms.filter((room) => (room.participants || []).length > 0);
+    appState.rooms = appState.rooms.filter((room) => deriveRoomParticipantIds(room).length > 0);
     scheduleMediaDeletion(mediaIdsToDelete);
 
     Object.keys(runtime.typingSignals).forEach((roomId) => {
