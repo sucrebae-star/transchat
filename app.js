@@ -104,6 +104,7 @@
     lastPresenceSignalAt: 0,
     lastPresencePersistAt: 0,
     lastServerStatePollAt: 0,
+    lastAppliedServerStateAt: 0,
     backend: {
       serverReachable: false,
       liveTranslationEnabled: false,
@@ -2558,6 +2559,12 @@
     }
 
     appState = snapshot;
+    if (options.source === "server") {
+      runtime.lastAppliedServerStateAt = Math.max(
+        Number(runtime.lastAppliedServerStateAt || 0),
+        getStateTimestamp(snapshot)
+      );
+    }
     if (!options.skipPersist) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
     }
@@ -2652,13 +2659,13 @@
     if (!shouldUseTranslationBackend() || document.hidden) return false;
     if (!runtime.backend.serverReachable && !options.force) return false;
     const now = Date.now();
-    if (!options.force && now - Number(runtime.lastServerStatePollAt || 0) < 2500) {
+    if (!options.force && now - Number(runtime.lastServerStatePollAt || 0) < 900) {
       return false;
     }
     runtime.lastServerStatePollAt = now;
     const serverState = await fetchServerState();
     if (!serverState) return false;
-    if (!options.force && getStateTimestamp(serverState) <= getStateTimestamp(appState)) {
+    if (!options.force && getStateTimestamp(serverState) <= Number(runtime.lastAppliedServerStateAt || 0)) {
       return false;
     }
     applyStateSnapshot(serverState, { source: "server" });
@@ -11813,6 +11820,7 @@
     runtime.eventSource = new EventSource(CONFIG.eventsApiPath);
     runtime.eventSource.addEventListener("open", () => {
       runtime.serverEventsConnected = true;
+      void pollServerStateIfNeeded({ force: true });
       renderSafelyDuringInput();
     });
     runtime.eventSource.addEventListener("state-updated", async (event) => {
@@ -11829,7 +11837,7 @@
 
       const serverState = await fetchServerState();
       if (!serverState) return;
-      if (getStateTimestamp(serverState) < getStateTimestamp(appState)) return;
+      if (getStateTimestamp(serverState) <= Number(runtime.lastAppliedServerStateAt || 0)) return;
       applyStateSnapshot(serverState, { source: "server" });
     });
     runtime.eventSource.addEventListener("typing-updated", (event) => {
@@ -11921,7 +11929,7 @@
     runtime.serverStatePollTimer = setInterval(() => {
       if (!getCurrentUser() || runtime.serverEventsConnected) return;
       void pollServerStateIfNeeded();
-    }, 3000);
+    }, 1200);
   }
 
   async function bootApplication() {

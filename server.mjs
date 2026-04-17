@@ -401,6 +401,7 @@ async function handleStateUpdate(req, res) {
     const body = await readJsonBody(req);
     const nextState = body?.state;
     const sourceId = String(body?.sourceId || "unknown");
+    const receivedAt = Date.now();
 
     if (!(nextState && [1, STATE_SCHEMA_VERSION].includes(Number(nextState.version || 0)))) {
       return sendJson(res, 400, { error: "invalid_state" });
@@ -417,7 +418,7 @@ async function handleStateUpdate(req, res) {
     }
     const normalizedState = mergeStates(serverState, {
       ...nextState,
-      updatedAt: Number(nextState.updatedAt || Date.now()),
+      updatedAt: receivedAt,
     });
     const normalizedTrace = getLatestUserMessageForTrace(normalizedState);
     if (normalizedTrace) {
