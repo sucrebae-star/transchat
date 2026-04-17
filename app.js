@@ -3486,6 +3486,7 @@
       context.drawImage(image, Number(cropData.offsetX || 0), Number(cropData.offsetY || 0), metrics.drawWidth, metrics.drawHeight);
       currentUser.profileImage = canvas.toDataURL("image/jpeg", 0.9);
       persistState();
+      flushServerStateSync();
       uiState.modal = null;
       clearProfileCropDrag();
       pushToast("toastProfileImageUpdated", "toastProfileImageUpdatedCopy");
@@ -5849,7 +5850,7 @@
           <div class="topbar-right">
             ${renderTopbarStatusBadges()}
             <div class="profile-chip">
-              <div class="avatar">${escapeHtml(initials(currentUser.name))}</div>
+              ${renderProfileImage(currentUser, "avatar avatar-image", currentUser.name)}
               <div class="profile-text">
                 <strong>${escapeHtml(currentUser.name)}</strong>
                 <span>${escapeHtml(getChatLanguageName(currentUser.nativeLanguage))} · ${escapeHtml(getUiLanguageName(currentUser.uiLanguage))}</span>
@@ -6128,7 +6129,8 @@
     const presence = getPresence(friend, activeRoom?.id || friend.currentRoomId || null);
     return `
       <article class="friend-card">
-        <div>
+        ${renderProfileImage(friend, "list-profile-image", friend.name)}
+        <div class="friend-card-meta">
           <strong>${escapeHtml(friend.name)}</strong>
           <span>${escapeHtml(getChatLanguageName(friend.nativeLanguage))} · ${escapeHtml(getChatLanguageName(friend.preferredChatLanguage || friend.nativeLanguage))}</span>
         </div>
@@ -6398,7 +6400,7 @@
         const visibleOriginal = originalCorrupted ? "" : stripLinks(message.originalText);
         parts.push(`
           <div class="message-row ${isMine ? "mine" : ""}" data-diff-key="message:${message.id}">
-            ${!isMine ? `<div class="message-avatar"><div class="avatar">${escapeHtml(initials(sender?.name || "?"))}</div></div>` : ""}
+            ${!isMine ? `<div class="message-avatar">${renderProfileImage(sender, "avatar avatar-image", sender?.name || "profile")}</div>` : ""}
             <div class="message-stack">
               ${!isMine ? `<div class="message-sender">${escapeHtml(sender?.name || "")}</div>` : ""}
               <div class="bubble">
@@ -7076,9 +7078,12 @@
     return `
       <article class="participant-card">
         <div class="participant-row">
-          <div>
-            <strong>${escapeHtml(participant.name)}</strong>
-            <span>${escapeHtml(getChatLanguageName(participant.nativeLanguage))}</span>
+          <div class="participant-row-start">
+            ${renderProfileImage(participant, "list-profile-image", participant.name)}
+            <div class="friend-card-meta">
+              <strong>${escapeHtml(participant.name)}</strong>
+              <span>${escapeHtml(getChatLanguageName(participant.nativeLanguage))}</span>
+            </div>
           </div>
           <span class="status-pill ${presence.kind === "online" ? "pill-success" : ""}">
             ${renderPresenceLabel(presence)}
@@ -7595,7 +7600,8 @@
     const presence = getPresence(friend, activeRoom?.id || friend.currentRoomId || null);
     return `
       <article class="friend-card">
-        <div>
+        ${renderProfileImage(friend, "list-profile-image", friend.name)}
+        <div class="friend-card-meta">
           <strong>${escapeHtml(friend.name)}</strong>
           <span>${escapeHtml(getChatLanguageName(friend.nativeLanguage))} · ${escapeHtml(presence.label)}</span>
         </div>
@@ -7621,9 +7627,12 @@
     return `
       <article class="participant-card">
         <div class="participant-row">
-          <div>
-            <strong>${escapeHtml(participant.name)}</strong>
-            <span>${escapeHtml(getChatLanguageName(participant.nativeLanguage))}</span>
+          <div class="participant-row-start">
+            ${renderProfileImage(participant, "list-profile-image", participant.name)}
+            <div class="friend-card-meta">
+              <strong>${escapeHtml(participant.name)}</strong>
+              <span>${escapeHtml(getChatLanguageName(participant.nativeLanguage))}</span>
+            </div>
           </div>
           <span class="status-pill ${presence.kind === "online" ? "pill-success" : ""}">
             ${renderPresenceLabel(presence)}
@@ -8413,6 +8422,7 @@
       if (currentUser) {
         currentUser.profileImage = null;
         persistState();
+        flushServerStateSync();
         pushToast("toastProfileImageRemoved", "toastProfileImageRemovedCopy");
         render();
       }
@@ -8722,6 +8732,7 @@
         try {
           currentUser.profileImage = await prepareProfileImage(file);
           persistState();
+          flushServerStateSync();
           pushToast("toastProfileImageUpdated", "toastProfileImageUpdatedCopy");
           render();
         } catch (error) {
