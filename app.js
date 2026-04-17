@@ -36,6 +36,7 @@
     translationRetryCooldownMs: 30 * 1000,
     translationRequestTimeoutMs: 12 * 1000,
     translationApiPath: "/api/translate",
+    mediaUploadApiPath: "/api/media",
     stateApiPath: "/api/state",
     eventsApiPath: "/api/events",
     typingApiPath: "/api/typing",
@@ -6838,6 +6839,10 @@
       return renderExpiredMediaCard(media);
     }
 
+    if (media.storage === "pending") {
+      return renderPendingMediaCard(media);
+    }
+
     const source = resolveMediaSource(media);
     if (media.kind === "image") {
       return source
@@ -6879,6 +6884,7 @@
     if (isMediaExpired(media)) return "";
     if (media.storage === "draft") return media.objectUrl || "";
     if (media.storage === "inline") return media.previewUrl;
+    if (media.storage === "server") return media.url || media.previewUrl || "";
     if (media.storage === "runtime") return runtime.videoUrls.get(media.runtimeId) || "";
     if (media.storage === "indexeddb" && media.mediaId) {
       const cached = runtime.mediaObjectUrls.get(media.mediaId);
@@ -8092,7 +8098,7 @@
       name: attachment.name,
       size: attachment.size,
       mimeType: attachment.mimeType || "",
-      storage: attachment.kind === "file" ? "inline" : "pending",
+      storage: "pending",
       mediaId: String(attachment.mediaId || "").trim() || null,
       uploadedAt: Number(attachment.uploadedAt || Date.now()),
       expiresAt: Number(attachment.expiresAt || 0) || null,
@@ -9721,42 +9727,42 @@
 
   async function persistDraftAttachmentForMessage(attachment, roomId, messageId) {
     if (!attachment) return null;
-    if (attachment.kind === "file") {
-      return {
-        kind: "file",
-        name: attachment.name,
-        size: attachment.size,
-        mimeType: attachment.mimeType || "",
-      };
-    }
-
-    const { uploadedAt, expiresAt } = buildMediaExpiry();
     const mediaId = attachment.mediaId || uid("media");
     const blob = attachment.blob instanceof Blob ? attachment.blob : null;
     if (!blob) {
       throw new Error("draft_media_blob_missing");
     }
 
-    await writeChatMediaRecord({
-      id: mediaId,
-      roomId,
-      messageId,
-      mediaType: attachment.kind,
-      mimeType: attachment.mimeType || blob.type || "",
-      fileSize: attachment.size || blob.size,
-      uploadedAt,
-      expiresAt,
-      blob,
+    const response = await fetch(CONFIG.mediaUploadApiPath, {
+      method: "POST",
+      headers: {
+        "x-media-id": mediaId,
+        "x-media-kind": attachment.kind,
+        "x-media-name": encodeURIComponent(attachment.name || `${mediaId}`),
+        "x-media-mime-type": attachment.mimeType || blob.type || "application/octet-stream",
+        "x-room-id": roomId,
+        "x-message-id": messageId,
+      },
+      body: blob,
     });
-    adoptDraftMediaObjectUrl(attachment, mediaId);
+
+    if (!response.ok) {
+      throw new Error(`media_upload_failed_${response.status}`);
+    }
+
+    const payload = await readJsonResponseBody(response);
+    const uploadedAt = Number(payload?.uploadedAt || Date.now());
+    const expiresAt = Number(payload?.expiresAt || 0) || null;
 
     return {
       kind: attachment.kind,
       name: attachment.name,
       size: blob.size,
       mimeType: attachment.mimeType || blob.type || "",
-      storage: "indexeddb",
+      storage: "server",
       mediaId,
+      url: typeof payload?.url === "string" ? payload.url : "",
+      previewUrl: typeof payload?.url === "string" ? payload.url : "",
       uploadedAt,
       expiresAt,
       expired: false,
@@ -10973,6 +10979,13 @@
     return Notification.permission || "default";
   }
 
+  function shouldAttemptPushTokenRegistration(permission = getPushPermissionState()) {
+    if (permission === "granted") {
+      return true;
+    }
+    return isStandaloneApp();
+  }
+
   function syncPushPermissionState(options = {}) {
     const nextPermission = getPushPermissionState();
     const changed = runtime.push.permission !== nextPermission;
@@ -11121,7 +11134,7 @@
     if (!currentUser) return false;
 
     const permission = syncPushPermissionState();
-    if (permission !== "granted") {
+    if (!shouldAttemptPushTokenRegistration(permission)) {
       console.warn("[push] getToken skipped because notification permission is not granted", { permission });
       return false;
     }
@@ -11238,7 +11251,7 @@
 
     const nextPermission = permission === "granted" ? "granted" : await Notification.requestPermission();
     syncPushPermissionState({ render: true });
-    if (nextPermission !== "granted") {
+    if (nextPermission !== "granted" && !isStandaloneApp()) {
       return false;
     }
 
@@ -11255,7 +11268,7 @@
     const currentUser = getCurrentUser();
     if (!currentUser) return false;
     const permission = syncPushPermissionState();
-    if (permission !== "granted") return false;
+    if (!shouldAttemptPushTokenRegistration(permission)) return false;
 
     const cached = readCachedPushRegistration();
     const cacheExpired = !cached.registeredAt || Date.now() - Number(cached.registeredAt || 0) >= 6 * 60 * 60 * 1000;
@@ -11629,6 +11642,7 @@
         name: file.name,
         size: file.size,
         mimeType: file.type || "",
+        blob: file,
       },
       processing: false,
     });
