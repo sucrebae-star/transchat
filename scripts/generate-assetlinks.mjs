@@ -13,7 +13,7 @@ function readArg(name) {
   return String(process.argv[index + 1] || "").trim();
 }
 
-const packageName = readArg("--package") || process.env.TRANSCHAT_ANDROID_PACKAGE || "com.transchat.chat";
+const packageName = readArg("--package") || process.env.TRANSCHAT_ANDROID_PACKAGE || "com.transchat.app";
 const rawFingerprints = [
   ...process.argv.filter((value, index) => process.argv[index - 1] === "--fingerprint"),
   ...String(process.env.TRANSCHAT_SHA256_FINGERPRINTS || "")
@@ -25,7 +25,7 @@ const rawFingerprints = [
 const fingerprints = [...new Set(rawFingerprints)].filter(Boolean);
 const content = [
   {
-    relation: ["delegate_permission/common.handle_all_urls"],
+    relation: ["delegate_permission/common.handle_all_urls", "delegate_permission/common.use_as_origin"],
     target: {
       namespace: "android_app",
       package_name: packageName,
