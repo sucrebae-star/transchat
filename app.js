@@ -7,8 +7,9 @@
   const LANDING_UI_KEY = "transchat-landing-ui-v1";
   const PUSH_TOKEN_CACHE_KEY = "transchat-push-token-v1";
   const PUSH_TOKEN_USER_KEY = "transchat-push-user-v1";
+  const PUSH_TOKEN_REGISTERED_AT_KEY = "transchat-push-registered-at-v1";
   const FCM_VAPID_PUBLIC_KEY = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTtF90lOTYkONeydXEBE_u0_IJQBHx6djF2yftZvhqpz2Ws";
-  const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY, PUSH_TOKEN_CACHE_KEY, PUSH_TOKEN_USER_KEY]);
+  const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY, PUSH_TOKEN_CACHE_KEY, PUSH_TOKEN_USER_KEY, PUSH_TOKEN_REGISTERED_AT_KEY]);
   const CONFIG = {
     roomAutoExpirationEnabled: false,
     roomExpireMs: 30 * 60 * 1000,
@@ -129,6 +130,8 @@
       foregroundBound: false,
       status: "idle",
       lastError: "",
+      lastRegisterAt: 0,
+      refreshPromise: null,
       swMessageBound: false,
       pendingNavigation: null,
     },
@@ -1842,25 +1845,30 @@
       return {
         token: localStorage.getItem(PUSH_TOKEN_CACHE_KEY) || "",
         userId: localStorage.getItem(PUSH_TOKEN_USER_KEY) || "",
+        registeredAt: Number(localStorage.getItem(PUSH_TOKEN_REGISTERED_AT_KEY) || 0) || 0,
       };
     } catch (error) {
-      return { token: "", userId: "" };
+      return { token: "", userId: "", registeredAt: 0 };
     }
   }
 
-  function persistCachedPushRegistration(userId, token) {
+  function persistCachedPushRegistration(userId, token, registeredAt = Date.now()) {
     if (!userId || !token) return;
     localStorage.setItem(PUSH_TOKEN_CACHE_KEY, token);
     localStorage.setItem(PUSH_TOKEN_USER_KEY, userId);
+    localStorage.setItem(PUSH_TOKEN_REGISTERED_AT_KEY, String(Number(registeredAt || Date.now())));
     runtime.push.token = token;
     runtime.push.tokenUserId = userId;
+    runtime.push.lastRegisterAt = Number(registeredAt || Date.now()) || Date.now();
   }
 
   function clearCachedPushRegistration() {
     localStorage.removeItem(PUSH_TOKEN_CACHE_KEY);
     localStorage.removeItem(PUSH_TOKEN_USER_KEY);
+    localStorage.removeItem(PUSH_TOKEN_REGISTERED_AT_KEY);
     runtime.push.token = "";
     runtime.push.tokenUserId = "";
+    runtime.push.lastRegisterAt = 0;
   }
 
   function createSeedState() {
@@ -6403,6 +6411,7 @@
             ${!isMine ? `<div class="message-avatar">${renderProfileImage(sender, "avatar avatar-image", sender?.name || "profile")}</div>` : ""}
             <div class="message-stack">
               ${!isMine ? `<div class="message-sender">${escapeHtml(sender?.name || "")}</div>` : ""}
+              <div class="message-main">
               <div class="bubble">
                 ${visibleText ? `<p>${escapeHtml(visibleText).replace(/\n/g, "<br />")}</p>` : ""}
                 ${links.length ? renderLinks(links) : ""}
@@ -6419,6 +6428,7 @@
                 ${translated.disabled ? `<span class="tiny-pill pill-warning compact-meta-pill" title="${escapeHtml(t("translationDisabledBadge"))}" aria-label="${escapeHtml(t("translationDisabledBadge"))}">⏸️</span>` : ""}
                 ${message.originalText && translated.translated && !translated.failed && !translated.mocked ? `<span class="tiny-pill pill-accent compact-meta-pill" title="${escapeHtml(t("translatedBadge"))}" aria-label="${escapeHtml(t("translatedBadge"))}">✅</span>` : ""}
                 ${shouldShowToggle ? `<button class="text-button" data-action="toggle-original" data-message-id="${message.id}">${escapeHtml(showOriginal ? t("hideOriginal") : t("showOriginal"))}</button>` : ""}
+              </div>
               </div>
             </div>
           </div>
@@ -9287,6 +9297,7 @@
 
   function switchUser(userId) {
     stopTypingForRoom(uiState.activeRoomId);
+    const previousUser = getCurrentUser();
     const user = appState.users.find((item) => item.id === userId);
     if (!user) {
       pushToast("toastNoUserSwitch", "toastNoUserSwitchCopy");
@@ -9310,6 +9321,12 @@
     markUserPresence(user.currentRoomId || null);
     pushToast("toastUserSwitched", "toastUserSwitchedCopy", { name: user.name });
     render();
+    void (async () => {
+      if (previousUser && previousUser.id !== user.id) {
+        await unregisterPushTokenForUser(previousUser);
+      }
+      await requestPushRegistrationRefresh();
+    })();
   }
 
   function handleCreateRoom() {
@@ -11096,8 +11113,13 @@
       }
 
       const cached = readCachedPushRegistration();
-      if (!options.force && cached.token === token && cached.userId === currentUser.id) {
-        persistCachedPushRegistration(currentUser.id, token);
+      const registeredRecently =
+        cached.token === token &&
+        cached.userId === currentUser.id &&
+        Number(cached.registeredAt || 0) > 0 &&
+        Date.now() - Number(cached.registeredAt || 0) < 6 * 60 * 60 * 1000;
+      if (!options.force && registeredRecently) {
+        persistCachedPushRegistration(currentUser.id, token, cached.registeredAt);
         runtime.push.status = "registered";
         return true;
       }
@@ -11118,7 +11140,9 @@
         throw new Error(`push_register_failed_${response.status}`);
       }
 
-      persistCachedPushRegistration(currentUser.id, token);
+      const payload = await readJsonResponseBody(response).catch(() => null);
+
+      persistCachedPushRegistration(currentUser.id, token, payload?.registeredAt || Date.now());
       runtime.push.status = "registered";
       runtime.push.lastError = "";
       return true;
@@ -11193,7 +11217,33 @@
   }
 
   async function requestPushRegistrationRefresh() {
-    return false;
+    const currentUser = getCurrentUser();
+    if (!currentUser) return false;
+    const permission = syncPushPermissionState();
+    if (permission !== "granted") return false;
+
+    const cached = readCachedPushRegistration();
+    const cacheExpired = !cached.registeredAt || Date.now() - Number(cached.registeredAt || 0) >= 6 * 60 * 60 * 1000;
+    const tokenMismatch = cached.userId !== currentUser.id || !cached.token;
+    const shouldForce =
+      tokenMismatch ||
+      cacheExpired ||
+      runtime.push.status === "error" ||
+      runtime.push.tokenUserId !== currentUser.id ||
+      !runtime.push.lastRegisterAt;
+    const now = Date.now();
+    if (!shouldForce && now - Number(runtime.push.lastRegisterAt || 0) < 15 * 1000) {
+      return false;
+    }
+    if (runtime.push.refreshPromise) {
+      return runtime.push.refreshPromise;
+    }
+
+    runtime.push.refreshPromise = registerPushTokenForCurrentUser({ force: shouldForce })
+      .finally(() => {
+        runtime.push.refreshPromise = null;
+      });
+    return runtime.push.refreshPromise;
   }
 
   function showLocalPushPreview(type, payload = {}) {
@@ -11908,6 +11958,7 @@
     });
     window.addEventListener("focus", () => {
       syncPushPermissionState({ render: true });
+      void requestPushRegistrationRefresh();
     });
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncViewport);
@@ -11928,6 +11979,7 @@
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) {
         syncPushPermissionState();
+        void requestPushRegistrationRefresh();
         syncPwaInstallState();
         markUserPresence(uiState.activeRoomId);
         checkRoomExpirations();
@@ -12121,7 +12173,7 @@
       render();
       await bootstrapServerState();
       if (getCurrentUser()) {
-        void registerPushTokenForCurrentUser();
+        void requestPushRegistrationRefresh();
       }
       flushPendingPushNavigation();
       console.info("[transchat] bootstrap:complete");

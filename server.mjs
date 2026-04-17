@@ -369,7 +369,20 @@ async function handlePushRegister(req, res) {
 
     upsertPushToken({ userId, token, platform });
     await savePushTokenState(pushTokenState);
-    return sendJson(res, 200, { ok: true });
+    const userTokenCount = getPushTokensForUser(userId).length;
+    const registeredAt = Date.now();
+    console.info("[push-register]", {
+      userId,
+      platform,
+      tokenTail: token.slice(-12),
+      userTokenCount,
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      userTokenCount,
+      tokenTail: token.slice(-12),
+      registeredAt,
+    });
   } catch (error) {
     console.error("[push-register]", error);
     return sendJson(res, 500, { error: "push_register_failed" });
