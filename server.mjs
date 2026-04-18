@@ -18,6 +18,7 @@ const PORT = Number(process.env.PORT || 3000);
 const OPENAI_API_KEY = normalizeOpenAIApiKey(process.env.OPENAI_API_KEY || "");
 const OPENAI_API_KEY_VALID = isValidOpenAIApiKey(OPENAI_API_KEY);
 const OPENAI_MODEL = process.env.OPENAI_TRANSLATION_MODEL || "gpt-5-mini";
+const OPENAI_TRANSLATION_REASONING_EFFORT = normalizeTranslationReasoningEffort(process.env.OPENAI_TRANSLATION_REASONING_EFFORT || "low");
 const FIREBASE_WEB_CONFIG_FALLBACK = {
   apiKey: "AIzaSyB9ZcnjW7n0WVNVg3ELHvSUfnYK_BfK3_0",
   authDomain: "transchat-push.firebaseapp.com",
@@ -215,6 +216,7 @@ const server = createServer(async (req, res) => {
       ok: true,
       liveTranslationEnabled: OPENAI_API_KEY_VALID,
       model: OPENAI_MODEL,
+      reasoningEffort: OPENAI_TRANSLATION_REASONING_EFFORT,
       sharedStateEnabled: true,
       hasServerState: Boolean(serverState),
       translationConfigured: OPENAI_API_KEY_VALID,
@@ -1629,6 +1631,7 @@ async function requestOpenAITranslations({ text, sourceLanguage, detectedLanguag
 async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
   const cacheKey = JSON.stringify({
     model: OPENAI_MODEL,
+    reasoningEffort: OPENAI_TRANSLATION_REASONING_EFFORT,
     sourceLanguage,
     detectedLanguages,
     targetLanguage,
@@ -1645,7 +1648,7 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLa
     model: OPENAI_MODEL,
     store: false,
     reasoning: {
-      effort: "minimal",
+      effort: OPENAI_TRANSLATION_REASONING_EFFORT,
     },
     max_output_tokens: estimateTranslationOutputTokens(text),
     // Policy note: realtime translation sends message text to the configured OpenAI API endpoint only while live translation is enabled.
@@ -1725,6 +1728,8 @@ async function delayTranslationRetry(attempt) {
 }
 
 function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+  return buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguages, targetLanguage, translationConcept, contextSummary });
+
   const normalizedConcept = normalizeTranslationConcept(translationConcept);
   const normalizedDetectedLanguages = [...new Set(
     (Array.isArray(detectedLanguages) ? detectedLanguages : [sourceLanguage])
@@ -1773,6 +1778,60 @@ function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null
     "",
     "Return only the translated sentence.",
     "No explanations.",
+    "Message:",
+    text,
+  ].filter(Boolean).join("\n");
+}
+
+function buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+  const normalizedConcept = normalizeTranslationConcept(translationConcept);
+  const normalizedDetectedLanguages = [...new Set(
+    (Array.isArray(detectedLanguages) ? detectedLanguages : [sourceLanguage])
+      .map((language) => String(language || "").trim())
+      .filter((language) => ALLOWED_LANGUAGES.has(language))
+  )];
+  const mixedLanguageRequest = normalizedDetectedLanguages.length > 1;
+  const romanticDirectionHint =
+    normalizedConcept === "lover"
+      ? "Default relationship context: private romantic partners. Use it only to preserve accurate warmth, role consistency, and nuance. Do not inject extra romance that the source does not support."
+      : "";
+  const pairSpecificRules = buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, normalizedConcept, normalizedDetectedLanguages);
+
+  return [
+    "You are the final recipient-facing translator for a multilingual private chat app.",
+    mixedLanguageRequest && sourceLanguage === targetLanguage
+      ? `Rewrite the mixed-language message into one natural ${describeLanguage(targetLanguage)} chat message.`
+      : `Translate the message from ${describeLanguage(sourceLanguage)} into natural ${describeLanguage(targetLanguage)} for the recipient.`,
+    "",
+    "Priority order:",
+    "1. Preserve the speaker's intent, factual meaning, and emotional force.",
+    "2. Make the result sound like something a native speaker would naturally text or say in the target language.",
+    "3. Preserve wording details, emphasis, and relationship nuance whenever the target language can carry them naturally.",
+    "",
+    "Requirements:",
+    "- Translate for the recipient, not as a literal gloss or teaching example.",
+    "- If a literal rendering sounds translated, awkward, or over-explained, rewrite it into the closest idiomatic target-language expression with the same meaning, tone, and interpersonal nuance.",
+    "- Preserve names, vocatives, calling expressions, emotional emphasis, and intensity markers whenever the target language can express them naturally.",
+    "- Ignore leading meta labels such as 'translation:', 'translated:', 'reference:', or 'original:' when deciding meaning; they are metadata, not the main sentence content.",
+    "- Do not omit or flatten affection, apology, teasing, comfort, hesitation, frustration, urgency, or reassurance.",
+    "- Do not invent unstated facts, quantities, containers, objects, motives, or reasons. If the source stays unspecific, keep the translation equally unspecific.",
+    "- Preserve URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
+    "- If the source leaves the subject, object, or relationship term implicit, preserve that natural implicitness whenever the target language allows it.",
+    "- Do not force explicit pronouns, kinship terms, or partner-role wording when the target language sounds more natural without them.",
+    "- Use the context summary only to keep names, speaker/addressee roles, relationship tone, and honorific level consistent. Never let the summary override the actual message content.",
+    "- If the context summary gives a stable role term or pronoun with medium/high confidence, prefer it before re-guessing. If confidence is low, prefer neutral wording over forcing a wrong kinship term.",
+    "- Analyze the full intended meaning first, then write one clean final message in the target language.",
+    mixedLanguageRequest
+      ? `- The source message contains mixed-language fragments (${normalizedDetectedLanguages.map((language) => describeLanguage(language)).join(", ")}). Understand every fragment first, then translate or normalize all of them into ${describeLanguage(targetLanguage)}; do not leave stray foreign wording just because the dominant language already matches the target.`
+      : "",
+    ...pairSpecificRules,
+    `- Target tone profile: ${describeTranslationConcept(normalizedConcept)}.`,
+    romanticDirectionHint ? `- ${romanticDirectionHint}` : "",
+    contextSummary ? "Context summary (reference only for stable roles, names, relationship tone, and honorific consistency):" : "",
+    contextSummary || "",
+    "",
+    "Return only the final translated message.",
+    "No explanations, notes, labels, or alternatives.",
     "Message:",
     text,
   ].filter(Boolean).join("\n");
@@ -1846,14 +1905,19 @@ function normalizeTranslationConcept(value) {
   return ["office", "general", "friend", "lover"].includes(normalized) ? normalized : DEFAULT_TRANSLATION_CONCEPT;
 }
 
+function normalizeTranslationReasoningEffort(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(normalized) ? normalized : "low";
+}
+
 function describeTranslationConcept(concept) {
   return (
     {
-      office: "professional, polite, and exact without dropping any source nuance",
-      general: "neutral everyday conversation with high fidelity to the source wording and emphasis",
-      friend: "casual and friendly while still preserving the original wording, order, and emphasis closely",
-      lover: "gentle, warm, affectionate romantic-partner language while preserving the original wording, order, and emphasis closely",
-    }[normalizeTranslationConcept(concept)] || "gentle, warm, affectionate romantic-partner language while preserving the original wording, order, and emphasis closely"
+      office: "professional, precise, and natural for real workplace chat without dropping any source nuance",
+      general: "natural everyday conversation that stays fully faithful to the source meaning and intent",
+      friend: "casual, friendly, and natural while preserving the actual content, subtext, and emotional force",
+      lover: "warm, affectionate partner language that feels natural in private chat without adding romance that is not in the source",
+    }[normalizeTranslationConcept(concept)] || "warm, affectionate partner language that feels natural in private chat without adding romance that is not in the source"
   );
 }
 
@@ -2408,7 +2472,7 @@ server.listen(PORT, () => {
   console.log(`TRANSCHAT local server running at http://localhost:${PORT}`);
   console.log(
     OPENAI_API_KEY_VALID
-      ? `Live translation enabled with model ${OPENAI_MODEL}.`
+      ? `Live translation enabled with model ${OPENAI_MODEL} (reasoning: ${OPENAI_TRANSLATION_REASONING_EFFORT}).`
       : OPENAI_API_KEY
         ? "OPENAI_API_KEY is malformed. Re-enter it in one line using ASCII characters only. The client will fall back to mock translation."
         : "OPENAI_API_KEY is missing. The client will fall back to mock translation."
