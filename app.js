@@ -6618,10 +6618,7 @@
   }
 
   function shouldPreferOriginalForOwnMessage(user, message) {
-    if (!user || !message || message.senderId !== user.id) return false;
-    const sourceLanguage = normalizeMessageLanguageCode(message.originalLanguage || message.sourceLanguage, user.nativeLanguage || "ko");
-    const nativeLanguage = normalizeMessageLanguageCode(user.nativeLanguage, sourceLanguage);
-    return Boolean(nativeLanguage) && sourceLanguage === nativeLanguage;
+    return Boolean(user && message && message.senderId === user.id);
   }
 
   function getViewerDisplayLanguage(currentUser, message) {
@@ -10012,6 +10009,7 @@
       if (liveMessageAfterPersist && storedAttachment) {
         liveMessageAfterPersist.media = storedAttachment;
         persistState();
+        flushServerStateSync();
         renderSafelyDuringInput(40);
       }
     } catch (error) {
@@ -10154,11 +10152,6 @@
     });
 
     const needed = new Set();
-    const sender = (appState.users || []).find((user) => user.id === senderId) || null;
-    const senderDisplayLanguage = getUserDisplayLanguage(sender, fromLanguage);
-    if (!shouldPreferOriginalForOwnMessage(sender, { senderId, sourceLanguage: fromLanguage, originalLanguage: fromLanguage }) && shouldRequestTranslationForLanguage(senderDisplayLanguage, fromLanguage, languageProfile)) {
-      needed.add(senderDisplayLanguage);
-    }
     audienceIds.forEach((participantId) => {
       if (participantId === senderId) return;
       const participant = appState.users.find((user) => user.id === participantId);
