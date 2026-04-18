@@ -6617,6 +6617,13 @@
     return normalizeMessageLanguageCode(user?.nativeLanguage || user?.preferredChatLanguage, fallbackLanguage);
   }
 
+  function shouldPreferOriginalForOwnMessage(user, message) {
+    if (!user || !message || message.senderId !== user.id) return false;
+    const sourceLanguage = normalizeMessageLanguageCode(message.originalLanguage || message.sourceLanguage, user.nativeLanguage || "ko");
+    const nativeLanguage = normalizeMessageLanguageCode(user.nativeLanguage, sourceLanguage);
+    return Boolean(nativeLanguage) && sourceLanguage === nativeLanguage;
+  }
+
   function getViewerDisplayLanguage(currentUser, message) {
     const sourceLanguage = normalizeMessageLanguageCode(message?.originalLanguage || message?.sourceLanguage, currentUser?.nativeLanguage || "ko");
     return getUserDisplayLanguage(currentUser, sourceLanguage) || sourceLanguage;
@@ -6624,6 +6631,17 @@
 
   function getDisplayTranslation(message, currentUser) {
     if (!message.originalText) {
+      return {
+        text: message.originalText,
+        failed: false,
+        pending: false,
+        mocked: false,
+        disabled: false,
+        translated: false,
+      };
+    }
+
+    if (shouldPreferOriginalForOwnMessage(currentUser, message)) {
       return {
         text: message.originalText,
         failed: false,
@@ -6682,6 +6700,9 @@
   }
 
   function getPreferredTranslationLanguage(currentUser, message) {
+    if (shouldPreferOriginalForOwnMessage(currentUser, message)) {
+      return null;
+    }
     const viewerLanguage = getViewerDisplayLanguage(currentUser, message);
     return shouldRequestTranslationForLanguage(viewerLanguage, message?.sourceLanguage, message?.languageProfile) ? viewerLanguage : null;
   }
@@ -6704,6 +6725,7 @@
 
   function queueMissingViewerTranslation(room, message, currentUser) {
     if (!room || !message || message.kind !== "user" || !message.originalText) return;
+    if (shouldPreferOriginalForOwnMessage(currentUser, message)) return;
     const targetLanguage = getPreferredTranslationLanguage(currentUser, message);
     if (!shouldRequestTranslationForLanguage(targetLanguage, message.sourceLanguage, message.languageProfile)) return;
     if (isEncodingCorruptedText(message.originalText, message.sourceLanguage)) {
@@ -10134,7 +10156,7 @@
     const needed = new Set();
     const sender = (appState.users || []).find((user) => user.id === senderId) || null;
     const senderDisplayLanguage = getUserDisplayLanguage(sender, fromLanguage);
-    if (shouldRequestTranslationForLanguage(senderDisplayLanguage, fromLanguage, languageProfile)) {
+    if (!shouldPreferOriginalForOwnMessage(sender, { senderId, sourceLanguage: fromLanguage, originalLanguage: fromLanguage }) && shouldRequestTranslationForLanguage(senderDisplayLanguage, fromLanguage, languageProfile)) {
       needed.add(senderDisplayLanguage);
     }
     audienceIds.forEach((participantId) => {
