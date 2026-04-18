@@ -1813,6 +1813,7 @@ function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, trans
   if ((sourceLanguage === "vi" || includesVietnamese) && targetLanguage === "ko") {
     rules.push(
       "- For Vietnamese-to-Korean, resolve kinship pronouns such as 'anh', 'em', 'chi', and 'co' from the context summary before translating; do not flatten them into one generic Korean subject.",
+      "- For Vietnamese-to-Korean chat, prioritize natural Korean someone would actually say in conversation over mechanically mirrored Vietnamese wording.",
       "- In teacher-student, elder-younger, or other authority dialogue, choose natural spoken Korean endings that match the relationship: teacher-to-student lines should sound like live speech, and student-to-teacher lines should stay polite without becoming stiff written prose.",
       "- When Vietnamese omits the subject or object, preserve the established speaker/addressee roles from context and produce natural Korean without unnecessary repeated pronouns.",
       "- Do not translate Vietnamese role nouns such as 'thay', 'co', or 'con' into repeated explicit Korean subjects like '선생님은' or '학생은' in every sentence when Korean would normally omit them.",
@@ -1821,7 +1822,13 @@ function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, trans
       "- Never leave Vietnamese kinship pronouns literally inside Korean output. Do not produce forms such as 'anh은', 'em을', 'anh(em)', or Korean particles attached to raw Vietnamese words.",
       "- For affectionate lines such as 'anh yeu em rat nhieu', prefer natural Korean like '정말 많이 사랑해', '정말 많이 사랑해요', or another context-appropriate Korean sentence. Do not translate it as 'anh은 em을 정말 많이 사랑해'.",
       "- If a vocative name such as 'Hoa,' appears, keep the name naturally in Korean and render the rest of the sentence as fluent Korean. Example direction: 'Hoa, anh yeu em rat nhieu ^^' should read like '호아, 정말 많이 사랑해요 ^^', not a word-for-word pronoun mapping.",
-      "- If the Vietnamese source is reflective narration rather than direct dialogue, produce natural Korean narrative prose instead of mirroring Vietnamese word order."
+      "- If the Vietnamese source is reflective narration rather than direct dialogue, produce natural Korean narrative prose instead of mirroring Vietnamese word order.",
+      "- If a literal Vietnamese-to-Korean mapping sounds like translationese, rewrite it into the closest idiomatic Korean expression while preserving the same meaning, tone, and relationship nuance.",
+      "- Reorder clauses when needed so the Korean reads smoothly. Vietnamese connective order, serial-verb structure, and repeated topic phrases should not be copied rigidly into Korean.",
+      "- Render Vietnamese particles and softeners such as 'nhe', 'nha', 'a', 'ma', 'roi', 'di', or 'chu' by their function in natural Korean or omit them if Korean would not say them explicitly.",
+      "- Prefer spoken Korean predicates and endings over stiff explanatory prose. Avoid unnatural translationese such as overusing '-하는 것이다', '-하게 된다', or noun-heavy phrasing unless the source is truly formal.",
+      "- When the Vietnamese source uses emotionally supportive, apologetic, teasing, or affectionate chat language, choose the Korean sentence a native speaker would naturally text in that moment, not a clause-by-clause literal rendering.",
+      "- If several Korean phrasings are possible, choose the one that sounds most natural in context while staying fully faithful to the source content."
     );
   }
 
