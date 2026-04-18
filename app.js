@@ -8,8 +8,11 @@
   const PUSH_TOKEN_CACHE_KEY = "transchat-push-token-v1";
   const PUSH_TOKEN_USER_KEY = "transchat-push-user-v1";
   const PUSH_TOKEN_REGISTERED_AT_KEY = "transchat-push-registered-at-v1";
+  const NATIVE_PUSH_INSTALL_ID_KEY = "transchat-native-push-install-id-v1";
+  const NATIVE_PUSH_BOUND_USER_KEY = "transchat-native-push-bound-user-v1";
+  const NATIVE_PUSH_BOUND_AT_KEY = "transchat-native-push-bound-at-v1";
   const FCM_VAPID_PUBLIC_KEY = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTtF90lOTYkONeydXEBE_u0_IJQBHx6djF2yftZvhqpz2Ws";
-  const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY, PUSH_TOKEN_CACHE_KEY, PUSH_TOKEN_USER_KEY, PUSH_TOKEN_REGISTERED_AT_KEY]);
+  const KNOWN_LOCAL_STORAGE_KEYS = new Set([STORAGE_KEY, AUTO_LOGIN_KEY, REMEMBERED_LOGIN_ID_KEY, LANDING_UI_KEY, PUSH_TOKEN_CACHE_KEY, PUSH_TOKEN_USER_KEY, PUSH_TOKEN_REGISTERED_AT_KEY, NATIVE_PUSH_INSTALL_ID_KEY, NATIVE_PUSH_BOUND_USER_KEY, NATIVE_PUSH_BOUND_AT_KEY]);
   const CONFIG = {
     roomAutoExpirationEnabled: false,
     roomExpireMs: 30 * 60 * 1000,
@@ -42,6 +45,8 @@
     typingApiPath: "/api/typing",
     pushConfigApiPath: "/api/push/config",
     pushRegisterApiPath: "/api/push/register",
+    pushNativeBindApiPath: "/api/push/native/bind",
+    pushNativeUnbindApiPath: "/api/push/native/unbind",
     pushUnregisterApiPath: "/api/push/unregister",
   };
   const TRANSLATION_CONCEPTS = Object.freeze([
@@ -134,6 +139,7 @@
       lastError: "",
       lastRegisterAt: 0,
       refreshPromise: null,
+      nativeInstallId: "",
       swMessageBound: false,
       pendingNavigation: null,
     },
@@ -1854,6 +1860,18 @@
     }
   }
 
+  function readNativePushInstallState() {
+    try {
+      return {
+        installId: localStorage.getItem(NATIVE_PUSH_INSTALL_ID_KEY) || "",
+        userId: localStorage.getItem(NATIVE_PUSH_BOUND_USER_KEY) || "",
+        boundAt: Number(localStorage.getItem(NATIVE_PUSH_BOUND_AT_KEY) || 0) || 0,
+      };
+    } catch (error) {
+      return { installId: "", userId: "", boundAt: 0 };
+    }
+  }
+
   function persistCachedPushRegistration(userId, token, registeredAt = Date.now()) {
     if (!userId || !token) return;
     localStorage.setItem(PUSH_TOKEN_CACHE_KEY, token);
@@ -1871,6 +1889,29 @@
     runtime.push.token = "";
     runtime.push.tokenUserId = "";
     runtime.push.lastRegisterAt = 0;
+  }
+
+  function persistNativePushInstallState(installId, userId = "", boundAt = Date.now()) {
+    if (!installId) return;
+    localStorage.setItem(NATIVE_PUSH_INSTALL_ID_KEY, installId);
+    runtime.push.nativeInstallId = installId;
+    if (userId) {
+      localStorage.setItem(NATIVE_PUSH_BOUND_USER_KEY, userId);
+      localStorage.setItem(NATIVE_PUSH_BOUND_AT_KEY, String(Number(boundAt || Date.now())));
+      return;
+    }
+    localStorage.removeItem(NATIVE_PUSH_BOUND_USER_KEY);
+    localStorage.removeItem(NATIVE_PUSH_BOUND_AT_KEY);
+  }
+
+  function clearNativePushBinding(options = {}) {
+    const preserveInstallId = options.preserveInstallId !== false;
+    if (!preserveInstallId) {
+      localStorage.removeItem(NATIVE_PUSH_INSTALL_ID_KEY);
+      runtime.push.nativeInstallId = "";
+    }
+    localStorage.removeItem(NATIVE_PUSH_BOUND_USER_KEY);
+    localStorage.removeItem(NATIVE_PUSH_BOUND_AT_KEY);
   }
 
   function createSeedState() {
@@ -2864,6 +2905,15 @@
     const userId = getActiveUserId();
     if (!userId) return null;
     return appState.users.find((user) => user.id === userId) || null;
+  }
+
+  function getNativePushInstallId() {
+    if (runtime.push.nativeInstallId) {
+      return runtime.push.nativeInstallId;
+    }
+    const cached = readNativePushInstallState();
+    runtime.push.nativeInstallId = cached.installId || "";
+    return runtime.push.nativeInstallId;
   }
 
   function getUserIdentityScore(user) {
@@ -9114,6 +9164,7 @@
     }
     render();
     void registerPushTokenForCurrentUser();
+    void syncNativePushBindingForCurrentUser({ force: true });
     flushPendingPushNavigation();
   }
 
@@ -9355,8 +9406,10 @@
     void (async () => {
       if (previousUser && previousUser.id !== user.id) {
         await unregisterPushTokenForUser(previousUser);
+        await unbindNativePushInstallForUser(previousUser);
       }
       await requestPushRegistrationRefresh();
+      await syncNativePushBindingForCurrentUser({ force: true });
     })();
   }
 
@@ -9747,6 +9800,7 @@
     uiState.roomSearch = "";
     persistState();
     void unregisterPushTokenForUser(logoutUserSnapshot);
+    void unbindNativePushInstallForUser(logoutUserSnapshot);
     render();
   }
 
@@ -11319,6 +11373,71 @@
     return runtime.push.refreshPromise;
   }
 
+  async function syncNativePushBindingForCurrentUser(options = {}) {
+    const currentUser = getCurrentUser();
+    const installId = getNativePushInstallId();
+    if (!(currentUser && installId)) return false;
+
+    const cached = readNativePushInstallState();
+    const boundRecently =
+      cached.installId === installId &&
+      cached.userId === currentUser.id &&
+      Number(cached.boundAt || 0) > 0 &&
+      Date.now() - Number(cached.boundAt || 0) < 6 * 60 * 60 * 1000;
+    if (!options.force && boundRecently) {
+      return true;
+    }
+
+    try {
+      const response = await fetch(CONFIG.pushNativeBindApiPath, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          installId,
+          origin: window.location.origin,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`native_push_bind_failed_${response.status}`);
+      }
+      persistNativePushInstallState(installId, currentUser.id, Date.now());
+      return true;
+    } catch (error) {
+      console.warn("[push-native] bind failed", error);
+      return false;
+    }
+  }
+
+  async function unbindNativePushInstallForUser(user) {
+    const targetUser = user || getCurrentUser();
+    const cached = readNativePushInstallState();
+    const installId = cached.installId || runtime.push.nativeInstallId;
+    if (!(targetUser?.id && installId)) {
+      clearNativePushBinding({ preserveInstallId: true });
+      return;
+    }
+
+    try {
+      await fetch(CONFIG.pushNativeUnbindApiPath, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userId: targetUser.id,
+          installId,
+        }),
+      });
+    } catch (error) {
+      console.warn("[push-native] unbind failed", error);
+    } finally {
+      clearNativePushBinding({ preserveInstallId: true });
+    }
+  }
+
   function showLocalPushPreview(type, payload = {}) {
     const previewPayload =
       type === "invite"
@@ -11438,6 +11557,29 @@
     url.searchParams.delete("pushType");
     url.searchParams.delete("roomId");
     url.searchParams.delete("inviteId");
+    const nextSearch = url.searchParams.toString();
+    window.history.replaceState({}, "", `${url.pathname}${nextSearch ? `?${nextSearch}` : ""}${url.hash}`);
+  }
+
+  function consumeNativeInstallIdFromLocation() {
+    const url = new URL(window.location.href);
+    const installId = String(url.searchParams.get("nativeInstallId") || "").trim();
+    const runtimeSource = String(url.searchParams.get("nativeRuntime") || "").trim();
+    if (!installId && !runtimeSource) {
+      return;
+    }
+
+    if (installId) {
+      const cached = readNativePushInstallState();
+      if (cached.installId !== installId) {
+        persistNativePushInstallState(installId);
+      } else {
+        runtime.push.nativeInstallId = installId;
+      }
+    }
+
+    url.searchParams.delete("nativeInstallId");
+    url.searchParams.delete("nativeRuntime");
     const nextSearch = url.searchParams.toString();
     window.history.replaceState({}, "", `${url.pathname}${nextSearch ? `?${nextSearch}` : ""}${url.hash}`);
   }
@@ -12033,6 +12175,7 @@
     window.addEventListener("focus", () => {
       syncPushPermissionState({ render: true });
       void requestPushRegistrationRefresh();
+      void syncNativePushBindingForCurrentUser();
       void refreshServerStateAfterResume({ renderIfUnchanged: true });
     });
     if (window.visualViewport) {
@@ -12055,6 +12198,7 @@
       if (!document.hidden) {
         syncPushPermissionState();
         void requestPushRegistrationRefresh();
+        void syncNativePushBindingForCurrentUser();
         syncPwaInstallState();
         markUserPresence(uiState.activeRoomId);
         checkRoomExpirations();
@@ -12221,8 +12365,10 @@
       const cachedPushRegistration = readCachedPushRegistration();
       runtime.push.token = cachedPushRegistration.token;
       runtime.push.tokenUserId = cachedPushRegistration.userId;
+      runtime.push.nativeInstallId = readNativePushInstallState().installId || "";
       syncPushPermissionState();
       syncPwaInstallState();
+      consumeNativeInstallIdFromLocation();
       consumePushNavigationFromLocation();
       restoreAutoLoginSession({ clearOnMissing: false });
       const currentUser = getCurrentUser();
@@ -12253,6 +12399,7 @@
       await bootstrapServerState();
       if (getCurrentUser()) {
         void requestPushRegistrationRefresh();
+        void syncNativePushBindingForCurrentUser();
       }
       flushPendingPushNavigation();
       console.info("[transchat] bootstrap:complete");
