@@ -9,7 +9,9 @@ const SERVER_STATE_FILE = path.join(__dirname, "transchat-server-state.json");
 const PUSH_TOKEN_STATE_FILE = path.join(__dirname, "transchat-push-tokens.json");
 const MEDIA_STORAGE_DIR = path.join(__dirname, "transchat-media");
 const STATE_SCHEMA_VERSION = 2;
-const PUSH_TOKEN_SCHEMA_VERSION = 1;
+const PUSH_TOKEN_SCHEMA_VERSION = 2;
+const JSON_BODY_MAX_BYTES = 200_000;
+const STATE_SYNC_BODY_MAX_BYTES = 5 * 1024 * 1024;
 const MEDIA_UPLOAD_MAX_BYTES = 60 * 1024 * 1024;
 
 const PORT = Number(process.env.PORT || 3000);
@@ -28,6 +30,10 @@ const FIREBASE_VAPID_KEY_FALLBACK = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTt
 const FIREBASE_WEB_CONFIG_JSON = process.env.FIREBASE_WEB_CONFIG_JSON || JSON.stringify(FIREBASE_WEB_CONFIG_FALLBACK);
 const FIREBASE_VAPID_KEY = process.env.FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY_FALLBACK;
 const FIREBASE_SERVICE_ACCOUNT_PATH = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "";
+const FIREBASE_ANDROID_APP_ID = String(process.env.FIREBASE_ANDROID_APP_ID || "").trim();
+const FIREBASE_ANDROID_API_KEY = String(process.env.FIREBASE_ANDROID_API_KEY || FIREBASE_WEB_CONFIG_FALLBACK.apiKey || "").trim();
+const FIREBASE_ANDROID_PROJECT_ID = String(process.env.FIREBASE_ANDROID_PROJECT_ID || FIREBASE_WEB_CONFIG_FALLBACK.projectId || "").trim();
+const FIREBASE_ANDROID_SENDER_ID = String(process.env.FIREBASE_ANDROID_SENDER_ID || FIREBASE_WEB_CONFIG_FALLBACK.messagingSenderId || "").trim();
 const PUSH_PUBLIC_ORIGIN = normalizePushOrigin(process.env.PUSH_PUBLIC_ORIGIN || "https://transchat.xyz");
 const ROOM_AUTO_EXPIRATION_ENABLED = false;
 const TYPING_SIGNAL_TTL_MS = 4500;
@@ -225,6 +231,18 @@ const server = createServer(async (req, res) => {
     return handlePushRegister(req, res);
   }
 
+  if (req.method === "POST" && requestUrl.pathname === "/api/push/native/register") {
+    return handleNativePushRegister(req, res);
+  }
+
+  if (req.method === "POST" && requestUrl.pathname === "/api/push/native/bind") {
+    return handleNativePushBind(req, res);
+  }
+
+  if (req.method === "POST" && requestUrl.pathname === "/api/push/native/unbind") {
+    return handleNativePushUnbind(req, res);
+  }
+
   if (req.method === "POST" && requestUrl.pathname === "/api/push/unregister") {
     return handlePushUnregister(req, res);
   }
@@ -364,10 +382,12 @@ async function handleTranslate(req, res) {
 
 async function handlePushConfig(_req, res) {
   const clientConfig = getFirebaseClientConfig();
+  const nativeConfig = getFirebaseNativeConfig();
   return sendJson(res, 200, {
     enabled: Boolean(clientConfig && FIREBASE_VAPID_KEY),
     webConfig: clientConfig,
     vapidKey: FIREBASE_VAPID_KEY || "",
+    nativeConfig,
   });
 }
 
@@ -407,6 +427,144 @@ async function handlePushRegister(req, res) {
   } catch (error) {
     console.error("[push-register]", error);
     return sendJson(res, 500, { error: "push_register_failed" });
+  }
+}
+
+async function handleNativePushRegister(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const installId = normalizeInstallId(body?.installId || "");
+    const token = String(body?.token || "").trim();
+    const appPackage = normalizeAndroidPackageName(body?.packageName || "");
+    if (!installId || !token) {
+      return sendJson(res, 400, { error: "invalid_native_push_registration" });
+    }
+
+    const boundUserId = getBoundUserIdForInstall(installId);
+    upsertPushToken({
+      userId: boundUserId,
+      token,
+      installId,
+      platform: "android-native",
+      appPackage,
+      origin: PUSH_PUBLIC_ORIGIN,
+    });
+    await savePushTokenState(pushTokenState);
+    console.info("[push-register-native]", {
+      installId,
+      tokenTail: token.slice(-12),
+      boundUserId,
+      appPackage,
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      installId,
+      boundUserId,
+      tokenTail: token.slice(-12),
+    });
+  } catch (error) {
+    console.error("[push-register-native]", error);
+    return sendJson(res, 500, { error: "native_push_register_failed" });
+  }
+}
+
+async function handleNativePushBind(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const installId = normalizeInstallId(body?.installId || "");
+    const userId = String(body?.userId || "").trim();
+    if (!installId || !userId) {
+      return sendJson(res, 400, { error: "invalid_native_push_bind" });
+    }
+
+    if (!serverState?.users?.some((user) => user.id === userId)) {
+      return sendJson(res, 404, { error: "user_not_found" });
+    }
+
+    upsertNativeBinding({ installId, userId });
+    let boundTokenCount = 0;
+    pushTokenState = sanitizePushTokenState({
+      ...pushTokenState,
+      tokens: (pushTokenState?.tokens || []).map((entry) => {
+        if (entry.platform === "android-native" && entry.installId === installId) {
+          boundTokenCount += 1;
+          return {
+            ...entry,
+            userId,
+            updatedAt: Date.now(),
+          };
+        }
+        return entry;
+      }),
+    });
+    await savePushTokenState(pushTokenState);
+    console.info("[push-bind-native]", {
+      installId,
+      userId,
+      boundTokenCount,
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      installId,
+      userId,
+      boundTokenCount,
+    });
+  } catch (error) {
+    console.error("[push-bind-native]", error);
+    return sendJson(res, 500, { error: "native_push_bind_failed" });
+  }
+}
+
+async function handleNativePushUnbind(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const installId = normalizeInstallId(body?.installId || "");
+    const userId = String(body?.userId || "").trim();
+    if (!installId) {
+      return sendJson(res, 400, { error: "invalid_native_push_unbind" });
+    }
+
+    const bindingChanged = removeNativeBinding({ installId, userId });
+    let clearedTokenCount = 0;
+    pushTokenState = sanitizePushTokenState({
+      ...pushTokenState,
+      tokens: (pushTokenState?.tokens || []).map((entry) => {
+        if (entry.platform !== "android-native" || entry.installId !== installId) {
+          return entry;
+        }
+        if (userId && entry.userId && entry.userId !== userId) {
+          return entry;
+        }
+        if (!entry.userId) {
+          return entry;
+        }
+        clearedTokenCount += 1;
+        return {
+          ...entry,
+          userId: "",
+          updatedAt: Date.now(),
+        };
+      }),
+    });
+    if (bindingChanged || clearedTokenCount) {
+      await savePushTokenState(pushTokenState);
+    }
+    console.info("[push-unbind-native]", {
+      installId,
+      userId,
+      bindingChanged,
+      clearedTokenCount,
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      installId,
+      userId,
+      bindingChanged,
+      clearedTokenCount,
+    });
+  } catch (error) {
+    console.error("[push-unbind-native]", error);
+    return sendJson(res, 500, { error: "native_push_unbind_failed" });
   }
 }
 
@@ -497,7 +655,7 @@ async function handleMediaUpload(req, res) {
 
 async function handleStateUpdate(req, res) {
   try {
-    const body = await readJsonBody(req);
+    const body = await readJsonBody(req, STATE_SYNC_BODY_MAX_BYTES);
     const nextState = body?.state;
     const sourceId = String(body?.sourceId || "unknown");
     const receivedAt = Date.now();
@@ -545,6 +703,11 @@ async function handleStateUpdate(req, res) {
       updatedAt: normalizedState.updatedAt,
     });
   } catch (error) {
+    if (error?.code === "body_too_large") {
+      return sendJson(res, 413, {
+        error: "state_payload_too_large",
+      });
+    }
     console.error("[state]", error);
     return sendJson(res, 500, {
       error: "state_update_failed",
@@ -751,6 +914,24 @@ function getFirebaseClientConfig() {
   }
 }
 
+function getFirebaseNativeConfig() {
+  const missingFields = [];
+  if (!FIREBASE_ANDROID_APP_ID) missingFields.push("appId");
+  if (!FIREBASE_ANDROID_API_KEY) missingFields.push("apiKey");
+  if (!FIREBASE_ANDROID_PROJECT_ID) missingFields.push("projectId");
+  if (!FIREBASE_ANDROID_SENDER_ID) missingFields.push("messagingSenderId");
+  const enabled = missingFields.length === 0;
+  return {
+    enabled,
+    appId: FIREBASE_ANDROID_APP_ID,
+    apiKey: FIREBASE_ANDROID_API_KEY,
+    projectId: FIREBASE_ANDROID_PROJECT_ID,
+    messagingSenderId: FIREBASE_ANDROID_SENDER_ID,
+    publicOrigin: PUSH_PUBLIC_ORIGIN,
+    missingFields,
+  };
+}
+
 async function resolveFirebaseServiceAccountPath() {
   if (FIREBASE_SERVICE_ACCOUNT_PATH) {
     return path.isAbsolute(FIREBASE_SERVICE_ACCOUNT_PATH)
@@ -800,27 +981,50 @@ async function getFirebaseMessagingClient() {
 }
 
 function sanitizePushTokenState(parsed) {
+  const bindingByInstallId = new Map();
+  (parsed?.nativeBindings || []).forEach((entry) => {
+    const installId = normalizeInstallId(entry?.installId || "");
+    const userId = String(entry?.userId || "").trim();
+    if (!installId || !userId) return;
+    const nextEntry = {
+      installId,
+      userId,
+      updatedAt: Number(entry?.updatedAt || Date.now()),
+    };
+    const previous = bindingByInstallId.get(installId);
+    if (!previous || nextEntry.updatedAt >= previous.updatedAt) {
+      bindingByInstallId.set(installId, nextEntry);
+    }
+  });
+
   const byToken = new Map();
   (parsed?.tokens || []).forEach((entry) => {
     const token = String(entry?.token || "").trim();
-    const userId = String(entry?.userId || "").trim();
-    if (!token || !userId) return;
-    const previous = byToken.get(token);
+    if (!token) return;
+    const platform = normalizePushPlatform(entry?.platform || "web");
+    const installId = normalizeInstallId(entry?.installId || "");
+    const boundUserId = installId ? bindingByInstallId.get(installId)?.userId || "" : "";
     const nextEntry = {
       token,
-      userId,
-      platform: String(entry?.platform || "web").trim() || "web",
+      userId: String(entry?.userId || "").trim() || boundUserId,
+      platform,
       origin: normalizePushOrigin(entry?.origin || ""),
+      installId,
+      appPackage: normalizeAndroidPackageName(entry?.appPackage || ""),
       updatedAt: Number(entry?.updatedAt || Date.now()),
     };
+    if (platform === "web" && !nextEntry.userId) return;
+    const entryKey = platform === "android-native" && installId ? `install:${installId}` : `token:${token}`;
+    const previous = byToken.get(entryKey);
     if (!previous || nextEntry.updatedAt >= previous.updatedAt) {
-      byToken.set(token, nextEntry);
+      byToken.set(entryKey, nextEntry);
     }
   });
 
   return {
     version: PUSH_TOKEN_SCHEMA_VERSION,
     tokens: [...byToken.values()].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)),
+    nativeBindings: [...bindingByInstallId.values()].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)),
   };
 }
 
@@ -832,6 +1036,7 @@ async function loadPushTokenState() {
     return {
       version: PUSH_TOKEN_SCHEMA_VERSION,
       tokens: [],
+      nativeBindings: [],
     };
   }
 }
@@ -841,18 +1046,34 @@ async function savePushTokenState(state) {
 }
 
 function upsertPushToken(entry) {
+  const platform = normalizePushPlatform(entry?.platform || "web");
+  const installId = normalizeInstallId(entry?.installId || "");
+  const existing = (pushTokenState?.tokens || []).find((item) => {
+    if (installId && item.installId === installId) return true;
+    return item.token === String(entry?.token || "").trim();
+  });
   const nextEntry = {
     token: String(entry?.token || "").trim(),
-    userId: String(entry?.userId || "").trim(),
-    platform: String(entry?.platform || "web").trim() || "web",
+    userId: String(entry?.userId || "").trim() || getBoundUserIdForInstall(installId) || String(existing?.userId || "").trim(),
+    platform,
     origin: normalizePushOrigin(entry?.origin || ""),
+    installId,
+    appPackage: normalizeAndroidPackageName(entry?.appPackage || ""),
     updatedAt: Date.now(),
   };
-  if (!nextEntry.token || !nextEntry.userId) return false;
+  if (!nextEntry.token || (platform === "web" && !nextEntry.userId)) return false;
+  if (platform === "android-native" && !installId) return false;
 
-  const filtered = (pushTokenState?.tokens || []).filter((item) => item.token !== nextEntry.token);
+  const filtered = (pushTokenState?.tokens || []).filter((item) => {
+    if (item.token === nextEntry.token) return false;
+    if (platform === "android-native" && installId && item.platform === "android-native" && item.installId === installId) {
+      return false;
+    }
+    return true;
+  });
   filtered.unshift(nextEntry);
   pushTokenState = sanitizePushTokenState({
+    ...pushTokenState,
     version: PUSH_TOKEN_SCHEMA_VERSION,
     tokens: filtered,
   });
@@ -864,6 +1085,7 @@ function removePushToken({ userId = "", token = "" } = {}) {
   const nextToken = String(token || "").trim();
   const before = (pushTokenState?.tokens || []).length;
   pushTokenState = sanitizePushTokenState({
+    ...pushTokenState,
     version: PUSH_TOKEN_SCHEMA_VERSION,
     tokens: (pushTokenState?.tokens || []).filter((entry) => {
       if (nextToken && entry.token === nextToken) return false;
@@ -877,17 +1099,74 @@ function removePushToken({ userId = "", token = "" } = {}) {
 function prunePushTokensForDeletedUsers(state) {
   const activeUserIds = new Set((state?.users || []).map((user) => user.id));
   const before = (pushTokenState?.tokens || []).length;
+  const bindingBefore = (pushTokenState?.nativeBindings || []).length;
   pushTokenState = sanitizePushTokenState({
     version: PUSH_TOKEN_SCHEMA_VERSION,
-    tokens: (pushTokenState?.tokens || []).filter((entry) => activeUserIds.has(entry.userId)),
+    tokens: (pushTokenState?.tokens || []).filter((entry) => !entry.userId || activeUserIds.has(entry.userId)),
+    nativeBindings: (pushTokenState?.nativeBindings || []).filter((entry) => activeUserIds.has(entry.userId)),
   });
-  if ((pushTokenState?.tokens || []).length !== before) {
+  if ((pushTokenState?.tokens || []).length !== before || (pushTokenState?.nativeBindings || []).length !== bindingBefore) {
     void savePushTokenState(pushTokenState);
   }
 }
 
 function getPushTokensForUser(userId) {
   return (pushTokenState?.tokens || []).filter((entry) => entry.userId === userId);
+}
+
+function normalizePushPlatform(value) {
+  return String(value || "").trim().toLowerCase() === "android-native" ? "android-native" : "web";
+}
+
+function normalizeInstallId(value) {
+  const normalized = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{8,160}$/.test(normalized) ? normalized : "";
+}
+
+function normalizeAndroidPackageName(value) {
+  const normalized = String(value || "").trim();
+  return /^[A-Za-z0-9_.]{3,160}$/.test(normalized) ? normalized : "";
+}
+
+function getBoundUserIdForInstall(installId) {
+  const normalizedInstallId = normalizeInstallId(installId);
+  if (!normalizedInstallId) return "";
+  const binding = (pushTokenState?.nativeBindings || []).find((entry) => entry.installId === normalizedInstallId);
+  return String(binding?.userId || "").trim();
+}
+
+function upsertNativeBinding({ installId = "", userId = "" } = {}) {
+  const normalizedInstallId = normalizeInstallId(installId);
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedInstallId || !normalizedUserId) return false;
+
+  const filtered = (pushTokenState?.nativeBindings || []).filter((entry) => entry.installId !== normalizedInstallId);
+  filtered.unshift({
+    installId: normalizedInstallId,
+    userId: normalizedUserId,
+    updatedAt: Date.now(),
+  });
+  pushTokenState = sanitizePushTokenState({
+    ...pushTokenState,
+    nativeBindings: filtered,
+  });
+  return true;
+}
+
+function removeNativeBinding({ installId = "", userId = "" } = {}) {
+  const normalizedInstallId = normalizeInstallId(installId);
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedInstallId) return false;
+  const before = (pushTokenState?.nativeBindings || []).length;
+  pushTokenState = sanitizePushTokenState({
+    ...pushTokenState,
+    nativeBindings: (pushTokenState?.nativeBindings || []).filter((entry) => {
+      if (entry.installId !== normalizedInstallId) return true;
+      if (normalizedUserId && entry.userId !== normalizedUserId) return true;
+      return false;
+    }),
+  });
+  return (pushTokenState?.nativeBindings || []).length !== before;
 }
 
 function collectNewUserMessages(previousState, nextState) {
@@ -1029,40 +1308,11 @@ async function sendPushToUser(userId, payload) {
 
   for (const entry of tokens) {
     try {
-      const link = buildPushTargetUrl(entry, payload);
-      const notificationTitle = String(payload?.title || "TRANSCHAT");
-      const notificationBody = String(payload?.body || payload?.previewText || "");
-      await messaging.send({
-        token: entry.token,
-        data: normalizePushPayload(payload),
-        notification: {
-          title: notificationTitle,
-          body: notificationBody,
-        },
-        android: {
-          priority: "high",
-          notification: {
-            defaultSound: true,
-            defaultVibrateTimings: true,
-          },
-        },
-        webpush: {
-          headers: {
-            Urgency: "high",
-            TTL: "3600",
-          },
-          notification: {
-            title: notificationTitle,
-            body: notificationBody,
-            icon: "/icons/icon-192.png",
-            badge: "/icons/icon-192.png",
-            tag: String(payload?.tag || ""),
-          },
-          fcmOptions: {
-            link,
-          },
-        },
-      });
+      if (entry.platform === "android-native") {
+        await messaging.send(buildAndroidNativePushMessage(entry, payload));
+      } else {
+        await messaging.send(buildWebPushMessage(entry, payload));
+      }
       delivered += 1;
     } catch (error) {
       console.error("[push-send]", error);
@@ -1083,6 +1333,61 @@ async function sendPushToUser(userId, payload) {
     delivered,
     reason: delivered > 0 ? "" : errors[0]?.code || "push_send_failed",
     errors,
+  };
+}
+
+function buildWebPushMessage(entry, payload) {
+  const link = buildPushTargetUrl(entry, payload);
+  const notificationTitle = String(payload?.title || "TRANSCHAT");
+  const notificationBody = String(payload?.body || payload?.previewText || "");
+  return {
+    token: entry.token,
+    data: normalizePushPayload(payload),
+    notification: {
+      title: notificationTitle,
+      body: notificationBody,
+    },
+    android: {
+      priority: "high",
+      notification: {
+        defaultSound: true,
+        defaultVibrateTimings: true,
+      },
+    },
+    webpush: {
+      headers: {
+        Urgency: "high",
+        TTL: "3600",
+      },
+      notification: {
+        title: notificationTitle,
+        body: notificationBody,
+        icon: "/icons/icon-192.png",
+        badge: "/icons/icon-192.png",
+        tag: String(payload?.tag || ""),
+      },
+      fcmOptions: {
+        link,
+      },
+    },
+  };
+}
+
+function buildAndroidNativePushMessage(entry, payload) {
+  const notificationTitle = String(payload?.title || "TRANSCHAT");
+  const notificationBody = String(payload?.body || payload?.previewText || "");
+  return {
+    token: entry.token,
+    data: normalizePushPayload({
+      ...payload,
+      title: notificationTitle,
+      body: notificationBody,
+      clickPath: String(payload?.clickPath || "/"),
+    }),
+    android: {
+      priority: "high",
+      ttl: 60 * 60 * 1000,
+    },
   };
 }
 
@@ -2040,7 +2345,7 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = JSON_BODY_MAX_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let totalBytes = 0;
@@ -2048,9 +2353,11 @@ function readJsonBody(req) {
     req.on("data", (chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalBytes += buffer.length;
-      if (totalBytes > 200_000) {
-        reject(new Error("Request body too large"));
+      if (totalBytes > maxBytes) {
+        const error = new Error("Request body too large");
+        error.code = "body_too_large";
         req.destroy();
+        reject(error);
         return;
       }
       chunks.push(buffer);
