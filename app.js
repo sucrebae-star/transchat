@@ -87,6 +87,10 @@
     heartbeatTimer: null,
     healthTimer: null,
     serverSyncTimer: null,
+    serverSyncInFlight: false,
+    serverSyncQueued: false,
+    serverSyncBackoffMs: 0,
+    lastSuccessfulServerSyncAt: 0,
     serverStatePollTimer: null,
     translationRecoveryTimer: null,
     softRenderTimer: null,
@@ -2465,14 +2469,18 @@
     return `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
   }
 
-  function persistState() {
+  function persistState(options = {}) {
     // Prototype policy note: chats and inline image previews live in local/browser state until a room is deleted or expires.
     syncSpecialUserFlags();
     syncUserAlertState();
-    appState.updatedAt = Date.now();
+    if (options.touchUpdatedAt !== false) {
+      appState.updatedAt = Date.now();
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
     broadcastStateRefresh();
-    scheduleServerStateSync();
+    if (options.syncToServer !== false) {
+      scheduleServerStateSync(options.syncDelayMs);
+    }
   }
 
   function broadcastStateRefresh() {
@@ -2644,17 +2652,19 @@
     return true;
   }
 
-  function scheduleServerStateSync() {
+  function scheduleServerStateSync(delay = 120) {
     if (!shouldUseTranslationBackend()) return;
+    runtime.serverSyncQueued = true;
     clearTimeout(runtime.serverSyncTimer);
     runtime.serverSyncTimer = setTimeout(() => {
       runtime.serverSyncTimer = null;
-      syncStateToServer();
-    }, 120);
+      void syncStateToServer();
+    }, Math.max(0, Number(delay) || 0));
   }
 
   function flushServerStateSync() {
     if (!shouldUseTranslationBackend()) return;
+    runtime.serverSyncQueued = true;
     clearTimeout(runtime.serverSyncTimer);
     runtime.serverSyncTimer = null;
     void syncStateToServer();
@@ -2662,9 +2672,23 @@
 
   async function syncStateToServer() {
     if (!shouldUseTranslationBackend()) return;
+    if (runtime.serverSyncInFlight) {
+      runtime.serverSyncQueued = true;
+      return;
+    }
+
+    const stateSnapshot = appState;
+    const stateTimestamp = getStateTimestamp(stateSnapshot);
+    const payload = JSON.stringify({
+      state: stateSnapshot,
+      sourceId: runtime.clientId,
+    });
+    const payloadBytes = new TextEncoder().encode(payload).length;
+    runtime.serverSyncInFlight = true;
+    runtime.serverSyncQueued = false;
 
     try {
-      const traceMessage = getLatestUserMessageForTrace(appState);
+      const traceMessage = getLatestUserMessageForTrace(stateSnapshot);
       if (traceMessage) {
         logEncodingTrace("client-state-payload", traceMessage.text, {
           roomId: traceMessage.roomId,
@@ -2677,17 +2701,29 @@
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          state: appState,
-          sourceId: runtime.clientId,
-        }),
+        body: payload,
       });
 
       if (!response.ok) {
         throw new Error(`State sync failed with ${response.status}`);
       }
+      runtime.serverSyncBackoffMs = 0;
+      runtime.lastSuccessfulServerSyncAt = Math.max(runtime.lastSuccessfulServerSyncAt || 0, stateTimestamp);
     } catch (error) {
-      console.warn("Failed to sync state to server", error);
+      runtime.serverSyncQueued = true;
+      runtime.serverSyncBackoffMs = runtime.serverSyncBackoffMs
+        ? Math.min(runtime.serverSyncBackoffMs * 2, 5000)
+        : 800;
+      console.warn("Failed to sync state to server", {
+        error: String(error?.message || error),
+        stateTimestamp,
+        payloadBytes,
+      });
+    } finally {
+      runtime.serverSyncInFlight = false;
+      if (runtime.serverSyncQueued || getStateTimestamp(appState) > stateTimestamp) {
+        scheduleServerStateSync(runtime.serverSyncBackoffMs || 120);
+      }
     }
   }
 
@@ -9374,7 +9410,7 @@
       lastSeenAt: timestamp,
       loginState: currentUser.loginState,
     };
-    persistState();
+    persistState({ syncToServer: false, touchUpdatedAt: false });
   }
 
   function switchUser(userId) {
