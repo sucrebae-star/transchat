@@ -69,6 +69,9 @@ const MIME_TYPES = {
 const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/index.html", "index.html"],
+  ["/privacy", "privacy.html"],
+  ["/privacy.html", "privacy.html"],
+  ["/privacy-policy", "privacy.html"],
   ["/manifest.json", "manifest.json"],
   ["/.well-known/assetlinks.json", path.join(".well-known", "assetlinks.json")],
   ["/styles.css", "styles.css"],
