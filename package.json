@@ -3,10 +3,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "firebase-admin": "^13.8.0"
+    "firebase-admin": "^13.8.0",
+    "mongodb": "^6.19.0"
   },
   "scripts": {
     "start": "node server.mjs",
+    "start:native-translation": "node native-translation-server.mjs",
     "assetlinks:generate": "node scripts/generate-assetlinks.mjs",
     "twa:doctor": "npx @bubblewrap/cli doctor",
     "twa:init": "npx @bubblewrap/cli init --manifest https://transchat.xyz/manifest.json",

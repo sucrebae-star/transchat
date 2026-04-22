@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MongoClient, ObjectId } from "mongodb";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,9 +17,14 @@ const STATE_SYNC_BODY_MAX_BYTES = 5 * 1024 * 1024;
 const MEDIA_UPLOAD_MAX_BYTES = 60 * 1024 * 1024;
 
 const PORT = Number(process.env.PORT || 3000);
+const MONGODB_URI = String(process.env.MONGODB_URI || "").trim();
+const MONGODB_DB_NAME = String(process.env.MONGODB_DB_NAME || "transchat").trim() || "transchat";
+const MONGODB_USERS_COLLECTION = String(process.env.MONGODB_USERS_COLLECTION || "users").trim() || "users";
 const OPENAI_API_KEY = normalizeOpenAIApiKey(process.env.OPENAI_API_KEY || "");
 const OPENAI_API_KEY_VALID = isValidOpenAIApiKey(OPENAI_API_KEY);
 const OPENAI_MODEL = process.env.OPENAI_TRANSLATION_MODEL || "gpt-5-mini";
+const OPENAI_TRANSLATION_FALLBACK_MODEL = normalizeTranslationModelName(process.env.OPENAI_TRANSLATION_FALLBACK_MODEL || "");
+const OPENAI_TRANSLATION_CONTEXTUAL_FALLBACK = isEnabledEnv(process.env.OPENAI_TRANSLATION_CONTEXTUAL_FALLBACK || "");
 const OPENAI_TRANSLATION_REASONING_EFFORT = normalizeTranslationReasoningEffort(process.env.OPENAI_TRANSLATION_REASONING_EFFORT || "low");
 const FIREBASE_WEB_CONFIG_FALLBACK = {
   apiKey: "AIzaSyB9ZcnjW7n0WVNVg3ELHvSUfnYK_BfK3_0",
@@ -89,6 +96,7 @@ const typingSignals = new Map();
 const presenceSignals = new Map();
 const translationCache = new Map();
 let firebaseMessagingPromise = null;
+let mongoClientPromise = null;
 let lastTranslationError = null;
 let lastTranslationErrorDetail = null;
 
@@ -177,13 +185,33 @@ function logEncodingTrace(stage, value, extra = {}) {
   });
 }
 
+function isPushUserMessageKind(kind) {
+  return ["user", "text", "image", "video", "file"].includes(String(kind || "").trim());
+}
+
+function getPushMediaKind(message) {
+  if (message?.media?.kind) {
+    return String(message.media.kind).trim();
+  }
+  if (message?.attachment?.type === "profile") {
+    return "";
+  }
+  if (message?.attachment) {
+    const normalizedKind = String(message?.kind || "").trim();
+    if (["image", "video", "file"].includes(normalizedKind)) {
+      return normalizedKind;
+    }
+  }
+  return "";
+}
+
 function getLatestUserMessageForTrace(state = serverState) {
   const rooms = Array.isArray(state?.rooms) ? [...state.rooms] : [];
   const latestRoom = rooms
     .filter((room) => Array.isArray(room?.messages) && room.messages.length)
     .sort((a, b) => Number(b.lastMessageAt || b.createdAt || 0) - Number(a.lastMessageAt || a.createdAt || 0))[0];
   const latestMessage = [...(latestRoom?.messages || [])]
-    .filter((message) => message?.kind === "user" && String(message?.originalText || "").trim())
+    .filter((message) => isPushUserMessageKind(message?.kind) && String(message?.originalText || "").trim())
     .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0];
   if (!(latestRoom && latestMessage)) {
     return null;
@@ -211,88 +239,110 @@ function getDeterministicRecoveryQuestionKey(seedValue) {
   return RECOVERY_QUESTION_KEYS[hash] || RECOVERY_QUESTION_KEYS[0];
 }
 
+const API_ROUTES = [
+  { method: "GET", path: "/api/health", handler: handleHealthRequest },
+  { method: "GET", path: "/api/push/config", handler: handlePushConfig },
+  { method: "POST", path: "/api/push/register", handler: handlePushRegister },
+  { method: "POST", path: "/api/push/native/register", handler: handleNativePushRegister },
+  { method: "POST", path: "/api/push/native/bind", handler: handleNativePushBind },
+  { method: "POST", path: "/api/push/native/unbind", handler: handleNativePushUnbind },
+  { method: "POST", path: "/api/push/unregister", handler: handlePushUnregister },
+  { method: "POST", path: "/api/translate", handler: handleTranslate },
+  { method: "POST", path: "/api/media", handler: handleMediaUpload },
+  { method: "POST", path: "/api/typing", handler: handleTypingUpdate },
+  { method: "POST", path: "/api/presence", handler: handlePresenceUpdate },
+  { method: "GET", path: "/api/state", handler: handleStateRead },
+  { method: "PUT", path: "/api/state", handler: handleStateUpdate },
+  { method: "GET", path: "/api/users/discoverable", handler: handleDiscoverableUsers },
+  { method: "POST", path: "/api/users/directory-sync", handler: handleDirectoryUserSync },
+  { method: "GET", path: "/api/auth/login-id-availability", handler: handleAuthLoginIdAvailability },
+  { method: "GET", path: "/api/auth/recovery-question", handler: handleAuthRecoveryQuestion },
+  { method: "POST", path: "/api/auth/verify-recovery", handler: handleAuthVerifyRecovery },
+  { method: "POST", path: "/api/auth/reset-password", handler: handleAuthResetPassword },
+  { method: "POST", path: "/api/auth/signup", handler: handleAuthSignUp },
+  { method: "POST", path: "/api/auth/login", handler: handleAuthLogin },
+  { method: "POST", path: "/api/auth/delete-account", handler: handleAuthDeleteAccount },
+  { method: "GET", path: "/api/events", handler: handleEventStream },
+];
+
 const server = createServer(async (req, res) => {
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
-  if (req.method === "GET" && requestUrl.pathname === "/api/health") {
-    return sendJson(res, 200, {
-      ok: true,
-      liveTranslationEnabled: OPENAI_API_KEY_VALID,
-      model: OPENAI_MODEL,
-      reasoningEffort: OPENAI_TRANSLATION_REASONING_EFFORT,
-      sharedStateEnabled: true,
-      hasServerState: Boolean(serverState),
-      translationConfigured: OPENAI_API_KEY_VALID,
-      lastTranslationError,
-      lastTranslationErrorDetail,
-    });
+  if (isApiRequestPath(requestUrl.pathname)) {
+    return dispatchApiRequest(req, res, requestUrl);
   }
 
-  if (req.method === "GET" && requestUrl.pathname === "/api/push/config") {
-    return handlePushConfig(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/push/register") {
-    return handlePushRegister(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/push/native/register") {
-    return handleNativePushRegister(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/push/native/bind") {
-    return handleNativePushBind(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/push/native/unbind") {
-    return handleNativePushUnbind(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/push/unregister") {
-    return handlePushUnregister(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/translate") {
-    // Later this endpoint can sit behind auth, rate limiting, DB logging, and Socket.IO fan-out.
-    return handleTranslate(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/media") {
-    return handleMediaUpload(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/typing") {
-    return handleTypingUpdate(req, res);
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/presence") {
-    return handlePresenceUpdate(req, res);
-  }
-
-  if (req.method === "GET" && requestUrl.pathname === "/api/state") {
-    return sendJson(res, 200, {
-      state: serverState,
-    });
-  }
-
-  if (req.method === "PUT" && requestUrl.pathname === "/api/state") {
-    return handleStateUpdate(req, res);
-  }
-
-  if (req.method === "GET" && requestUrl.pathname === "/api/events") {
-    return handleEventStream(req, res);
-  }
-
-  if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname.startsWith("/media/")) {
-    return serveUploadedMedia(requestUrl.pathname, res, req.method === "HEAD");
-  }
-
-  if (req.method === "GET" || req.method === "HEAD") {
-    return serveStatic(requestUrl.pathname, res, req.method === "HEAD");
-  }
-
-  return sendJson(res, 405, { error: "method_not_allowed" });
+  return dispatchStaticRequest(req, res, requestUrl);
 });
+
+function isApiRequestPath(pathname) {
+  return String(pathname || "").startsWith("/api/");
+}
+
+async function dispatchApiRequest(req, res, requestUrl) {
+  const method = String(req.method || "GET").toUpperCase();
+  const pathname = requestUrl.pathname;
+  const matchingPathRoutes = API_ROUTES.filter((route) => route.path === pathname);
+
+  if (!matchingPathRoutes.length) {
+    return sendApiError(res, 404, "route_not_found", `API route not found: ${pathname}`);
+  }
+
+  const route = matchingPathRoutes.find((candidate) => candidate.method === method);
+  if (!route) {
+    const allow = [...new Set(matchingPathRoutes.map((candidate) => candidate.method))].join(", ");
+    res.setHeader("Allow", allow);
+    return sendApiError(
+      res,
+      405,
+      "method_not_allowed",
+      `Method ${method} is not allowed for ${pathname}.`,
+    );
+  }
+
+  return route.handler(req, res, requestUrl);
+}
+
+async function dispatchStaticRequest(req, res, requestUrl) {
+  const method = String(req.method || "GET").toUpperCase();
+  const pathname = requestUrl.pathname;
+  const headOnly = method === "HEAD";
+
+  if (pathname.startsWith("/media/")) {
+    if (method === "GET" || method === "HEAD") {
+      return serveUploadedMedia(pathname, res, headOnly);
+    }
+    return sendPlainText(res, 405, "Method not allowed");
+  }
+
+  if (method === "GET" || method === "HEAD") {
+    return serveStatic(pathname, res, headOnly);
+  }
+
+  return sendPlainText(res, 404, "Not found");
+}
+
+function handleHealthRequest(_req, res) {
+  return sendApiSuccess(res, 200, {
+    ok: true,
+    liveTranslationEnabled: OPENAI_API_KEY_VALID,
+    model: OPENAI_MODEL,
+    fallbackModel: OPENAI_TRANSLATION_FALLBACK_MODEL || null,
+    contextualFallbackEnabled: Boolean(OPENAI_TRANSLATION_FALLBACK_MODEL && OPENAI_TRANSLATION_CONTEXTUAL_FALLBACK),
+    reasoningEffort: OPENAI_TRANSLATION_REASONING_EFFORT,
+    sharedStateEnabled: true,
+    hasServerState: Boolean(serverState),
+    translationConfigured: OPENAI_API_KEY_VALID,
+    lastTranslationError,
+    lastTranslationErrorDetail,
+  });
+}
+
+function handleStateRead(_req, res) {
+  return sendApiSuccess(res, 200, {
+    state: serverState,
+  });
+}
 
 async function handleTranslate(req, res) {
   try {
@@ -311,15 +361,33 @@ async function handleTranslate(req, res) {
 
     const body = await readJsonBody(req);
     const text = normalizeDisplayText(body?.text).trim();
-    const sourceLanguage = String(body?.sourceLanguage || "").trim();
+    const sourceLanguage = String(body?.sourceLanguage || body?.source_language || "").trim();
     const detectedLanguages = [...new Set(
-      (Array.isArray(body?.detectedLanguages) ? body.detectedLanguages : [sourceLanguage])
+      (
+        Array.isArray(body?.detectedLanguages)
+          ? body.detectedLanguages
+          : Array.isArray(body?.detected_languages)
+            ? body.detected_languages
+            : [sourceLanguage]
+      )
         .map((item) => String(item || "").trim())
         .filter((language) => ALLOWED_LANGUAGES.has(language))
     )];
-    const targetLanguages = Array.isArray(body?.targetLanguages) ? body.targetLanguages : [];
-    const translationConcept = normalizeTranslationConcept(body?.translationConcept);
-    const contextSummary = String(body?.contextSummary || "").trim().slice(0, 800);
+    const targetLanguage = String(body?.targetLanguage || body?.target_language || "").trim();
+    const targetLanguages = Array.isArray(body?.targetLanguages)
+      ? body.targetLanguages
+      : Array.isArray(body?.target_languages)
+        ? body.target_languages
+        : targetLanguage
+          ? [targetLanguage]
+          : [];
+    const translationConcept = normalizeTranslationConcept(body?.translationConcept || body?.translation_concept);
+    const contextSummary = String(body?.contextSummary || body?.context_summary || "").trim().slice(0, 800);
+    const participantContext = normalizeParticipantContext(
+      body?.participantContext || body?.participant_context,
+    );
+    const senderUserId = String(body?.senderUserId || body?.sender_user_id || "").trim();
+    const viewerUserId = String(body?.viewerUserId || body?.viewer_user_id || "").trim();
 
     if (!text || !ALLOWED_LANGUAGES.has(sourceLanguage)) {
       return sendJson(res, 400, { error: "invalid_request" });
@@ -340,6 +408,9 @@ async function handleTranslate(req, res) {
     }
 
     console.info("[translate] request", {
+      senderUserId,
+      viewerUserId,
+      text: text.slice(0, 120),
       sourceLanguage,
       detectedLanguages,
       targetLanguages: normalizedTargets,
@@ -359,6 +430,7 @@ async function handleTranslate(req, res) {
       targetLanguages: normalizedTargets,
       translationConcept,
       contextSummary,
+      participantContext,
     });
     lastTranslationError = null;
     lastTranslationErrorDetail = null;
@@ -374,7 +446,9 @@ async function handleTranslate(req, res) {
       model: translationResult.model,
     });
   } catch (error) {
-    console.error("[translate]", error);
+    console.error("[translate] failed", {
+      error: String(error?.message || error || "translation_request_failed"),
+    });
     lastTranslationError = normalizeTranslationError(error);
     lastTranslationErrorDetail = summarizeTranslationError(error);
     return sendJson(res, 500, {
@@ -389,11 +463,817 @@ async function handlePushConfig(_req, res) {
   const clientConfig = getFirebaseClientConfig();
   const nativeConfig = getFirebaseNativeConfig();
   return sendJson(res, 200, {
-    enabled: Boolean(clientConfig && FIREBASE_VAPID_KEY),
+    enabled: Boolean((clientConfig && FIREBASE_VAPID_KEY) || nativeConfig.enabled),
     webConfig: clientConfig,
     vapidKey: FIREBASE_VAPID_KEY || "",
     nativeConfig,
   });
+}
+
+async function handleDiscoverableUsers(_req, res, requestUrl) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable the discoverable users API.",
+      );
+    }
+
+    const viewerUserId = String(
+      requestUrl.searchParams.get("viewerUserId") ||
+      requestUrl.searchParams.get("viewer_user_id") ||
+      "",
+    ).trim();
+
+    if (!viewerUserId) {
+      return sendApiError(
+        res,
+        400,
+        "viewer_user_id_required",
+        "viewerUserId query parameter is required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const viewer = await usersCollection.findOne(
+      buildMongoUserLookupQuery(viewerUserId),
+      {
+        projection: {
+          _id: 1,
+          id: 1,
+          loginId: 1,
+          blockedUserIds: 1,
+          blockedUsers: 1,
+        },
+      },
+    );
+
+    if (!viewer) {
+      return sendApiError(
+        res,
+        404,
+        "viewer_not_found",
+        "The viewer account could not be found.",
+      );
+    }
+
+    const viewerResolvedId = resolveMongoUserId(viewer);
+    const viewerBlockedIds = normalizeBlockedUserIds(viewer);
+    const users = await usersCollection.find(
+      buildDiscoverableMongoUsersQuery(),
+      {
+        projection: {
+          _id: 1,
+          id: 1,
+          loginId: 1,
+          name: 1,
+          nickname: 1,
+          nativeLanguage: 1,
+          uiLanguage: 1,
+          preferredChatLanguage: 1,
+          profileImage: 1,
+          joinedAt: 1,
+          lastSeenAt: 1,
+          blockedUserIds: 1,
+          blockedUsers: 1,
+          isAdmin: 1,
+          deletedAt: 1,
+          withdrawnAt: 1,
+          isDeleted: 1,
+          status: 1,
+        },
+      },
+    ).toArray();
+
+    const discoverableUsers = users
+      .filter((user) => {
+        const candidateId = resolveMongoUserId(user);
+        if (!candidateId || candidateId === viewerResolvedId) {
+          return false;
+        }
+        if (viewerBlockedIds.has(candidateId)) {
+          return false;
+        }
+        const blockedByCandidate = normalizeBlockedUserIds(user);
+        return !blockedByCandidate.has(viewerResolvedId);
+      })
+      .map((user) => sanitizeDiscoverableUser(user))
+      .filter(Boolean);
+
+    console.info("[users] discoverable", {
+      viewerUserId: viewerResolvedId,
+      returned: discoverableUsers.length,
+    });
+
+    return sendApiSuccess(res, 200, {
+      users: discoverableUsers,
+      meta: {
+        viewerUserId: viewerResolvedId,
+        count: discoverableUsers.length,
+      },
+    });
+  } catch (error) {
+    console.error("[users] discoverable failed", {
+      error: String(error?.message || error || "discoverable_users_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "discoverable_users_failed",
+      "The discoverable users request could not be completed.",
+    );
+  }
+}
+
+async function handleDirectoryUserSync(req, res) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable directory user sync.",
+      );
+    }
+
+    const body = await readJsonBody(req);
+    const rawUser = body?.user && typeof body.user === "object"
+      ? body.user
+      : body;
+    const user = sanitizeDirectoryUserDocument(rawUser);
+
+    if (!user?.id || !user?.loginId || !user?.name) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_user_payload",
+        "id, loginId, and name are required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const existingById = await usersCollection.findOne(
+      { id: user.id },
+      {
+        projection: {
+          _id: 1,
+          id: 1,
+          loginId: 1,
+          isDeleted: 1,
+          status: 1,
+        },
+      },
+    );
+
+    const now = Date.now();
+    const isDeletedPayload = Boolean(user.isDeleted || user.deletedAt || user.withdrawnAt || user.status === "withdrawn");
+
+    if (existingById) {
+      await usersCollection.updateOne(
+        { _id: existingById._id },
+        {
+          $set: {
+            ...user,
+            updatedAt: now,
+          },
+          $setOnInsert: {
+            createdAt: now,
+          },
+        },
+      );
+    } else {
+      const activeUserByLoginId = await usersCollection.findOne(
+        buildActiveMongoUserByLoginIdQuery(user.loginId),
+        {
+          projection: {
+            _id: 1,
+            id: 1,
+            loginId: 1,
+          },
+        },
+      );
+
+      if (activeUserByLoginId && resolveMongoUserId(activeUserByLoginId) !== user.id) {
+        return sendApiError(
+          res,
+          409,
+          "directory_login_conflict",
+          "Another active account already uses that login ID.",
+        );
+      }
+
+      if (isDeletedPayload) {
+        console.info("[users] directory sync skipped missing deleted user", {
+          userId: user.id,
+          loginId: user.loginId,
+        });
+        return sendApiSuccess(res, 200, {
+          userId: user.id,
+          skipped: true,
+        });
+      }
+
+      await usersCollection.updateOne(
+        { id: user.id },
+        {
+          $set: {
+            ...user,
+            updatedAt: now,
+          },
+          $setOnInsert: {
+            createdAt: now,
+          },
+        },
+        { upsert: true },
+      );
+    }
+
+    console.info("[users] directory sync", {
+      userId: user.id,
+      loginId: user.loginId,
+      deleted: Boolean(user.isDeleted || user.deletedAt || user.withdrawnAt),
+    });
+
+    return sendApiSuccess(res, 200, {
+      userId: user.id,
+    });
+  } catch (error) {
+    console.error("[users] directory sync failed", {
+      error: String(error?.message || error || "directory_user_sync_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "directory_user_sync_failed",
+      "The directory user sync request could not be completed.",
+    );
+  }
+}
+
+async function handleAuthSignUp(req, res) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable sign up.",
+      );
+    }
+
+    const body = await readJsonBody(req);
+    const loginId = normalizeDisplayText(body?.loginId || "").trim().toLowerCase();
+    const name = normalizeDisplayText(body?.name || "").trim();
+    const password = String(body?.password || "").trim();
+    const nativeLanguage = ALLOWED_LANGUAGES.has(String(body?.nativeLanguage || "").trim())
+      ? String(body.nativeLanguage).trim()
+      : "ko";
+    const uiLanguage = ALLOWED_LANGUAGES.has(String(body?.uiLanguage || "").trim())
+      ? String(body.uiLanguage).trim()
+      : nativeLanguage;
+    const preferredChatLanguage = ALLOWED_LANGUAGES.has(String(body?.preferredChatLanguage || "").trim())
+      ? String(body.preferredChatLanguage).trim()
+      : nativeLanguage;
+    const recoveryQuestionKey = RECOVERY_QUESTION_KEYS.includes(body?.recoveryQuestionKey)
+      ? body.recoveryQuestionKey
+      : getDeterministicRecoveryQuestionKey(name || loginId);
+    const recoveryAnswer = normalizeRecoveryAnswer(body?.recoveryAnswer || "");
+    const profileImage = sanitizeProfileImageSummary(body?.profileImage);
+
+    if (!loginId || !name || !password) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_signup_request",
+        "loginId, name, and password are required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const existing = await usersCollection.findOne(
+      buildActiveMongoUserByLoginIdQuery(loginId),
+    );
+    if (existing) {
+      return sendApiError(
+        res,
+        409,
+        "duplicate_login_id",
+        "That login ID already exists.",
+      );
+    }
+
+    const now = Date.now();
+    const user = {
+      id: createServerUserId(),
+      loginId,
+      name,
+      nickname: "",
+      nativeLanguage,
+      uiLanguage,
+      preferredChatLanguage,
+      profileImage,
+      blockedUserIds: [],
+      isAdmin: false,
+      joinedAt: now,
+      lastSeenAt: now,
+      lastLoginAt: now,
+      currentRoomId: null,
+      recoveryQuestionKey,
+      recoveryAnswerHash: recoveryAnswer ? hashSecret(recoveryAnswer) : null,
+      passwordHash: hashSecret(password),
+      passwordHashAlgorithm: "scrypt-v1",
+      isDeleted: false,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await usersCollection.insertOne(user);
+
+    return sendApiSuccess(res, 201, {
+      user: sanitizeAuthUser(user),
+    });
+  } catch (error) {
+    console.error("[auth] signup failed", {
+      error: String(error?.message || error || "auth_signup_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "auth_signup_failed",
+      "The sign up request could not be completed.",
+    );
+  }
+}
+
+async function handleAuthLoginIdAvailability(_req, res, requestUrl) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable login ID availability checks.",
+      );
+    }
+
+    const loginId = normalizeDisplayText(
+      requestUrl.searchParams.get("loginId") ||
+      requestUrl.searchParams.get("login_id") ||
+      "",
+    ).trim().toLowerCase();
+
+    if (!loginId) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_login_id_request",
+        "loginId query parameter is required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const existing = await usersCollection.findOne(
+      buildActiveMongoUserByLoginIdQuery(loginId),
+      {
+        projection: {
+          _id: 1,
+        },
+      },
+    );
+
+    return sendApiSuccess(res, 200, {
+      loginId,
+      available: !existing,
+    });
+  } catch (error) {
+    console.error("[auth] login-id-availability failed", {
+      error: String(error?.message || error || "auth_login_id_availability_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "auth_login_id_availability_failed",
+      "The login ID availability request could not be completed.",
+    );
+  }
+}
+
+async function handleAuthRecoveryQuestion(_req, res, requestUrl) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable recovery question lookup.",
+      );
+    }
+
+    const loginId = normalizeDisplayText(
+      requestUrl.searchParams.get("loginId") ||
+      requestUrl.searchParams.get("login_id") ||
+      "",
+    ).trim().toLowerCase();
+
+    if (!loginId) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_recovery_question_request",
+        "loginId query parameter is required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const user = await usersCollection.findOne(
+      buildActiveMongoUserByLoginIdQuery(loginId),
+      {
+        projection: {
+          _id: 1,
+          loginId: 1,
+          name: 1,
+          recoveryQuestionKey: 1,
+        },
+      },
+    );
+
+    if (!user) {
+      return sendApiError(
+        res,
+        404,
+        "recovery_user_not_found",
+        "We could not find a registered ID.",
+      );
+    }
+
+    const recoveryQuestionKey = RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+      ? user.recoveryQuestionKey
+      : getDeterministicRecoveryQuestionKey(user?.name || user?.loginId);
+
+    return sendApiSuccess(res, 200, {
+      loginId,
+      recoveryQuestionKey,
+    });
+  } catch (error) {
+    console.error("[auth] recovery question failed", {
+      error: String(error?.message || error || "auth_recovery_question_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "auth_recovery_question_failed",
+      "The recovery question request could not be completed.",
+    );
+  }
+}
+
+async function handleAuthVerifyRecovery(req, res) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable recovery verification.",
+      );
+    }
+
+    const body = await readJsonBody(req);
+    const loginId = normalizeDisplayText(body?.loginId || "").trim().toLowerCase();
+    const recoveryAnswer = normalizeRecoveryAnswer(body?.recoveryAnswer || "");
+
+    if (!loginId || !recoveryAnswer) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_recovery_verification_request",
+        "loginId and recoveryAnswer are required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const user = await usersCollection.findOne(
+      buildActiveMongoUserByLoginIdQuery(loginId),
+      {
+        projection: {
+          _id: 1,
+          loginId: 1,
+          name: 1,
+          recoveryQuestionKey: 1,
+          recoveryAnswerHash: 1,
+          recoveryAnswer: 1,
+        },
+      },
+    );
+
+    if (!user) {
+      return sendApiError(
+        res,
+        404,
+        "recovery_user_not_found",
+        "We could not find a registered ID.",
+      );
+    }
+
+    if (!verifyStoredSecret(recoveryAnswer, user?.recoveryAnswerHash || user?.recoveryAnswer || "")) {
+      return sendApiError(
+        res,
+        401,
+        "recovery_answer_mismatch",
+        "The security question or answer does not match.",
+      );
+    }
+
+    const recoveryQuestionKey = RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+      ? user.recoveryQuestionKey
+      : getDeterministicRecoveryQuestionKey(user?.name || user?.loginId);
+
+    return sendApiSuccess(res, 200, {
+      loginId,
+      recoveryQuestionKey,
+      verified: true,
+    });
+  } catch (error) {
+    console.error("[auth] verify recovery failed", {
+      error: String(error?.message || error || "auth_verify_recovery_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "auth_verify_recovery_failed",
+      "The recovery verification request could not be completed.",
+    );
+  }
+}
+
+async function handleAuthResetPassword(req, res) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable password resets.",
+      );
+    }
+
+    const body = await readJsonBody(req);
+    const loginId = normalizeDisplayText(body?.loginId || "").trim().toLowerCase();
+    const recoveryQuestionKey = String(body?.recoveryQuestionKey || "").trim();
+    const recoveryAnswer = normalizeRecoveryAnswer(body?.recoveryAnswer || "");
+    const newPassword = String(body?.newPassword || "").trim();
+
+    if (!loginId || !recoveryQuestionKey || !recoveryAnswer || !newPassword) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_reset_password_request",
+        "loginId, recoveryQuestionKey, recoveryAnswer, and newPassword are required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const user = await usersCollection.findOne(
+      buildActiveMongoUserByLoginIdQuery(loginId),
+    );
+
+    if (!user) {
+      return sendApiError(
+        res,
+        404,
+        "recovery_user_not_found",
+        "We could not find a registered ID.",
+      );
+    }
+
+    const expectedRecoveryQuestionKey = RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+      ? user.recoveryQuestionKey
+      : getDeterministicRecoveryQuestionKey(user?.name || user?.loginId);
+
+    if (expectedRecoveryQuestionKey !== recoveryQuestionKey) {
+      return sendApiError(
+        res,
+        401,
+        "recovery_answer_mismatch",
+        "The security question or answer does not match.",
+      );
+    }
+
+    if (!verifyStoredSecret(recoveryAnswer, user?.recoveryAnswerHash || user?.recoveryAnswer || "")) {
+      return sendApiError(
+        res,
+        401,
+        "recovery_answer_mismatch",
+        "The security question or answer does not match.",
+      );
+    }
+
+    const now = Date.now();
+    await usersCollection.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          passwordHash: hashSecret(newPassword),
+          passwordHashAlgorithm: "scrypt-v1",
+          updatedAt: now,
+          lastSeenAt: now,
+        },
+        $unset: {
+          password: "",
+        },
+      },
+    );
+
+    return sendApiSuccess(res, 200, {
+      loginId,
+      passwordReset: true,
+    });
+  } catch (error) {
+    console.error("[auth] reset password failed", {
+      error: String(error?.message || error || "auth_reset_password_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "auth_reset_password_failed",
+      "The password reset request could not be completed.",
+    );
+  }
+}
+
+async function handleAuthLogin(req, res) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable sign in.",
+      );
+    }
+
+    const body = await readJsonBody(req);
+    const loginId = normalizeDisplayText(body?.loginId || "").trim().toLowerCase();
+    const password = String(body?.password || "").trim();
+
+    if (!loginId || !password) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_login_request",
+        "loginId and password are required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const user = await usersCollection.findOne(
+      buildActiveMongoUserByLoginIdQuery(loginId),
+    );
+
+    if (!user || !verifyStoredSecret(password, user?.passwordHash || user?.password || "")) {
+      return sendApiError(
+        res,
+        401,
+        "invalid_credentials",
+        "Invalid login ID or password.",
+      );
+    }
+
+    const now = Date.now();
+    const passwordHash = typeof user?.passwordHash === "string" && user.passwordHash.trim().length > 0
+      ? user.passwordHash
+      : hashSecret(password);
+    await usersCollection.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          lastLoginAt: now,
+          lastSeenAt: now,
+          updatedAt: now,
+          passwordHash,
+          passwordHashAlgorithm: "scrypt-v1",
+        },
+        $unset: {
+          password: "",
+        },
+      },
+    );
+
+    const nextUser = {
+      ...user,
+      lastLoginAt: now,
+      lastSeenAt: now,
+      passwordHash,
+      passwordHashAlgorithm: "scrypt-v1",
+    };
+    return sendApiSuccess(res, 200, {
+      user: sanitizeAuthUser(nextUser),
+    });
+  } catch (error) {
+    console.error("[auth] login failed", {
+      error: String(error?.message || error || "auth_login_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "auth_login_failed",
+      "The login request could not be completed.",
+    );
+  }
+}
+
+async function handleAuthDeleteAccount(req, res) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable account deletion.",
+      );
+    }
+
+    const body = await readJsonBody(req);
+    const userId = String(body?.userId || "").trim();
+    const loginId = normalizeDisplayText(body?.loginId || "").trim().toLowerCase();
+    const password = String(body?.password || "").trim();
+
+    if ((!userId && !loginId) || !password) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_delete_account_request",
+        "userId or loginId, and password are required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const lookupValue = userId || loginId;
+    const user = await usersCollection.findOne(
+      buildActiveMongoUserLookupQuery(lookupValue),
+    );
+
+    if (!user) {
+      return sendApiError(
+        res,
+        404,
+        "user_not_found",
+        "The account could not be found.",
+      );
+    }
+
+    if (Boolean(user?.isAdmin) || String(user?.loginId || "").trim().toLowerCase() === "admin") {
+      return sendApiError(
+        res,
+        403,
+        "delete_admin_forbidden",
+        "The admin account cannot be deleted.",
+      );
+    }
+
+    if (!verifyStoredSecret(password, user?.passwordHash || user?.password || "")) {
+      return sendApiError(
+        res,
+        401,
+        "invalid_credentials",
+        "Invalid login ID or password.",
+      );
+    }
+
+    const now = Date.now();
+    await usersCollection.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          isDeleted: true,
+          status: "withdrawn",
+          deletedAt: now,
+          withdrawnAt: now,
+          updatedAt: now,
+          lastSeenAt: now,
+        },
+      },
+    );
+
+    return sendApiSuccess(res, 200, {
+      userId: resolveMongoUserId(user),
+      loginId: String(user?.loginId || "").trim(),
+      status: "withdrawn",
+    });
+  } catch (error) {
+    console.error("[auth] delete account failed", {
+      error: String(error?.message || error || "auth_delete_account_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "auth_delete_account_failed",
+      "The delete account request could not be completed.",
+    );
+  }
 }
 
 async function handlePushRegister(req, res) {
@@ -853,6 +1733,10 @@ function mergeRooms(previousRooms, nextRooms, deletedRooms = {}) {
         ...(previous.accessByUser || {}),
         ...(next.accessByUser || {}),
       },
+      mutedByUserId: {
+        ...(previous.mutedByUserId || previous.mutedByUser || {}),
+        ...(next.mutedByUserId || next.mutedByUser || {}),
+      },
       lastMessageAt: Math.max(Number(previous.lastMessageAt || 0), Number(next.lastMessageAt || 0)),
       createdAt: Math.min(Number(previous.createdAt || Date.now()), Number(next.createdAt || Date.now())),
       expiredAt: next.expiredAt || previous.expiredAt || null,
@@ -1182,7 +2066,7 @@ function collectNewUserMessages(previousState, nextState) {
     const previousRoom = previousRoomMap.get(room.id);
     const previousMessageIds = new Set((previousRoom?.messages || []).map((message) => message.id));
     (room.messages || []).forEach((message) => {
-      if (message?.kind !== "user" || previousMessageIds.has(message.id)) return;
+      if (!isPushUserMessageKind(message?.kind) || previousMessageIds.has(message.id)) return;
       events.push({ room, message });
     });
   });
@@ -1206,10 +2090,54 @@ function buildPushMessagePreview(message) {
   if (originalText) {
     return originalText.length > 80 ? `${originalText.slice(0, 77)}...` : originalText;
   }
-  if (message?.media?.kind === "image") return "사진을 보냈어요";
-  if (message?.media?.kind === "video") return "영상을 보냈어요";
-  if (message?.media?.kind === "file") return "파일을 보냈어요";
+  const mediaKind = getPushMediaKind(message);
+  if (mediaKind === "image") return "사진을 보냈어요";
+  if (mediaKind === "video") return "영상을 보냈어요";
+  if (mediaKind === "file") return "파일을 보냈어요";
   return "새 메시지가 도착했어요";
+}
+
+function getUserDisplayLanguage(user, fallbackLanguage = "ko") {
+  return normalizeMessageLanguageCode(user?.motherLanguage || user?.nativeLanguage || user?.preferredChatLanguage, fallbackLanguage);
+}
+
+function findStoredTranslationTextForLanguage(message, language) {
+  const baseLanguage = getTranslationVariantLanguage(language);
+  if (!baseLanguage) return "";
+  const translations = message?.translations || {};
+  const directEntry = translations[baseLanguage];
+  if (typeof directEntry?.text === "string" && directEntry.text.trim() && !directEntry.failed) {
+    return directEntry.text.trim();
+  }
+  const variantEntry = Object.entries(translations).find(([key, entry]) => {
+    return getTranslationVariantLanguage(key) === baseLanguage && typeof entry?.text === "string" && entry.text.trim() && !entry.failed;
+  });
+  return typeof variantEntry?.[1]?.text === "string" ? variantEntry[1].text.trim() : "";
+}
+
+function buildPushMessagePreviewForUser(message, recipientUser) {
+  const originalText = String(message?.originalText || "").trim();
+  const sourceLanguage = normalizeMessageLanguageCode(message?.originalLanguage || message?.sourceLanguage, recipientUser?.nativeLanguage || "ko");
+  const detectedLanguages = Array.isArray(message?.languageProfile?.detectedLanguages) ? message.languageProfile.detectedLanguages : [sourceLanguage];
+  const mixedLanguageInput = detectedLanguages.some((language) => language && language !== sourceLanguage);
+  const recipientLanguage = getUserDisplayLanguage(recipientUser, sourceLanguage);
+  const translatedText = findStoredTranslationTextForLanguage(message, recipientLanguage);
+  if (translatedText) {
+    return translatedText.length > 80 ? `${translatedText.slice(0, 77)}...` : translatedText;
+  }
+  if (originalText && recipientLanguage === sourceLanguage && !mixedLanguageInput) {
+    return originalText.length > 80 ? `${originalText.slice(0, 77)}...` : originalText;
+  }
+  if (originalText) return "번역중..";
+  const mediaKind = getPushMediaKind(message);
+  if (mediaKind === "image") return "사진을 보냈어요";
+  if (mediaKind === "video") return "영상을 보냈어요";
+  if (mediaKind === "file") return "파일을 보냈어요";
+  return "새 메시지가 도착했어요";
+}
+
+function isRoomPushMutedForUser(room, userId) {
+  return Boolean(room?.mutedByUserId?.[userId] || room?.mutedByUser?.[userId]);
 }
 
 function normalizePushPayload(payload) {
@@ -1383,6 +2311,10 @@ function buildAndroidNativePushMessage(entry, payload) {
   const notificationBody = String(payload?.body || payload?.previewText || "");
   return {
     token: entry.token,
+    notification: {
+      title: notificationTitle,
+      body: notificationBody,
+    },
     data: normalizePushPayload({
       ...payload,
       title: notificationTitle,
@@ -1398,7 +2330,10 @@ function buildAndroidNativePushMessage(entry, payload) {
 
 async function dispatchPushNotifications(previousState, nextState) {
   const clientConfig = getFirebaseClientConfig();
-  if (!(clientConfig && FIREBASE_VAPID_KEY)) {
+  const nativeConfig = getFirebaseNativeConfig();
+  const webPushReady = Boolean(clientConfig && FIREBASE_VAPID_KEY);
+  const nativePushReady = Boolean(nativeConfig.enabled);
+  if (!(webPushReady || nativePushReady)) {
     return;
   }
 
@@ -1408,8 +2343,12 @@ async function dispatchPushNotifications(previousState, nextState) {
   for (const event of messageEvents) {
     const sender = (nextState?.users || []).find((user) => user.id === event.message.senderId);
     const recipients = deriveRoomParticipantIds(event.room, nextState?.users || []).filter((userId) => userId !== event.message.senderId);
-    const previewText = buildPushMessagePreview(event.message);
     for (const recipientId of recipients) {
+      if (isRoomPushMutedForUser(event.room, recipientId)) {
+        continue;
+      }
+      const recipient = (nextState?.users || []).find((user) => user.id === recipientId);
+      const previewText = buildPushMessagePreviewForUser(event.message, recipient);
       await sendPushToUser(recipientId, {
         type: "message",
         roomId: event.room.id,
@@ -1578,7 +2517,7 @@ function normalizeTranslationError(error) {
   return "translation_error";
 }
 
-async function requestOpenAITranslations({ text, sourceLanguage, detectedLanguages = null, targetLanguages, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+async function requestOpenAITranslations({ text, sourceLanguage, detectedLanguages = null, targetLanguages, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "", participantContext = null }) {
   if (!targetLanguages.length) {
     return {
       translations: {},
@@ -1588,20 +2527,22 @@ async function requestOpenAITranslations({ text, sourceLanguage, detectedLanguag
 
   const translatedEntries = await Promise.allSettled(
     targetLanguages.map(async (targetLanguage) => {
-      const translatedText = await requestSingleOpenAITranslation({
+      const translated = await requestSingleOpenAITranslation({
         text,
         sourceLanguage,
         detectedLanguages,
         targetLanguage,
         translationConcept,
         contextSummary,
+        participantContext,
       });
       return [
         targetLanguage,
         {
-          text: translatedText || text,
+          text: translated.text || text,
           failed: false,
         },
+        translated.model,
       ];
     })
   );
@@ -1626,20 +2567,28 @@ async function requestOpenAITranslations({ text, sourceLanguage, detectedLanguag
     ]);
 
   return {
-    translations: Object.fromEntries([...successfulEntries, ...failedEntries]),
-    model: OPENAI_MODEL,
+    translations: Object.fromEntries([...successfulEntries, ...failedEntries].map((entry) => [entry[0], entry[1]])),
+    model: [...new Set(successfulEntries.map((entry) => entry[2]).filter(Boolean))].join(", ") || OPENAI_MODEL,
   };
 }
 
-async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "", participantContext = null }) {
+  const modelCandidates = buildTranslationModelCandidates({
+    sourceLanguage,
+    targetLanguage,
+    detectedLanguages,
+    translationConcept,
+    contextSummary,
+  });
   const cacheKey = JSON.stringify({
-    model: OPENAI_MODEL,
+    models: modelCandidates,
     reasoningEffort: OPENAI_TRANSLATION_REASONING_EFFORT,
     sourceLanguage,
     detectedLanguages,
     targetLanguage,
     translationConcept,
     contextSummary,
+    participantContext,
     text,
   });
   const cached = translationCache.get(cacheKey);
@@ -1647,8 +2596,42 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLa
     return cached;
   }
 
+  let lastError = null;
+  for (const modelName of modelCandidates) {
+    try {
+      const outputText = await requestSingleOpenAITranslationFromModel({
+        modelName,
+        text,
+        sourceLanguage,
+        targetLanguage,
+        detectedLanguages,
+        translationConcept,
+        contextSummary,
+        participantContext,
+      });
+
+      if (shouldTryFallbackTranslationModel({ modelName, modelCandidates, sourceLanguage, targetLanguage, text, outputText })) {
+        lastError = new Error("translation_fallback_requested");
+        continue;
+      }
+
+      const translated = {
+        text: outputText,
+        model: modelName,
+      };
+      translationCache.set(cacheKey, translated);
+      return translated;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("translation_request_failed");
+}
+
+async function requestSingleOpenAITranslationFromModel({ modelName, text, sourceLanguage, targetLanguage, detectedLanguages = null, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "", participantContext = null }) {
   const payload = {
-    model: OPENAI_MODEL,
+    model: modelName,
     store: false,
     reasoning: {
       effort: OPENAI_TRANSLATION_REASONING_EFFORT,
@@ -1662,6 +2645,7 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLa
       targetLanguage,
       translationConcept,
       contextSummary,
+      participantContext,
     }),
   };
 
@@ -1689,13 +2673,11 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLa
       }
 
       const data = await response.json();
-      const outputText = normalizeTranslatedText(extractResponseText(data), text, {
+      return normalizeTranslatedText(extractResponseText(data), text, {
         sourceLanguage,
         targetLanguage,
         detectedLanguages,
       });
-      translationCache.set(cacheKey, outputText);
-      return outputText;
     } catch (error) {
       lastError = error;
       if (attempt >= 2 || !shouldRetryTranslationError(error)) {
@@ -1706,6 +2688,40 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLa
   }
 
   throw lastError || new Error("translation_request_failed");
+}
+
+function buildTranslationModelCandidates({ sourceLanguage, targetLanguage, detectedLanguages = null, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+  const candidates = [OPENAI_MODEL];
+  if (
+    OPENAI_TRANSLATION_FALLBACK_MODEL &&
+    OPENAI_TRANSLATION_CONTEXTUAL_FALLBACK &&
+    shouldUseContextualTranslationFallback({ sourceLanguage, targetLanguage, detectedLanguages, translationConcept, contextSummary })
+  ) {
+    candidates.push(OPENAI_TRANSLATION_FALLBACK_MODEL);
+  }
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function shouldUseContextualTranslationFallback({ sourceLanguage, targetLanguage, detectedLanguages = null, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+  const normalizedConcept = normalizeTranslationConcept(translationConcept);
+  const normalizedDetectedLanguages = [...new Set(
+    (Array.isArray(detectedLanguages) ? detectedLanguages : [sourceLanguage])
+      .map((language) => String(language || "").trim())
+      .filter((language) => ALLOWED_LANGUAGES.has(language))
+  )];
+  const mixedLanguageInput = normalizedDetectedLanguages.length > 1;
+  const nuancedMode = ["office", "friend", "lover"].includes(normalizedConcept);
+  const crossLanguagePair = sourceLanguage !== targetLanguage;
+  return Boolean(contextSummary || mixedLanguageInput || (crossLanguagePair && nuancedMode));
+}
+
+function shouldTryFallbackTranslationModel({ modelName, modelCandidates = [], sourceLanguage, targetLanguage, text, outputText }) {
+  const hasAnotherModel = modelCandidates.indexOf(modelName) < modelCandidates.length - 1;
+  if (!hasAnotherModel) return false;
+  if (sourceLanguage === targetLanguage) return false;
+  const normalizedSource = String(text || "").trim();
+  const normalizedOutput = String(outputText || "").trim();
+  return Boolean(normalizedSource) && Boolean(normalizedOutput) && normalizedSource === normalizedOutput;
 }
 
 function shouldRetryTranslationResponse(statusCode) {
@@ -1730,8 +2746,112 @@ async function delayTranslationRetry(attempt) {
   await new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
-function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
-  return buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguages, targetLanguage, translationConcept, contextSummary });
+function normalizeParticipantContext(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const speaker = normalizeParticipantProfile(
+    value.speaker || value.sender,
+  );
+  const recipient = normalizeParticipantProfile(
+    value.recipient || value.viewer,
+  );
+  if (!speaker && !recipient) {
+    return null;
+  }
+
+  return {
+    ...(speaker ? { speaker } : {}),
+    ...(recipient ? { recipient } : {}),
+  };
+}
+
+function normalizeParticipantProfile(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const nativeLanguage = ALLOWED_LANGUAGES.has(
+    String(value.nativeLanguage || "").trim(),
+  )
+    ? String(value.nativeLanguage || "").trim()
+    : "";
+  const gender = String(value.gender || "").trim().slice(0, 24);
+  const rawAge = Number(value.age);
+  const age = Number.isFinite(rawAge) && rawAge > 0
+    ? Math.max(1, Math.min(120, Math.round(rawAge)))
+    : null;
+  const ageGroup = String(value.ageGroup || "").trim().slice(0, 24);
+
+  if (!nativeLanguage && !gender && age == null && !ageGroup) {
+    return null;
+  }
+
+  return {
+    ...(nativeLanguage ? { nativeLanguage } : {}),
+    ...(gender ? { gender } : {}),
+    ...(age != null ? { age } : {}),
+    ...(ageGroup ? { ageGroup } : {}),
+  };
+}
+
+function buildParticipantContextPrompt(participantContext) {
+  if (!participantContext) {
+    return [];
+  }
+
+  const lines = [];
+  const speakerLine = describeParticipantProfileHint(
+    "Speaker profile hint",
+    participantContext.speaker,
+  );
+  const recipientLine = describeParticipantProfileHint(
+    "Recipient profile hint",
+    participantContext.recipient,
+  );
+
+  if (speakerLine || recipientLine) {
+    lines.push(
+      "Participant profile hints (soft hints only; use them only when the source is ambiguous):",
+    );
+  }
+  if (speakerLine) {
+    lines.push(speakerLine);
+  }
+  if (recipientLine) {
+    lines.push(recipientLine);
+  }
+  return lines;
+}
+
+function describeParticipantProfileHint(label, profile) {
+  if (!profile || typeof profile !== "object") {
+    return "";
+  }
+
+  const details = [];
+  if (profile.nativeLanguage) {
+    details.push(`native language ${describeLanguage(profile.nativeLanguage)}`);
+  }
+  if (profile.gender) {
+    details.push(`gender ${String(profile.gender)}`);
+  }
+  if (profile.age != null) {
+    details.push(`age ${profile.age}`);
+  } else if (profile.ageGroup) {
+    details.push(`age group ${String(profile.ageGroup)}`);
+  }
+
+  if (!details.length) {
+    return "";
+  }
+
+  return `- ${label}: ${details.join(", ")}.`;
+}
+
+function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "", participantContext = null }) {
+  return buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguages, targetLanguage, translationConcept, contextSummary, participantContext });
 
   const normalizedConcept = normalizeTranslationConcept(translationConcept);
   const normalizedDetectedLanguages = [...new Set(
@@ -1786,7 +2906,7 @@ function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null
   ].filter(Boolean).join("\n");
 }
 
-function buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "" }) {
+function buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguages = null, targetLanguage, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "", participantContext = null }) {
   const normalizedConcept = normalizeTranslationConcept(translationConcept);
   const normalizedDetectedLanguages = [...new Set(
     (Array.isArray(detectedLanguages) ? detectedLanguages : [sourceLanguage])
@@ -1799,6 +2919,7 @@ function buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguag
       ? "Default relationship context: private romantic partners. Use it only to preserve accurate warmth, role consistency, and nuance. Do not inject extra romance that the source does not support."
       : "";
   const pairSpecificRules = buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, normalizedConcept, normalizedDetectedLanguages);
+  const participantContextLines = buildParticipantContextPrompt(participantContext);
 
   return [
     "You are the final recipient-facing translator for a multilingual private chat app.",
@@ -1821,6 +2942,9 @@ function buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguag
     "- Preserve URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
     "- If the source leaves the subject, object, or relationship term implicit, preserve that natural implicitness whenever the target language allows it.",
     "- Do not force explicit pronouns, kinship terms, or partner-role wording when the target language sounds more natural without them.",
+    "- Use participant profile hints only as soft guidance for honorific level, kinship pronouns, vocatives, and ambiguous subject/object resolution.",
+    "- If profile hints are missing or uncertain, prefer neutral and natural wording instead of overcommitting to a wrong role term.",
+    "- Never expose or mention age or gender details unless the original message itself explicitly says them.",
     "- Use the context summary only to keep names, speaker/addressee roles, relationship tone, and honorific level consistent. Never let the summary override the actual message content.",
     "- If the context summary gives a stable role term or pronoun with medium/high confidence, prefer it before re-guessing. If confidence is low, prefer neutral wording over forcing a wrong kinship term.",
     "- Analyze the full intended meaning first, then write one clean final message in the target language.",
@@ -1830,6 +2954,7 @@ function buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguag
     ...pairSpecificRules,
     `- Target tone profile: ${describeTranslationConcept(normalizedConcept)}.`,
     romanticDirectionHint ? `- ${romanticDirectionHint}` : "",
+    ...participantContextLines,
     contextSummary ? "Context summary (reference only for stable roles, names, relationship tone, and honorific consistency):" : "",
     contextSummary || "",
     "",
@@ -1906,6 +3031,14 @@ function buildPairSpecificTranslationRules(sourceLanguage, targetLanguage, trans
 function normalizeTranslationConcept(value) {
   const normalized = String(value || "").trim().toLowerCase();
   return ["office", "general", "friend", "lover"].includes(normalized) ? normalized : DEFAULT_TRANSLATION_CONCEPT;
+}
+
+function normalizeTranslationModelName(value) {
+  return String(value || "").trim();
+}
+
+function isEnabledEnv(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
 }
 
 function normalizeTranslationReasoningEffort(value) {
@@ -2052,7 +3185,7 @@ function sanitizeMessageState(message, allowedUserIds) {
       ),
     };
   }
-  if (message.kind !== "user") {
+  if (!isPushUserMessageKind(message.kind)) {
     return message;
   }
 
@@ -2230,6 +3363,7 @@ function sanitizeSharedState(state) {
         participants,
         accessByUser: filterRecordByAllowedKeys(room.accessByUser, userIds),
         unreadByUser: filterRecordByAllowedKeys(room.unreadByUser, userIds),
+        mutedByUserId: filterRecordByAllowedKeys(room.mutedByUserId || room.mutedByUser, userIds),
         messages: (room.messages || []).map((message) => sanitizeMessageState(message, userIds)),
       };
     });
@@ -2269,7 +3403,7 @@ function shouldDiscardRoom(room) {
   if (!ROOM_AUTO_EXPIRATION_ENABLED) {
     return false;
   }
-  return room?.status === "expired" && !(room?.messages || []).some((message) => message.kind === "user");
+  return room?.status === "expired" && !(room?.messages || []).some((message) => isPushUserMessageKind(message.kind));
 }
 
 function isPersistentRoom(room) {
@@ -2294,7 +3428,12 @@ function filterRecordByAllowedKeys(record, allowedIds) {
 
 function deriveRoomParticipantIds(room, users = []) {
   const userIds = new Set((users || []).map((user) => user.id));
-  const participantIds = new Set((room?.participants || []).filter((participantId) => userIds.has(participantId)));
+  const roomParticipantIds = Array.isArray(room?.participants)
+    ? room.participants
+    : Array.isArray(room?.participantIds)
+      ? room.participantIds
+      : [];
+  const participantIds = new Set(roomParticipantIds.filter((participantId) => userIds.has(participantId)));
   (users || []).forEach((user) => {
     if (user?.currentRoomId === room?.id && userIds.has(user.id)) {
       participantIds.add(user.id);
@@ -2411,6 +3550,30 @@ async function serveUploadedMedia(requestPath, res, headOnly) {
   }
 }
 
+function sendApiSuccess(res, statusCode, payload = {}) {
+  return sendJson(res, statusCode, {
+    success: true,
+    ...payload,
+  });
+}
+
+function sendApiError(res, statusCode, code, message, extra = {}) {
+  return sendJson(res, statusCode, {
+    error: message,
+    code,
+    message,
+    ...extra,
+  });
+}
+
+function sendPlainText(res, statusCode, body) {
+  res.writeHead(statusCode, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(body);
+}
+
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
@@ -2471,13 +3634,300 @@ function readBinaryBody(req, maxBytes = MEDIA_UPLOAD_MAX_BYTES) {
   });
 }
 
+function buildDiscoverableMongoUsersQuery() {
+  return {
+    $and: [
+      {
+        $or: [
+          { isAdmin: { $exists: false } },
+          { isAdmin: false },
+        ],
+      },
+      {
+        $or: [
+          { loginId: { $exists: false } },
+          { loginId: { $ne: "admin" } },
+        ],
+      },
+      {
+        $or: [
+          { deletedAt: { $exists: false } },
+          { deletedAt: null },
+          { deletedAt: 0 },
+        ],
+      },
+      {
+        $or: [
+          { withdrawnAt: { $exists: false } },
+          { withdrawnAt: null },
+          { withdrawnAt: 0 },
+        ],
+      },
+      {
+        $or: [
+          { isDeleted: { $exists: false } },
+          { isDeleted: false },
+        ],
+      },
+      {
+        $or: [
+          { status: { $exists: false } },
+          { status: { $nin: ["deleted", "withdrawn", "inactive"] } },
+        ],
+      },
+    ],
+  };
+}
+
+function buildActiveMongoUserByLoginIdQuery(loginId) {
+  return {
+    $and: [
+      { loginId },
+      {
+        $or: [
+          { isDeleted: { $exists: false } },
+          { isDeleted: false },
+        ],
+      },
+      {
+        $or: [
+          { status: { $exists: false } },
+          { status: { $nin: ["deleted", "withdrawn", "inactive"] } },
+        ],
+      },
+    ],
+  };
+}
+
+function buildActiveMongoUserLookupQuery(userIdOrLoginId) {
+  return {
+    $and: [
+      buildMongoUserLookupQuery(userIdOrLoginId),
+      {
+        $or: [
+          { isDeleted: { $exists: false } },
+          { isDeleted: false },
+        ],
+      },
+      {
+        $or: [
+          { status: { $exists: false } },
+          { status: { $nin: ["deleted", "withdrawn", "inactive"] } },
+        ],
+      },
+    ],
+  };
+}
+
+function sanitizeDirectoryUserDocument(value) {
+  if (!(value && typeof value === "object")) {
+    return null;
+  }
+
+  const id = String(value?.id || "").trim();
+  const loginId = normalizeDisplayText(value?.loginId || "").trim().toLowerCase();
+  const name = normalizeDisplayText(value?.name || "").trim();
+  const nickname = normalizeDisplayText(value?.nickname || "").trim();
+  const nativeLanguage = ALLOWED_LANGUAGES.has(String(value?.nativeLanguage || "").trim())
+    ? String(value.nativeLanguage).trim()
+    : "ko";
+  const uiLanguage = ALLOWED_LANGUAGES.has(String(value?.uiLanguage || "").trim())
+    ? String(value.uiLanguage).trim()
+    : nativeLanguage;
+  const preferredChatLanguage = ALLOWED_LANGUAGES.has(String(value?.preferredChatLanguage || "").trim())
+    ? String(value.preferredChatLanguage).trim()
+    : nativeLanguage;
+  const blockedUserIds = Array.isArray(value?.blockedUserIds)
+    ? value.blockedUserIds.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const profileImage = sanitizeProfileImageSummary(value?.profileImage);
+  const joinedAt = Number(value?.joinedAt || 0) || Date.now();
+  const lastSeenAt = Number(value?.lastSeenAt || 0) || joinedAt;
+  const deletedAt = Number(value?.deletedAt || 0) || null;
+  const withdrawnAt = Number(value?.withdrawnAt || 0) || null;
+  const isDeleted = Boolean(value?.isDeleted) || Boolean(deletedAt || withdrawnAt);
+  const status = String(value?.status || "").trim();
+
+  return {
+    id,
+    loginId,
+    name,
+    nickname,
+    nativeLanguage,
+    uiLanguage,
+    preferredChatLanguage,
+    profileImage,
+    blockedUserIds,
+    joinedAt,
+    lastSeenAt,
+    isAdmin: Boolean(value?.isAdmin) || loginId === "admin",
+    deletedAt,
+    withdrawnAt,
+    isDeleted,
+    status: status || (isDeleted ? "withdrawn" : "active"),
+  };
+}
+
+function sanitizeAuthUser(user) {
+  const id = resolveMongoUserId(user);
+  return {
+    id,
+    loginId: String(user?.loginId || "").trim(),
+    name: normalizeDisplayText(user?.name || user?.loginId || "").trim(),
+    nickname: normalizeDisplayText(user?.nickname || "").trim(),
+    nativeLanguage: String(user?.nativeLanguage || "").trim() || "ko",
+    uiLanguage: String(user?.uiLanguage || "").trim() || "ko",
+    preferredChatLanguage:
+      String(user?.preferredChatLanguage || "").trim() ||
+      String(user?.nativeLanguage || "").trim() ||
+      "ko",
+    profileImage: sanitizeProfileImageSummary(user?.profileImage),
+    blockedUserIds: [...normalizeBlockedUserIds(user)],
+    joinedAt: Number(user?.joinedAt || 0) || Date.now(),
+    lastSeenAt: Number(user?.lastSeenAt || 0) || Date.now(),
+    lastLoginAt: Number(user?.lastLoginAt || 0) || null,
+    currentRoomId: typeof user?.currentRoomId === "string" ? user.currentRoomId : null,
+    isAdmin: Boolean(user?.isAdmin),
+    recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
+      ? user.recoveryQuestionKey
+      : getDeterministicRecoveryQuestionKey(user?.name || user?.loginId),
+  };
+}
+
+function createServerUserId() {
+  return `user-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
+}
+
+function hashSecret(value) {
+  const salt = randomBytes(16).toString("base64url");
+  const derived = scryptSync(String(value || ""), salt, 64).toString("base64url");
+  return `scrypt-v1$${salt}$${derived}`;
+}
+
+function verifyStoredSecret(value, stored) {
+  const normalizedStored = String(stored || "").trim();
+  if (!normalizedStored) {
+    return false;
+  }
+
+  if (!normalizedStored.startsWith("scrypt-v1$")) {
+    return normalizedStored === String(value || "");
+  }
+
+  const [, salt, digest] = normalizedStored.split("$");
+  if (!salt || !digest) {
+    return false;
+  }
+
+  const expected = Buffer.from(digest, "base64url");
+  const actual = scryptSync(String(value || ""), salt, expected.length);
+  if (expected.length != actual.length) {
+    return false;
+  }
+  return timingSafeEqual(expected, actual);
+}
+
+function buildMongoUserLookupQuery(userId) {
+  const clauses = [
+    { id: userId },
+    { loginId: userId },
+  ];
+  if (ObjectId.isValid(userId)) {
+    clauses.push({ _id: new ObjectId(userId) });
+  }
+  return {
+    $or: clauses,
+  };
+}
+
+function resolveMongoUserId(user) {
+  const explicitId = String(user?.id || "").trim();
+  if (explicitId) {
+    return explicitId;
+  }
+  const mongoId = user?._id;
+  return mongoId == null ? "" : String(mongoId).trim();
+}
+
+function normalizeBlockedUserIds(user) {
+  const source = Array.isArray(user?.blockedUserIds)
+    ? user.blockedUserIds
+    : Array.isArray(user?.blockedUsers)
+      ? user.blockedUsers
+      : [];
+  return new Set(
+    source
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+}
+
+function sanitizeDiscoverableUser(user) {
+  const id = resolveMongoUserId(user);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    loginId: String(user?.loginId || "").trim(),
+    name: normalizeDisplayText(user?.name || user?.loginId || "").trim(),
+    nickname: normalizeDisplayText(user?.nickname || "").trim(),
+    nativeLanguage: String(user?.nativeLanguage || "").trim() || "ko",
+    uiLanguage: String(user?.uiLanguage || "").trim() || "ko",
+    preferredChatLanguage:
+      String(user?.preferredChatLanguage || "").trim() ||
+      String(user?.nativeLanguage || "").trim() ||
+      "ko",
+    profileImage: sanitizeProfileImageSummary(user?.profileImage),
+    joinedAt: Number(user?.joinedAt || 0) || null,
+    lastSeenAt: Number(user?.lastSeenAt || 0) || null,
+  };
+}
+
+function sanitizeProfileImageSummary(profileImage) {
+  if (!(profileImage && typeof profileImage === "object")) {
+    return null;
+  }
+
+  return {
+    id: typeof profileImage?.id === "string" ? profileImage.id : "",
+    fileName: typeof profileImage?.fileName === "string" ? profileImage.fileName : "",
+    remoteUrl: typeof profileImage?.remoteUrl === "string" ? profileImage.remoteUrl : "",
+    mimeType: typeof profileImage?.mimeType === "string" ? profileImage.mimeType : "",
+  };
+}
+
+async function getMongoUsersCollection() {
+  const client = await getMongoClient();
+  return client.db(MONGODB_DB_NAME).collection(MONGODB_USERS_COLLECTION);
+}
+
+async function getMongoClient() {
+  if (!MONGODB_URI) {
+    throw new Error("MONGODB_URI is not configured.");
+  }
+
+  if (!mongoClientPromise) {
+    const client = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+    });
+    mongoClientPromise = client.connect().catch((error) => {
+      mongoClientPromise = null;
+      throw error;
+    });
+  }
+
+  return mongoClientPromise;
+}
+
 server.listen(PORT, () => {
   console.log(`TRANSCHAT local server running at http://localhost:${PORT}`);
   console.log(
     OPENAI_API_KEY_VALID
       ? `Live translation enabled with model ${OPENAI_MODEL} (reasoning: ${OPENAI_TRANSLATION_REASONING_EFFORT}).`
       : OPENAI_API_KEY
-        ? "OPENAI_API_KEY is malformed. Re-enter it in one line using ASCII characters only. The client will fall back to mock translation."
-        : "OPENAI_API_KEY is missing. The client will fall back to mock translation."
+        ? "OPENAI_API_KEY is malformed. Re-enter it in one line using ASCII characters only. Live translation is disabled."
+        : "OPENAI_API_KEY is missing. Live translation is disabled until the key is configured."
   );
 });
