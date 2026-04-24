@@ -1675,7 +1675,9 @@ async function handleStateUpdate(req, res) {
       updatedAt: normalizedState.updatedAt,
     });
     if (previousState) {
-      void dispatchPushNotifications(previousState, normalizedState);
+      void dispatchPushNotifications(previousState, normalizedState).catch((dispatchError) => {
+        console.error("[push-dispatch-error]", dispatchError);
+      });
     }
 
     return sendJson(res, 200, {
@@ -2491,6 +2493,8 @@ function buildAndroidNativePushMessage(entry, payload) {
       priority: "high",
       ttl: 60 * 60 * 1000,
       notification: {
+        channelId: "transchat_default_notifications",
+        sound: "default",
         defaultSound: true,
         defaultVibrateTimings: true,
         notificationCount: badgeCount > 0 ? badgeCount : undefined,
@@ -2514,70 +2518,106 @@ function computeUserUnreadBadgeCount(state, userId) {
 }
 
 async function dispatchPushNotifications(previousState, nextState) {
-  const clientConfig = getFirebaseClientConfig();
-  const nativeConfig = getFirebaseNativeConfig();
-  const webPushReady = Boolean(clientConfig && FIREBASE_VAPID_KEY);
-  const nativePushReady = Boolean(nativeConfig.enabled);
-  if (!(webPushReady || nativePushReady)) {
-    return;
-  }
+  try {
+    const clientConfig = getFirebaseClientConfig();
+    const nativeConfig = getFirebaseNativeConfig();
+    const webPushReady = Boolean(clientConfig && FIREBASE_VAPID_KEY);
+    const nativePushReady = Boolean(nativeConfig.enabled);
+    if (!(webPushReady || nativePushReady)) {
+      console.info("[push-dispatch-skip]", {
+        reason: "push_not_configured",
+        webPushReady,
+        nativePushReady,
+      });
+      return;
+    }
 
-  const messageEvents = collectNewUserMessages(previousState, nextState);
-  const inviteEvents = collectNewPendingInvites(previousState, nextState);
-  if (messageEvents.length || inviteEvents.length) {
+    const messageEvents = collectNewUserMessages(previousState, nextState);
+    const inviteEvents = collectNewPendingInvites(previousState, nextState);
     console.info("[push-dispatch]", {
       messageEventCount: messageEvents.length,
       inviteEventCount: inviteEvents.length,
+      webPushReady,
+      nativePushReady,
     });
-  }
 
-  for (const event of messageEvents) {
-    const sender = (nextState?.users || []).find((user) => user.id === event.message.senderId);
-    const recipients = deriveRoomParticipantIds(event.room, nextState?.users || []).filter((userId) => userId !== event.message.senderId);
-    for (const recipientId of recipients) {
-      if (isRoomPushMutedForUser(event.room, recipientId)) {
-        console.info("[push-dispatch-skip]", {
-          roomId: event.room.id,
-          recipientId,
-          reason: "room_muted",
-        });
-        continue;
-      }
-      const recipient = (nextState?.users || []).find((user) => user.id === recipientId);
-      const previewText = buildPushMessagePreviewForUser(event.message, recipient);
-      const badgeCount = computeUserUnreadBadgeCount(nextState, recipientId);
-      await sendPushToUser(recipientId, {
-        type: "message",
+    if (!messageEvents.length && !inviteEvents.length) {
+      console.info("[push-dispatch-skip]", {
+        reason: "no_new_events",
+      });
+      return;
+    }
+
+    for (const event of messageEvents) {
+      const sender = (nextState?.users || []).find((user) => user.id === event.message.senderId);
+      const recipients = deriveRoomParticipantIds(event.room, nextState?.users || []).filter((userId) => userId !== event.message.senderId);
+      console.info("[push-message-event]", {
         roomId: event.room.id,
+        messageId: event.message.id,
         senderId: event.message.senderId,
-        senderName: sender?.name || sender?.loginId || "알 수 없는 사용자",
-        previewText,
+        recipientCount: recipients.length,
+        recipientIds: recipients,
+      });
+      for (const recipientId of recipients) {
+        if (isRoomPushMutedForUser(event.room, recipientId)) {
+          console.info("[push-dispatch-skip]", {
+            roomId: event.room.id,
+            recipientId,
+            reason: "room_muted",
+          });
+          continue;
+        }
+        const recipient = (nextState?.users || []).find((user) => user.id === recipientId);
+        const tokenCount = getPushTokensForUser(recipientId).length;
+        console.info("[push-target]", {
+          roomId: event.room.id,
+          messageId: event.message.id,
+          recipientId,
+          tokenCount,
+          recipientFound: Boolean(recipient),
+        });
+        const previewText = buildPushMessagePreviewForUser(event.message, recipient);
+        const badgeCount = computeUserUnreadBadgeCount(nextState, recipientId);
+        await sendPushToUser(recipientId, {
+          type: "message",
+          roomId: event.room.id,
+          senderId: event.message.senderId,
+          senderName: sender?.name || sender?.loginId || "알 수 없는 사용자",
+          previewText,
+          badgeCount,
+          createdAt: event.message.createdAt,
+          title: "새 메시지",
+          body: `${sender?.name || sender?.loginId || "알 수 없는 사용자"}: ${previewText}`,
+          tag: `room:${event.room.id}`,
+          clickPath: `/?pushType=message&roomId=${encodeURIComponent(event.room.id)}`,
+        });
+      }
+    }
+
+    for (const invite of inviteEvents) {
+      const inviter = (nextState?.users || []).find((user) => user.id === invite.inviterId);
+      const badgeCount = computeUserUnreadBadgeCount(nextState, invite.inviteeId);
+      console.info("[push-invite-event]", {
+        inviteId: invite.id,
+        inviteeId: invite.inviteeId,
+        tokenCount: getPushTokensForUser(invite.inviteeId).length,
+      });
+      await sendPushToUser(invite.inviteeId, {
+        type: "invite",
+        inviteId: invite.id,
+        senderId: invite.inviterId,
+        senderName: inviter?.name || inviter?.loginId || "알 수 없는 사용자",
+        previewText: invite.previewRoomTitle || "",
         badgeCount,
-        createdAt: event.message.createdAt,
-        title: "새 메시지",
-        body: `${sender?.name || sender?.loginId || "알 수 없는 사용자"}: ${previewText}`,
-        tag: `room:${event.room.id}`,
-        clickPath: `/?pushType=message&roomId=${encodeURIComponent(event.room.id)}`,
+        createdAt: invite.createdAt,
+        title: "새 초대",
+        body: `${inviter?.name || inviter?.loginId || "알 수 없는 사용자"}님이 채팅 초대를 보냈어요`,
+        tag: `invite:${invite.id}`,
+        clickPath: "/?pushType=invite",
       });
     }
-  }
-
-  for (const invite of inviteEvents) {
-    const inviter = (nextState?.users || []).find((user) => user.id === invite.inviterId);
-    const badgeCount = computeUserUnreadBadgeCount(nextState, invite.inviteeId);
-    await sendPushToUser(invite.inviteeId, {
-      type: "invite",
-      inviteId: invite.id,
-      senderId: invite.inviterId,
-      senderName: inviter?.name || inviter?.loginId || "알 수 없는 사용자",
-      previewText: invite.previewRoomTitle || "",
-      badgeCount,
-      createdAt: invite.createdAt,
-      title: "새 초대",
-      body: `${inviter?.name || inviter?.loginId || "알 수 없는 사용자"}님이 채팅 초대를 보냈어요`,
-      tag: `invite:${invite.id}`,
-      clickPath: "/?pushType=invite",
-    });
+  } catch (error) {
+    console.error("[push-dispatch-error]", error);
   }
 }
 
