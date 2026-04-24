@@ -14,6 +14,12 @@ services:
         sync: false
       - key: MONGODB_URI
         sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_PATH
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_BASE64
+        sync: false
       - key: MONGODB_DB_NAME
         value: transchat
       - key: MONGODB_USERS_COLLECTION

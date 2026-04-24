@@ -7,6 +7,7 @@ import { MongoClient, ObjectId } from "mongodb";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const LOCAL_RUNTIME_CONFIG = await loadLocalRuntimeConfig();
 const SERVER_STATE_FILE = path.join(__dirname, "transchat-server-state.json");
 const PUSH_TOKEN_STATE_FILE = path.join(__dirname, "transchat-push-tokens.json");
 const MEDIA_STORAGE_DIR = path.join(__dirname, "transchat-media");
@@ -26,6 +27,8 @@ const OPENAI_MODEL = process.env.OPENAI_TRANSLATION_MODEL || "gpt-5-mini";
 const OPENAI_TRANSLATION_FALLBACK_MODEL = normalizeTranslationModelName(process.env.OPENAI_TRANSLATION_FALLBACK_MODEL || "");
 const OPENAI_TRANSLATION_CONTEXTUAL_FALLBACK = isEnabledEnv(process.env.OPENAI_TRANSLATION_CONTEXTUAL_FALLBACK || "");
 const OPENAI_TRANSLATION_REASONING_EFFORT = normalizeTranslationReasoningEffort(process.env.OPENAI_TRANSLATION_REASONING_EFFORT || "low");
+const OPENAI_TRANSLATION_MAX_ATTEMPTS = Math.max(1, Number(process.env.OPENAI_TRANSLATION_MAX_ATTEMPTS || 2));
+const OPENAI_TRANSLATION_RETRY_BASE_DELAY_MS = Math.max(100, Number(process.env.OPENAI_TRANSLATION_RETRY_BASE_DELAY_MS || 180));
 const FIREBASE_WEB_CONFIG_FALLBACK = {
   apiKey: "AIzaSyB9ZcnjW7n0WVNVg3ELHvSUfnYK_BfK3_0",
   authDomain: "transchat-push.firebaseapp.com",
@@ -37,11 +40,43 @@ const FIREBASE_WEB_CONFIG_FALLBACK = {
 const FIREBASE_VAPID_KEY_FALLBACK = "BB1LDIwYOl1eop_5Q8Oka2WQDXwapy-tOmDaIL0ljTtF90lOTYkONeydXEBE_u0_IJQBHx6djF2yftZvhqpz2Ws";
 const FIREBASE_WEB_CONFIG_JSON = process.env.FIREBASE_WEB_CONFIG_JSON || JSON.stringify(FIREBASE_WEB_CONFIG_FALLBACK);
 const FIREBASE_VAPID_KEY = process.env.FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY_FALLBACK;
-const FIREBASE_SERVICE_ACCOUNT_PATH = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "";
-const FIREBASE_ANDROID_APP_ID = String(process.env.FIREBASE_ANDROID_APP_ID || "").trim();
-const FIREBASE_ANDROID_API_KEY = String(process.env.FIREBASE_ANDROID_API_KEY || FIREBASE_WEB_CONFIG_FALLBACK.apiKey || "").trim();
-const FIREBASE_ANDROID_PROJECT_ID = String(process.env.FIREBASE_ANDROID_PROJECT_ID || FIREBASE_WEB_CONFIG_FALLBACK.projectId || "").trim();
-const FIREBASE_ANDROID_SENDER_ID = String(process.env.FIREBASE_ANDROID_SENDER_ID || FIREBASE_WEB_CONFIG_FALLBACK.messagingSenderId || "").trim();
+const FIREBASE_SERVICE_ACCOUNT_JSON = String(
+  process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+    LOCAL_RUNTIME_CONFIG.FIREBASE_SERVICE_ACCOUNT_JSON ||
+    "",
+).trim();
+const FIREBASE_SERVICE_ACCOUNT_BASE64 = String(
+  process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 ||
+    LOCAL_RUNTIME_CONFIG.FIREBASE_SERVICE_ACCOUNT_BASE64 ||
+    "",
+).trim();
+const FIREBASE_SERVICE_ACCOUNT_PATH =
+  process.env.FIREBASE_SERVICE_ACCOUNT_PATH ||
+  LOCAL_RUNTIME_CONFIG.FIREBASE_SERVICE_ACCOUNT_PATH ||
+  "";
+const FIREBASE_ANDROID_APP_ID = String(
+  process.env.FIREBASE_ANDROID_APP_ID ||
+      LOCAL_RUNTIME_CONFIG.FIREBASE_ANDROID_APP_ID ||
+      "",
+).trim();
+const FIREBASE_ANDROID_API_KEY = String(
+  process.env.FIREBASE_ANDROID_API_KEY ||
+      LOCAL_RUNTIME_CONFIG.FIREBASE_ANDROID_API_KEY ||
+      FIREBASE_WEB_CONFIG_FALLBACK.apiKey ||
+      "",
+).trim();
+const FIREBASE_ANDROID_PROJECT_ID = String(
+  process.env.FIREBASE_ANDROID_PROJECT_ID ||
+      LOCAL_RUNTIME_CONFIG.FIREBASE_ANDROID_PROJECT_ID ||
+      FIREBASE_WEB_CONFIG_FALLBACK.projectId ||
+      "",
+).trim();
+const FIREBASE_ANDROID_SENDER_ID = String(
+  process.env.FIREBASE_ANDROID_SENDER_ID ||
+      LOCAL_RUNTIME_CONFIG.FIREBASE_ANDROID_SENDER_ID ||
+      FIREBASE_WEB_CONFIG_FALLBACK.messagingSenderId ||
+      "",
+).trim();
 const PUSH_PUBLIC_ORIGIN = normalizePushOrigin(process.env.PUSH_PUBLIC_ORIGIN || "https://transchat.xyz");
 const ROOM_AUTO_EXPIRATION_ENABLED = false;
 const TYPING_SIGNAL_TTL_MS = 4500;
@@ -105,6 +140,44 @@ function normalizeOpenAIApiKey(value) {
     .replace(/^['"`]+|['"`]+$/g, "")
     .replace(/\s+/g, "")
     .trim();
+}
+
+async function loadLocalRuntimeConfig() {
+  const sources = [
+    path.join(__dirname, "local.properties"),
+    path.join(__dirname, "ops", "windows", "transchat.env"),
+  ];
+  const merged = {};
+  for (const source of sources) {
+    Object.assign(merged, await parseKeyValueConfig(source));
+  }
+  return merged;
+}
+
+async function parseKeyValueConfig(filePath) {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const next = {};
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+      const separatorIndex = trimmed.indexOf("=");
+      if (separatorIndex <= 0) {
+        continue;
+      }
+      const key = trimmed.slice(0, separatorIndex).trim();
+      const value = trimmed.slice(separatorIndex + 1).trim();
+      if (!key || !value) {
+        continue;
+      }
+      next[key] = value;
+    }
+    return next;
+  } catch (_) {
+    return {};
+  }
 }
 
 function isValidOpenAIApiKey(value) {
@@ -467,6 +540,7 @@ async function handlePushConfig(_req, res) {
     webConfig: clientConfig,
     vapidKey: FIREBASE_VAPID_KEY || "",
     nativeConfig,
+    adminConfig: getFirebaseAdminConfig(),
   });
 }
 
@@ -1362,7 +1436,28 @@ async function handleNativePushBind(req, res) {
       return sendJson(res, 400, { error: "invalid_native_push_bind" });
     }
 
-    if (!serverState?.users?.some((user) => user.id === userId)) {
+    let hasKnownUser = Boolean(
+      serverState?.users?.some((user) => user.id === userId),
+    );
+    if (!hasKnownUser && MONGODB_URI) {
+      try {
+        const usersCollection = await getMongoUsersCollection();
+        const mongoUser = await usersCollection.findOne(
+          buildActiveMongoUserLookupQuery(userId),
+          {
+            projection: {
+              _id: 1,
+              id: 1,
+            },
+          },
+        );
+        hasKnownUser = Boolean(mongoUser);
+      } catch (lookupError) {
+        console.error("[push-bind-native] user lookup failed", lookupError);
+      }
+    }
+
+    if (!hasKnownUser) {
       return sendJson(res, 404, { error: "user_not_found" });
     }
 
@@ -1821,6 +1916,26 @@ function getFirebaseNativeConfig() {
   };
 }
 
+function getFirebaseAdminConfig() {
+  const configured = Boolean(
+    FIREBASE_SERVICE_ACCOUNT_JSON ||
+      FIREBASE_SERVICE_ACCOUNT_BASE64 ||
+      FIREBASE_SERVICE_ACCOUNT_PATH,
+  );
+  let source = "none";
+  if (FIREBASE_SERVICE_ACCOUNT_JSON) {
+    source = "env-json";
+  } else if (FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    source = "env-base64";
+  } else if (FIREBASE_SERVICE_ACCOUNT_PATH) {
+    source = "path";
+  }
+  return {
+    configured,
+    source,
+  };
+}
+
 async function resolveFirebaseServiceAccountPath() {
   if (FIREBASE_SERVICE_ACCOUNT_PATH) {
     return path.isAbsolute(FIREBASE_SERVICE_ACCOUNT_PATH)
@@ -1837,28 +1952,61 @@ async function resolveFirebaseServiceAccountPath() {
   }
 }
 
+async function loadFirebaseServiceAccountCredentials() {
+  if (FIREBASE_SERVICE_ACCOUNT_JSON) {
+    return {
+      credentials: JSON.parse(FIREBASE_SERVICE_ACCOUNT_JSON),
+      source: "env-json",
+    };
+  }
+
+  if (FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    const decoded = Buffer.from(FIREBASE_SERVICE_ACCOUNT_BASE64, "base64").toString("utf8");
+    return {
+      credentials: JSON.parse(decoded),
+      source: "env-base64",
+    };
+  }
+
+  const serviceAccountPath = await resolveFirebaseServiceAccountPath();
+  if (!serviceAccountPath) {
+    return {
+      credentials: null,
+      source: "none",
+    };
+  }
+
+  const serviceAccountRaw = await readFile(serviceAccountPath, "utf8");
+  return {
+    credentials: JSON.parse(serviceAccountRaw),
+    source: `path:${path.basename(serviceAccountPath)}`,
+  };
+}
+
 async function getFirebaseMessagingClient() {
   if (firebaseMessagingPromise) {
     return firebaseMessagingPromise;
   }
 
   firebaseMessagingPromise = (async () => {
-    const serviceAccountPath = await resolveFirebaseServiceAccountPath();
-    if (!serviceAccountPath) {
-      console.warn("[push] No Firebase service account path found.");
+    const { credentials, source } = await loadFirebaseServiceAccountCredentials();
+    if (!credentials) {
+      console.warn("[push] No Firebase Admin credentials found.");
       return null;
     }
 
     try {
-      const serviceAccountRaw = await readFile(serviceAccountPath, "utf8");
-      const serviceAccount = JSON.parse(serviceAccountRaw);
       const adminModule = await import("firebase-admin");
       const admin = adminModule.default || adminModule;
       if (!admin.apps.length) {
         admin.initializeApp({
-          credential: admin.credential.cert(serviceAccount),
+          credential: admin.credential.cert(credentials),
         });
       }
+      console.info("[push] Firebase Admin initialized", {
+        source,
+        projectId: String(credentials?.project_id || credentials?.projectId || "").trim(),
+      });
       return admin.messaging();
     } catch (error) {
       console.error("[push] Firebase Admin init failed", error);
@@ -2218,6 +2366,11 @@ function buildPushPayloadSnapshot(userId, type) {
 async function sendPushToUser(userId, payload) {
   const tokens = getPushTokensForUser(userId);
   if (!tokens.length) {
+    console.info("[push-send-skip]", {
+      userId,
+      reason: "no_registered_tokens",
+      type: payload?.type || "unknown",
+    });
     return {
       attempted: 0,
       delivered: 0,
@@ -2228,6 +2381,11 @@ async function sendPushToUser(userId, payload) {
 
   const messaging = await getFirebaseMessagingClient();
   if (!messaging) {
+    console.warn("[push-send-skip]", {
+      userId,
+      reason: "firebase_admin_unavailable",
+      type: payload?.type || "unknown",
+    });
     return {
       attempted: tokens.length,
       delivered: 0,
@@ -2261,6 +2419,13 @@ async function sendPushToUser(userId, payload) {
     }
   }
 
+  console.info("[push-send]", {
+    userId,
+    type: payload?.type || "unknown",
+    attempted: tokens.length,
+    delivered,
+    reason: delivered > 0 ? "" : errors[0]?.code || "push_send_failed",
+  });
   return {
     attempted: tokens.length,
     delivered,
@@ -2309,6 +2474,7 @@ function buildWebPushMessage(entry, payload) {
 function buildAndroidNativePushMessage(entry, payload) {
   const notificationTitle = String(payload?.title || "TRANSCHAT");
   const notificationBody = String(payload?.body || payload?.previewText || "");
+  const badgeCount = Math.max(0, Number(payload?.badgeCount || payload?.badge_count || 0) || 0);
   return {
     token: entry.token,
     notification: {
@@ -2324,8 +2490,27 @@ function buildAndroidNativePushMessage(entry, payload) {
     android: {
       priority: "high",
       ttl: 60 * 60 * 1000,
+      notification: {
+        defaultSound: true,
+        defaultVibrateTimings: true,
+        notificationCount: badgeCount > 0 ? badgeCount : undefined,
+      },
     },
   };
+}
+
+function computeUserUnreadBadgeCount(state, userId) {
+  if (!userId) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    (state?.rooms || []).reduce((total, room) => {
+      const nextTotal = total + Math.max(0, Number(room?.unreadCountByUserId?.[userId] || 0) || 0);
+      return nextTotal;
+    }, 0),
+  );
 }
 
 async function dispatchPushNotifications(previousState, nextState) {
@@ -2339,22 +2524,35 @@ async function dispatchPushNotifications(previousState, nextState) {
 
   const messageEvents = collectNewUserMessages(previousState, nextState);
   const inviteEvents = collectNewPendingInvites(previousState, nextState);
+  if (messageEvents.length || inviteEvents.length) {
+    console.info("[push-dispatch]", {
+      messageEventCount: messageEvents.length,
+      inviteEventCount: inviteEvents.length,
+    });
+  }
 
   for (const event of messageEvents) {
     const sender = (nextState?.users || []).find((user) => user.id === event.message.senderId);
     const recipients = deriveRoomParticipantIds(event.room, nextState?.users || []).filter((userId) => userId !== event.message.senderId);
     for (const recipientId of recipients) {
       if (isRoomPushMutedForUser(event.room, recipientId)) {
+        console.info("[push-dispatch-skip]", {
+          roomId: event.room.id,
+          recipientId,
+          reason: "room_muted",
+        });
         continue;
       }
       const recipient = (nextState?.users || []).find((user) => user.id === recipientId);
       const previewText = buildPushMessagePreviewForUser(event.message, recipient);
+      const badgeCount = computeUserUnreadBadgeCount(nextState, recipientId);
       await sendPushToUser(recipientId, {
         type: "message",
         roomId: event.room.id,
         senderId: event.message.senderId,
         senderName: sender?.name || sender?.loginId || "알 수 없는 사용자",
         previewText,
+        badgeCount,
         createdAt: event.message.createdAt,
         title: "새 메시지",
         body: `${sender?.name || sender?.loginId || "알 수 없는 사용자"}: ${previewText}`,
@@ -2366,12 +2564,14 @@ async function dispatchPushNotifications(previousState, nextState) {
 
   for (const invite of inviteEvents) {
     const inviter = (nextState?.users || []).find((user) => user.id === invite.inviterId);
+    const badgeCount = computeUserUnreadBadgeCount(nextState, invite.inviteeId);
     await sendPushToUser(invite.inviteeId, {
       type: "invite",
       inviteId: invite.id,
       senderId: invite.inviterId,
       senderName: inviter?.name || inviter?.loginId || "알 수 없는 사용자",
       previewText: invite.previewRoomTitle || "",
+      badgeCount,
       createdAt: invite.createdAt,
       title: "새 초대",
       body: `${inviter?.name || inviter?.loginId || "알 수 없는 사용자"}님이 채팅 초대를 보냈어요`,
@@ -2650,7 +2850,7 @@ async function requestSingleOpenAITranslationFromModel({ modelName, text, source
   };
 
   let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS; attempt += 1) {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
@@ -2664,7 +2864,7 @@ async function requestSingleOpenAITranslationFromModel({ modelName, text, source
       if (!response.ok) {
         const errorText = await response.text();
         const requestError = new Error(`OpenAI API error ${response.status}: ${errorText}`);
-        if (shouldRetryTranslationResponse(response.status) && attempt < 2) {
+        if (shouldRetryTranslationResponse(response.status) && attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS - 1) {
           await delayTranslationRetry(attempt);
           lastError = requestError;
           continue;
@@ -2680,7 +2880,7 @@ async function requestSingleOpenAITranslationFromModel({ modelName, text, source
       });
     } catch (error) {
       lastError = error;
-      if (attempt >= 2 || !shouldRetryTranslationError(error)) {
+      if (attempt >= OPENAI_TRANSLATION_MAX_ATTEMPTS - 1 || !shouldRetryTranslationError(error)) {
         break;
       }
       await delayTranslationRetry(attempt);
@@ -2742,7 +2942,7 @@ function shouldRetryTranslationError(error) {
 }
 
 async function delayTranslationRetry(attempt) {
-  const waitMs = 220 * (attempt + 1);
+  const waitMs = OPENAI_TRANSLATION_RETRY_BASE_DELAY_MS * (attempt + 1);
   await new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
