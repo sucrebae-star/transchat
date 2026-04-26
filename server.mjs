@@ -1932,10 +1932,18 @@ async function handleStateUpdate(req, res) {
         sourceId,
       });
     }
-    const normalizedState = mergeStates(serverState, {
+    let normalizedState = mergeStates(serverState, {
       ...nextState,
       updatedAt: receivedAt,
     });
+    const newMessageEventsForPush = collectNewUserMessages(
+      previousState,
+      normalizedState,
+    );
+    normalizedState = markPushMessagesDispatched(
+      normalizedState,
+      newMessageEventsForPush.map((event) => event.message.id),
+    );
     const normalizedTrace = getLatestUserMessageForTrace(normalizedState);
     if (normalizedTrace) {
       logEncodingTrace("server-state-normalized", normalizedTrace.text, {
@@ -2489,18 +2497,36 @@ function removeNativeBinding({ installId = "", userId = "" } = {}) {
 
 function collectNewUserMessages(previousState, nextState) {
   const previousRoomMap = new Map((previousState?.rooms || []).map((room) => [room.id, room]));
+  const dispatchedMessageIds = new Set(previousState?.pushDispatchedMessageIds || []);
   const events = [];
 
   (nextState?.rooms || []).forEach((room) => {
     const previousRoom = previousRoomMap.get(room.id);
     const previousMessageIds = new Set((previousRoom?.messages || []).map((message) => message.id));
     (room.messages || []).forEach((message) => {
-      if (!isPushUserMessageKind(message?.kind) || previousMessageIds.has(message.id)) return;
+      if (
+        !isPushUserMessageKind(message?.kind) ||
+        previousMessageIds.has(message.id) ||
+        dispatchedMessageIds.has(message.id)
+      ) return;
       events.push({ room, message });
     });
   });
 
   return events;
+}
+
+function markPushMessagesDispatched(state, messageIds) {
+  const mergedIds = [
+    ...new Set([
+      ...(state?.pushDispatchedMessageIds || []),
+      ...(Array.isArray(messageIds) ? messageIds : []),
+    ]),
+  ].filter((id) => typeof id === "string" && id.trim());
+  return {
+    ...state,
+    pushDispatchedMessageIds: mergedIds.slice(-5000),
+  };
 }
 
 function collectNewPendingInvites(previousState, nextState) {
@@ -4526,6 +4552,7 @@ function sanitizeSharedState(state) {
     version: STATE_SCHEMA_VERSION,
     deletedUsers,
     deletedRooms,
+    pushDispatchedMessageIds: sanitizePushDispatchedMessageIds(state.pushDispatchedMessageIds),
     updatedAt: Number(state.updatedAt || Date.now()),
     users: users.map((user) => ({
       ...user,
@@ -4608,6 +4635,23 @@ function sanitizeDeletedUsers(record) {
       .filter(([userId]) => Boolean(String(userId || "").trim()))
       .map(([userId, deletedAt]) => [userId, Number(deletedAt || Date.now())])
   );
+}
+
+function sanitizePushDispatchedMessageIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const ids = [];
+  value.forEach((rawId) => {
+    const id = typeof rawId === "string" ? rawId.trim() : "";
+    if (!id || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    ids.push(id);
+  });
+  return ids.slice(-5000);
 }
 
 async function loadServerState() {
