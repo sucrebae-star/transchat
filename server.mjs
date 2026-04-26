@@ -3863,41 +3863,79 @@ function joinTranslatedChunks(chunks, translatedChunks) {
 }
 
 async function requestVocabularyExtraction({ text, meaningLanguage, maxCards }) {
-  const payload = {
-    model: OPENAI_MODEL,
-    store: false,
-    reasoning: {
-      effort: OPENAI_TRANSLATION_REASONING_EFFORT,
-    },
-    max_output_tokens: 2200,
-    input: buildVocabularyExtractionPrompt({
-      text,
-      meaningLanguage,
-      maxCards,
-    }),
-  };
+  let lastError = null;
+  let maxOutputTokens = 2600;
+  for (let attempt = 0; attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const payload = {
+        model: OPENAI_MODEL,
+        store: false,
+        reasoning: {
+          effort: OPENAI_TRANSLATION_REASONING_EFFORT,
+        },
+        max_output_tokens: maxOutputTokens,
+        input: buildVocabularyExtractionPrompt({
+          text,
+          meaningLanguage,
+          maxCards,
+        }),
+      };
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify(payload),
-  });
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`Vocabulary API error ${response.status}: ${detail.slice(0, 240)}`);
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        const requestError = new Error(`Vocabulary API error ${response.status}: ${detail.slice(0, 360)}`);
+        if (shouldRetryTranslationResponse(response.status) && attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS - 1) {
+          lastError = requestError;
+          await delayTranslationRetry(attempt);
+          continue;
+        }
+        throw requestError;
+      }
+
+      const data = await response.json();
+      if (isTranslationResponseIncomplete(data) && attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS - 1) {
+        const incompleteReason = String(data?.incomplete_details?.reason || "response_incomplete").trim();
+        maxOutputTokens = Math.min(8192, Math.max(maxOutputTokens + 512, Math.ceil(maxOutputTokens * 1.6)));
+        lastError = new Error(`vocabulary_incomplete:${incompleteReason}`);
+        console.warn("[vocabulary] incomplete response; retrying", {
+          attempt: attempt + 1,
+          nextMaxOutputTokens: maxOutputTokens,
+          incompleteReason,
+          length: String(text || "").length,
+        });
+        continue;
+      }
+
+      const outputText = extractResponseText(data);
+      const parsed = parseJsonObjectFromModelText(outputText);
+      const cards = sanitizeVocabularyCards(parsed?.cards, {
+        sourceText: text,
+        maxCards,
+      });
+      if (cards.length) {
+        return cards;
+      }
+      throw new Error("Vocabulary response did not contain usable cards.");
+    } catch (error) {
+      lastError = error;
+      if (attempt >= OPENAI_TRANSLATION_MAX_ATTEMPTS - 1 || !shouldRetryVocabularyError(error)) {
+        break;
+      }
+      maxOutputTokens = Math.min(8192, Math.max(maxOutputTokens + 512, Math.ceil(maxOutputTokens * 1.35)));
+      await delayTranslationRetry(attempt);
+    }
   }
 
-  const data = await response.json();
-  const outputText = extractResponseText(data);
-  const parsed = parseJsonObjectFromModelText(outputText);
-  return sanitizeVocabularyCards(parsed?.cards, {
-    sourceText: text,
-    maxCards,
-  });
+  throw lastError || new Error("vocabulary_extract_failed");
 }
 
 function buildVocabularyExtractionPrompt({ text, meaningLanguage, maxCards }) {
@@ -3943,6 +3981,17 @@ function parseJsonObjectFromModelText(text) {
       return {};
     }
   }
+}
+
+function shouldRetryVocabularyError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    shouldRetryTranslationError(error) ||
+    message.includes("no text output returned") ||
+    message.includes("did not contain usable cards") ||
+    message.includes("unexpected end of json") ||
+    message.includes("vocabulary_incomplete")
+  );
 }
 
 function sanitizeVocabularyCards(cards, { sourceText, maxCards }) {
