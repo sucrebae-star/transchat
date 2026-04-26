@@ -81,7 +81,7 @@ const PUSH_PUBLIC_ORIGIN = normalizePushOrigin(process.env.PUSH_PUBLIC_ORIGIN ||
 const ROOM_AUTO_EXPIRATION_ENABLED = false;
 const TYPING_SIGNAL_TTL_MS = 4500;
 const PRESENCE_SIGNAL_TTL_MS = 2 * 60 * 1000;
-const ALLOWED_LANGUAGES = new Set(["ko", "en", "vi"]);
+const ALLOWED_LANGUAGES = new Set(["ko", "en", "vi", "ja", "zh", "fil", "ms", "ru"]);
 const DEFAULT_TRANSLATION_CONCEPT = "lover";
 const PERSISTENT_ROOM_TITLE_KEYS = new Set(["호아와현태", "호아와현태의방"]);
 const RECOVERY_QUESTION_KEYS = [
@@ -91,6 +91,33 @@ const RECOVERY_QUESTION_KEYS = [
   "recoveryMemorableFood",
   "recoveryFavoriteSeason",
 ];
+const BILLING_FREE_DAILY_TRANSLATIONS = 30;
+const BILLING_PREMIUM_MONTHLY_PRICE_VAT_INCLUDED_KRW = 9900;
+const BILLING_VAT_RATE = 0.1;
+const BILLING_TARGET_MARGIN_RATE_EX_VAT = 0.5;
+const BILLING_STANDARD_TRANSLATION_UNIT_CHARACTERS = 220;
+const BILLING_ESTIMATED_COST_PER_UNIT_KRW_EX_VAT = 2.0;
+const BILLING_PREMIUM_PRODUCT_ID = "transchat_premium_monthly_9900";
+const BILLING_TESTER_CODE = "testfree90";
+const BILLING_TESTER_ACCESS_DAYS = 90;
+const BILLING_PREMIUM_MONTHLY_PRICE_VAT_EXCLUDED_KRW = Math.round(
+  BILLING_PREMIUM_MONTHLY_PRICE_VAT_INCLUDED_KRW / (1 + BILLING_VAT_RATE),
+);
+const BILLING_PREMIUM_COST_BUDGET_KRW_EX_VAT = Math.floor(
+  BILLING_PREMIUM_MONTHLY_PRICE_VAT_EXCLUDED_KRW *
+    (1 - BILLING_TARGET_MARGIN_RATE_EX_VAT),
+);
+const BILLING_PREMIUM_MONTHLY_SOFT_LIMIT_UNITS = Math.max(
+  1200,
+  Math.floor(
+    BILLING_PREMIUM_COST_BUDGET_KRW_EX_VAT /
+      BILLING_ESTIMATED_COST_PER_UNIT_KRW_EX_VAT,
+  ),
+);
+const BILLING_PREMIUM_DAILY_SOFT_LIMIT_UNITS = Math.max(
+  120,
+  Math.floor(BILLING_PREMIUM_MONTHLY_SOFT_LIMIT_UNITS / 18),
+);
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -321,6 +348,7 @@ const API_ROUTES = [
   { method: "POST", path: "/api/push/native/unbind", handler: handleNativePushUnbind },
   { method: "POST", path: "/api/push/unregister", handler: handlePushUnregister },
   { method: "POST", path: "/api/translate", handler: handleTranslate },
+  { method: "POST", path: "/api/vocabulary/extract", handler: handleVocabularyExtract },
   { method: "POST", path: "/api/media", handler: handleMediaUpload },
   { method: "POST", path: "/api/typing", handler: handleTypingUpdate },
   { method: "POST", path: "/api/presence", handler: handlePresenceUpdate },
@@ -328,6 +356,9 @@ const API_ROUTES = [
   { method: "PUT", path: "/api/state", handler: handleStateUpdate },
   { method: "GET", path: "/api/users/discoverable", handler: handleDiscoverableUsers },
   { method: "POST", path: "/api/users/directory-sync", handler: handleDirectoryUserSync },
+  { method: "GET", path: "/api/billing/plans", handler: handleBillingPlans },
+  { method: "GET", path: "/api/billing/status", handler: handleBillingStatus },
+  { method: "POST", path: "/api/billing/tester-code/activate", handler: handleBillingTesterCodeActivate },
   { method: "GET", path: "/api/auth/login-id-availability", handler: handleAuthLoginIdAvailability },
   { method: "GET", path: "/api/auth/recovery-question", handler: handleAuthRecoveryQuestion },
   { method: "POST", path: "/api/auth/verify-recovery", handler: handleAuthVerifyRecovery },
@@ -412,8 +443,9 @@ function handleHealthRequest(_req, res) {
 }
 
 function handleStateRead(_req, res) {
+  prunePresenceSignals();
   return sendApiSuccess(res, 200, {
-    state: serverState,
+    state: buildReadableServerState(serverState),
   });
 }
 
@@ -529,6 +561,66 @@ async function handleTranslate(req, res) {
       message: "The translation request could not be completed.",
       detail: lastTranslationErrorDetail,
     });
+  }
+}
+
+async function handleVocabularyExtract(req, res) {
+  try {
+    if (!OPENAI_API_KEY) {
+      return sendApiError(
+        res,
+        503,
+        "missing_api_key",
+        "Set OPENAI_API_KEY to enable vocabulary extraction.",
+      );
+    }
+    if (!OPENAI_API_KEY_VALID) {
+      return sendApiError(
+        res,
+        503,
+        "invalid_api_key_format",
+        "OPENAI_API_KEY is malformed.",
+      );
+    }
+
+    const body = await readJsonBody(req);
+    const text = normalizeDisplayText(body?.text || "").trim();
+    const meaningLanguage = ALLOWED_LANGUAGES.has(
+      String(body?.meaningLanguage || body?.meaning_language || "").trim(),
+    )
+      ? String(body?.meaningLanguage || body?.meaning_language).trim()
+      : "ko";
+    const maxCards = Math.max(4, Math.min(18, Number(body?.maxCards || body?.max_cards || 12) || 12));
+
+    if (!text) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_vocabulary_request",
+        "text is required.",
+      );
+    }
+
+    const cards = await requestVocabularyExtraction({
+      text,
+      meaningLanguage,
+      maxCards,
+    });
+
+    return sendApiSuccess(res, 200, {
+      cards,
+      model: OPENAI_MODEL,
+    });
+  } catch (error) {
+    console.error("[vocabulary] extraction failed", {
+      error: String(error?.message || error || "vocabulary_extract_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "vocabulary_extract_failed",
+      "The vocabulary extraction request could not be completed.",
+    );
   }
 }
 
@@ -786,6 +878,174 @@ async function handleDirectoryUserSync(req, res) {
   }
 }
 
+function handleBillingPlans(_req, res) {
+  return sendApiSuccess(res, 200, {
+    plans: buildBillingPlansPayload(),
+  });
+}
+
+async function handleBillingStatus(_req, res, requestUrl) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable billing status checks.",
+      );
+    }
+
+    const userLookupValue = normalizeDisplayText(
+      requestUrl.searchParams.get("userId") ||
+        requestUrl.searchParams.get("user_id") ||
+        requestUrl.searchParams.get("loginId") ||
+        requestUrl.searchParams.get("login_id") ||
+        "",
+    ).trim();
+
+    if (!userLookupValue) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_billing_status_request",
+        "userId or loginId query parameter is required.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const user = await usersCollection.findOne(
+      buildActiveMongoUserLookupQuery(userLookupValue),
+      {
+        projection: {
+          _id: 1,
+          id: 1,
+          loginId: 1,
+          translationAccess: 1,
+        },
+      },
+    );
+
+    if (!user) {
+      return sendApiError(
+        res,
+        404,
+        "billing_user_not_found",
+        "The account could not be found.",
+      );
+    }
+
+    return sendApiSuccess(res, 200, {
+      userId: resolveMongoUserId(user),
+      loginId: String(user?.loginId || "").trim(),
+      translationAccess: sanitizeTranslationAccess(user?.translationAccess),
+      plans: buildBillingPlansPayload(),
+    });
+  } catch (error) {
+    console.error("[billing] status failed", {
+      error: String(error?.message || error || "billing_status_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "billing_status_failed",
+      "The billing status request could not be completed.",
+    );
+  }
+}
+
+async function handleBillingTesterCodeActivate(req, res) {
+  try {
+    if (!MONGODB_URI) {
+      return sendApiError(
+        res,
+        503,
+        "mongodb_not_configured",
+        "Set MONGODB_URI to enable tester code activation.",
+      );
+    }
+
+    const body = await readJsonBody(req);
+    const userLookupValue = normalizeDisplayText(
+      body?.userId || body?.loginId || "",
+    ).trim();
+    const code = normalizeTesterCode(body?.code || "");
+
+    if (!userLookupValue || !code) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_tester_code_request",
+        "userId or loginId, and code are required.",
+      );
+    }
+
+    if (!isValidTesterCode(code)) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_tester_code",
+        "The tester code is not valid.",
+      );
+    }
+
+    const usersCollection = await getMongoUsersCollection();
+    const user = await usersCollection.findOne(
+      buildActiveMongoUserLookupQuery(userLookupValue),
+    );
+
+    if (!user) {
+      return sendApiError(
+        res,
+        404,
+        "billing_user_not_found",
+        "The account could not be found.",
+      );
+    }
+
+    const now = Date.now();
+    const translationAccess = activateTesterCodeTranslationAccess(
+      sanitizeTranslationAccess(user?.translationAccess),
+      code,
+      now,
+    );
+
+    await usersCollection.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          translationAccess,
+          updatedAt: now,
+        },
+      },
+    );
+
+    const nextUser = {
+      ...user,
+      translationAccess,
+      updatedAt: now,
+    };
+
+    console.info("[billing] tester code activated", {
+      userId: resolveMongoUserId(user),
+      loginId: String(user?.loginId || "").trim(),
+    });
+
+    return sendApiSuccess(res, 200, {
+      user: sanitizeAuthUser(nextUser),
+    });
+  } catch (error) {
+    console.error("[billing] tester code activation failed", {
+      error: String(error?.message || error || "billing_tester_code_activation_failed"),
+    });
+    return sendApiError(
+      res,
+      500,
+      "billing_tester_code_activation_failed",
+      "The tester code could not be activated.",
+    );
+  }
+}
+
 async function handleAuthSignUp(req, res) {
   try {
     if (!MONGODB_URI) {
@@ -810,6 +1070,7 @@ async function handleAuthSignUp(req, res) {
     const preferredChatLanguage = ALLOWED_LANGUAGES.has(String(body?.preferredChatLanguage || "").trim())
       ? String(body.preferredChatLanguage).trim()
       : nativeLanguage;
+    const testerCode = normalizeTesterCode(body?.testerCode || "");
     const recoveryQuestionKey = RECOVERY_QUESTION_KEYS.includes(body?.recoveryQuestionKey)
       ? body.recoveryQuestionKey
       : getDeterministicRecoveryQuestionKey(name || loginId);
@@ -822,6 +1083,15 @@ async function handleAuthSignUp(req, res) {
         400,
         "invalid_signup_request",
         "loginId, name, and password are required.",
+      );
+    }
+
+    if (testerCode && !isValidTesterCode(testerCode)) {
+      return sendApiError(
+        res,
+        400,
+        "invalid_tester_code",
+        "The tester code is not valid.",
       );
     }
 
@@ -858,6 +1128,13 @@ async function handleAuthSignUp(req, res) {
       recoveryAnswerHash: recoveryAnswer ? hashSecret(recoveryAnswer) : null,
       passwordHash: hashSecret(password),
       passwordHashAlgorithm: "scrypt-v1",
+      translationAccess: testerCode
+        ? activateTesterCodeTranslationAccess(
+            createDefaultTranslationAccess(now),
+            testerCode,
+            now,
+          )
+        : createDefaultTranslationAccess(now),
       isDeleted: false,
       status: "active",
       createdAt: now,
@@ -2479,10 +2756,6 @@ function buildAndroidNativePushMessage(entry, payload) {
   const badgeCount = Math.max(0, Number(payload?.badgeCount || payload?.badge_count || 0) || 0);
   return {
     token: entry.token,
-    notification: {
-      title: notificationTitle,
-      body: notificationBody,
-    },
     data: normalizePushPayload({
       ...payload,
       title: notificationTitle,
@@ -2492,12 +2765,9 @@ function buildAndroidNativePushMessage(entry, payload) {
     android: {
       priority: "high",
       ttl: 60 * 60 * 1000,
-      notification: {
-        channelId: "transchat_default_notifications",
-        sound: "default",
-        defaultSound: true,
-        defaultVibrateTimings: true,
-        notificationCount: badgeCount > 0 ? badgeCount : undefined,
+      directBootOk: true,
+      data: {
+        badge_count: String(badgeCount),
       },
     },
   };
@@ -2836,19 +3106,31 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLa
     return cached;
   }
 
+  const useChunkedTranslation = shouldUseChunkedTranslation(text);
   let lastError = null;
   for (const modelName of modelCandidates) {
     try {
-      const outputText = await requestSingleOpenAITranslationFromModel({
-        modelName,
-        text,
-        sourceLanguage,
-        targetLanguage,
-        detectedLanguages,
-        translationConcept,
-        contextSummary,
-        participantContext,
-      });
+      const outputText = useChunkedTranslation
+        ? await requestChunkedOpenAITranslationFromModel({
+            modelName,
+            text,
+            sourceLanguage,
+            targetLanguage,
+            detectedLanguages,
+            translationConcept,
+            contextSummary,
+            participantContext,
+          })
+        : await requestSingleOpenAITranslationFromModel({
+            modelName,
+            text,
+            sourceLanguage,
+            targetLanguage,
+            detectedLanguages,
+            translationConcept,
+            contextSummary,
+            participantContext,
+          });
 
       if (shouldTryFallbackTranslationModel({ modelName, modelCandidates, sourceLanguage, targetLanguage, text, outputText })) {
         lastError = new Error("translation_fallback_requested");
@@ -2869,29 +3151,91 @@ async function requestSingleOpenAITranslation({ text, sourceLanguage, detectedLa
   throw lastError || new Error("translation_request_failed");
 }
 
-async function requestSingleOpenAITranslationFromModel({ modelName, text, sourceLanguage, targetLanguage, detectedLanguages = null, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "", participantContext = null }) {
-  const payload = {
-    model: modelName,
-    store: false,
-    reasoning: {
-      effort: OPENAI_TRANSLATION_REASONING_EFFORT,
-    },
-    max_output_tokens: estimateTranslationOutputTokens(text),
-    // Policy note: realtime translation sends message text to the configured OpenAI API endpoint only while live translation is enabled.
-    input: buildTranslationPrompt({
+function shouldUseChunkedTranslation(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return false;
+  const sentenceCount = countSentenceLikeBreaks(normalized);
+  const paragraphCount = countParagraphs(normalized);
+  return (
+    normalized.length >= 260 ||
+    sentenceCount >= 5 ||
+    paragraphCount >= 2
+  );
+}
+
+async function requestChunkedOpenAITranslationFromModel({
+  modelName,
+  text,
+  sourceLanguage,
+  targetLanguage,
+  detectedLanguages = null,
+  translationConcept = DEFAULT_TRANSLATION_CONCEPT,
+  contextSummary = "",
+  participantContext = null,
+}) {
+  const chunks = splitTranslationTextIntoChunks(text);
+  if (chunks.length <= 1) {
+    return requestSingleOpenAITranslationFromModel({
+      modelName,
       text,
       sourceLanguage,
-      detectedLanguages,
       targetLanguage,
+      detectedLanguages,
       translationConcept,
       contextSummary,
       participantContext,
-    }),
-  };
+    });
+  }
 
+  console.info("[translate] chunking long translation", {
+    modelName,
+    sourceLanguage,
+    targetLanguage,
+    sourceLength: String(text || "").length,
+    chunkCount: chunks.length,
+  });
+
+  const translatedChunks = await Promise.all(
+    chunks.map((chunk) =>
+      requestSingleOpenAITranslationFromModel({
+        modelName,
+        text: chunk.text,
+        sourceLanguage,
+        targetLanguage,
+        detectedLanguages,
+        translationConcept,
+        contextSummary,
+        participantContext,
+      })
+    )
+  );
+
+  return joinTranslatedChunks(chunks, translatedChunks);
+}
+
+async function requestSingleOpenAITranslationFromModel({ modelName, text, sourceLanguage, targetLanguage, detectedLanguages = null, translationConcept = DEFAULT_TRANSLATION_CONCEPT, contextSummary = "", participantContext = null }) {
   let lastError = null;
+  let maxOutputTokens = estimateTranslationOutputTokens(text);
   for (let attempt = 0; attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS; attempt += 1) {
     try {
+      const payload = {
+        model: modelName,
+        store: false,
+        reasoning: {
+          effort: OPENAI_TRANSLATION_REASONING_EFFORT,
+        },
+        max_output_tokens: maxOutputTokens,
+        // Policy note: realtime translation sends message text to the configured OpenAI API endpoint only while live translation is enabled.
+        input: buildTranslationPrompt({
+          text,
+          sourceLanguage,
+          detectedLanguages,
+          targetLanguage,
+          translationConcept,
+          contextSummary,
+          participantContext,
+        }),
+      };
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
@@ -2913,7 +3257,84 @@ async function requestSingleOpenAITranslationFromModel({ modelName, text, source
       }
 
       const data = await response.json();
-      return normalizeTranslatedText(extractResponseText(data), text, {
+      if (isTranslationResponseIncomplete(data)) {
+        const incompleteReason = String(
+          data?.incomplete_details?.reason || "response_incomplete",
+        ).trim();
+        const canExpandBudget = maxOutputTokens < 8192;
+        if (canExpandBudget) {
+          maxOutputTokens = Math.min(
+            8192,
+            Math.max(maxOutputTokens + 512, Math.ceil(maxOutputTokens * 1.8)),
+          );
+          lastError = new Error(
+            `translation_incomplete:${incompleteReason}`,
+          );
+          console.warn("[translate] incomplete response; retrying", {
+            modelName,
+            sourceLanguage,
+            targetLanguage,
+            attempt: attempt + 1,
+            nextMaxOutputTokens: maxOutputTokens,
+            incompleteReason,
+            length: String(text || "").length,
+          });
+          continue;
+        }
+      }
+      let extractedText = "";
+      try {
+        extractedText = extractResponseText(data);
+      } catch (error) {
+        lastError = error;
+        if (
+          attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS - 1 &&
+          shouldRetryTranslationError(error)
+        ) {
+          maxOutputTokens = Math.min(
+            8192,
+            Math.max(maxOutputTokens + 512, Math.ceil(maxOutputTokens * 1.45)),
+          );
+          console.warn("[translate] empty text output; retrying", {
+            modelName,
+            sourceLanguage,
+            targetLanguage,
+            attempt: attempt + 1,
+            nextMaxOutputTokens: maxOutputTokens,
+            length: String(text || "").length,
+          });
+          await delayTranslationRetry(attempt);
+          continue;
+        }
+        throw error;
+      }
+
+      if (
+        shouldRetrySuspiciousTranslationCompletion({
+          originalText: text,
+          translatedText: extractedText,
+        }) &&
+        attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS - 1
+      ) {
+        maxOutputTokens = Math.min(
+          8192,
+          Math.max(maxOutputTokens + 512, Math.ceil(maxOutputTokens * 1.45)),
+        );
+        lastError = new Error("translation_output_suspiciously_incomplete");
+        console.warn("[translate] suspiciously short/incomplete output; retrying", {
+          modelName,
+          sourceLanguage,
+          targetLanguage,
+          attempt: attempt + 1,
+          nextMaxOutputTokens: maxOutputTokens,
+          sourceLength: String(text || "").length,
+          outputLength: String(extractedText || "").length,
+        });
+        await delayTranslationRetry(attempt);
+        continue;
+      }
+
+      return normalizeTranslatedText(extractedText, text, {
         sourceLanguage,
         targetLanguage,
         detectedLanguages,
@@ -2974,6 +3395,9 @@ function shouldRetryTranslationError(error) {
   if (!message) return false;
   if (message.includes("invalid_api_key")) return false;
   if (message.includes("model_not_found") || message.includes("unsupported model") || message.includes("does not have access")) return false;
+  if (message.includes("no text output returned from responses api")) return true;
+  if (message.includes("translation_output_suspiciously_incomplete")) return true;
+  if (message.includes("translation_incomplete:")) return true;
   if (message.includes("openai api error")) {
     const match = message.match(/openai api error (\d+)/);
     return shouldRetryTranslationResponse(match?.[1]);
@@ -3114,6 +3538,7 @@ function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null
     "",
     "Rules:",
     "- Preserve the original meaning as closely as possible.",
+    "- Translate the entire message from start to finish. Never stop early, even if the source is long.",
     "- Do not omit names, vocatives, calling expressions, or emotional emphasis.",
     "- Ignore leading meta labels such as '번역본:', '원문:', 'reference:', or 'translation:' when deciding meaning; they are metadata, not the main sentence content.",
     "- Keep emphasis such as '꼭', '항상', '정말', '많이', and '절대' whenever the target language can express it naturally.",
@@ -3123,6 +3548,7 @@ function buildTranslationPrompt({ text, sourceLanguage, detectedLanguages = null
     "- Fidelity is more important than stylistic freedom.",
     "- Do not invent unstated quantities, containers, objects, or reasons. If the source stays unspecific, keep the translation equally unspecific.",
     "- Preserve URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
+    "- Preserve every paragraph and sentence. Do not summarize or compress long passages.",
     "- Treat any participant-role or pronoun facts in the context summary as fixed reference facts unless the current message clearly overrides them.",
     "- When Vietnamese subjects or pronouns are omitted or ambiguous, keep the established speaker/addressee roles from the context summary instead of re-guessing them.",
     "- Relationship tone affects warmth and register, but must not force extra pronouns, vocatives, or partner-role wording that the source text does not imply.",
@@ -3175,11 +3601,13 @@ function buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguag
     "Requirements:",
     "- Translate for the recipient, not as a literal gloss or teaching example.",
     "- If a literal rendering sounds translated, awkward, or over-explained, rewrite it into the closest idiomatic target-language expression with the same meaning, tone, and interpersonal nuance.",
+    "- Translate the complete source message from beginning to end. Never stop partway through a long message.",
     "- Preserve names, vocatives, calling expressions, emotional emphasis, and intensity markers whenever the target language can express them naturally.",
     "- Ignore leading meta labels such as 'translation:', 'translated:', 'reference:', or 'original:' when deciding meaning; they are metadata, not the main sentence content.",
     "- Do not omit or flatten affection, apology, teasing, comfort, hesitation, frustration, urgency, or reassurance.",
     "- Do not invent unstated facts, quantities, containers, objects, motives, or reasons. If the source stays unspecific, keep the translation equally unspecific.",
     "- Preserve URLs, emojis, @mentions, hashtags, punctuation, and line breaks.",
+    "- Preserve every paragraph and every sentence. Do not summarize, compress, or drop later paragraphs.",
     "- If the source leaves the subject, object, or relationship term implicit, preserve that natural implicitness whenever the target language allows it.",
     "- Do not force explicit pronouns, kinship terms, or partner-role wording when the target language sounds more natural without them.",
     "- Use participant profile hints only as soft guidance for honorific level, kinship pronouns, vocatives, and ambiguous subject/object resolution.",
@@ -3198,7 +3626,7 @@ function buildRecipientTranslationPrompt({ text, sourceLanguage, detectedLanguag
     contextSummary ? "Context summary (reference only for stable roles, names, relationship tone, and honorific consistency):" : "",
     contextSummary || "",
     "",
-    "Return only the final translated message.",
+    "Return only the final translated message, including all paragraphs from the source.",
     "No explanations, notes, labels, or alternatives.",
     "Message:",
     text,
@@ -3297,10 +3725,340 @@ function describeTranslationConcept(concept) {
   );
 }
 
+function splitTranslationTextIntoChunks(text, options = {}) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  if (!paragraphs.length) {
+    return [];
+  }
+
+  const chunks = [];
+  paragraphs.forEach((paragraph, paragraphIndex) => {
+    const paragraphChunks = splitParagraphForTranslation(paragraph, options);
+    paragraphChunks.forEach((chunkText, chunkIndex) => {
+      chunks.push({
+        text: chunkText,
+        joiner:
+          chunks.length === 0
+            ? ""
+            : chunkIndex === 0 && paragraphIndex > 0
+              ? "\n\n"
+              : " ",
+      });
+    });
+  });
+
+  return chunks;
+}
+
+function splitParagraphForTranslation(paragraph, { targetChars = 220, maxChars = 320 } = {}) {
+  const normalized = String(paragraph || "").trim();
+  if (!normalized) return [];
+
+  const units = splitParagraphIntoSentenceLikeUnits(normalized);
+  if (!units.length) {
+    return sliceTextByWordBoundaries(normalized, maxChars);
+  }
+
+  const chunks = [];
+  let currentChunk = "";
+  for (const unit of units) {
+    if (!unit) continue;
+    if (unit.length > maxChars) {
+      if (currentChunk) {
+        chunks.push(currentChunk);
+        currentChunk = "";
+      }
+      chunks.push(...sliceTextByWordBoundaries(unit, maxChars));
+      continue;
+    }
+
+    const candidate = currentChunk ? `${currentChunk} ${unit}` : unit;
+    if (candidate.length <= targetChars || !currentChunk) {
+      currentChunk = candidate;
+      continue;
+    }
+
+    chunks.push(currentChunk);
+    currentChunk = unit;
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+function splitParagraphIntoSentenceLikeUnits(paragraph) {
+  const normalized = String(paragraph || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const rawUnits = normalized
+    .split(/(?<=[.!?。！？])\s+|\n+/u)
+    .map((unit) => unit.trim())
+    .filter(Boolean);
+
+  if (rawUnits.length) {
+    return rawUnits;
+  }
+
+  return [normalized];
+}
+
+function sliceTextByWordBoundaries(text, maxChars = 320) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return [];
+  if (normalized.length <= maxChars) return [normalized];
+
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length <= 1) {
+    const slices = [];
+    for (let index = 0; index < normalized.length; index += maxChars) {
+      slices.push(normalized.slice(index, index + maxChars).trim());
+    }
+    return slices.filter(Boolean);
+  }
+
+  const chunks = [];
+  let currentChunk = "";
+  for (const word of words) {
+    if (word.length > maxChars) {
+      if (currentChunk) {
+        chunks.push(currentChunk);
+        currentChunk = "";
+      }
+      chunks.push(...sliceTextByWordBoundaries(word, maxChars));
+      continue;
+    }
+
+    const candidate = currentChunk ? `${currentChunk} ${word}` : word;
+    if (candidate.length <= maxChars || !currentChunk) {
+      currentChunk = candidate;
+      continue;
+    }
+
+    chunks.push(currentChunk);
+    currentChunk = word;
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+function joinTranslatedChunks(chunks, translatedChunks) {
+  return translatedChunks
+    .map((translatedChunk, index) => `${chunks[index]?.joiner || ""}${String(translatedChunk || "").trim()}`)
+    .join("")
+    .trim();
+}
+
+async function requestVocabularyExtraction({ text, meaningLanguage, maxCards }) {
+  const payload = {
+    model: OPENAI_MODEL,
+    store: false,
+    reasoning: {
+      effort: OPENAI_TRANSLATION_REASONING_EFFORT,
+    },
+    max_output_tokens: 2200,
+    input: buildVocabularyExtractionPrompt({
+      text,
+      meaningLanguage,
+      maxCards,
+    }),
+  };
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Vocabulary API error ${response.status}: ${detail.slice(0, 240)}`);
+  }
+
+  const data = await response.json();
+  const outputText = extractResponseText(data);
+  const parsed = parseJsonObjectFromModelText(outputText);
+  return sanitizeVocabularyCards(parsed?.cards, {
+    sourceText: text,
+    maxCards,
+  });
+}
+
+function buildVocabularyExtractionPrompt({ text, meaningLanguage, maxCards }) {
+  return [
+    "You create compact vocabulary flashcards from a private chat message.",
+    `Return up to ${maxCards} useful study words only.`,
+    `Write meanings and dictionary explanations in ${describeLanguage(meaningLanguage)}.`,
+    "",
+    "Part-of-speech choices are exactly: noun, verb, adjective, adverb.",
+    "Prefer content words that help a language learner understand the message.",
+    "Exclude names, particles, pronouns, filler sounds, URLs, and duplicate variants.",
+    "Analysis order is important:",
+    "1. Detect the message language and candidate study terms from the original text.",
+    "2. Decide each term's part of speech from its role in the original sentence context, not from spelling or translation alone.",
+    "3. Then write meanings, dictionaryMeaning, and example for the learner.",
+    "For inflected words, keep the term surface exactly as it appears in the message, but classify it by the lexical role used in context.",
+    "For each card, provide:",
+    "- term: the word or short expression exactly as it appears, without punctuation",
+    "- partOfSpeech: one of noun, verb, adjective, adverb",
+    "- meanings: one to three representative meanings",
+    "- dictionaryMeaning: one short dictionary-style explanation",
+    "- example: one short example sentence or phrase using the term",
+    "",
+    "Return strict JSON only with this schema:",
+    '{"cards":[{"term":"...","partOfSpeech":"noun","meanings":["..."],"dictionaryMeaning":"...","example":"..."}]}',
+    "",
+    "Message:",
+    text,
+  ].join("\n");
+}
+
+function parseJsonObjectFromModelText(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch (_) {
+    const match = trimmed.match(/\{[\s\S]*\}/);
+    if (!match) return {};
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return {};
+    }
+  }
+}
+
+function sanitizeVocabularyCards(cards, { sourceText, maxCards }) {
+  if (!Array.isArray(cards)) {
+    return [];
+  }
+
+  const seen = new Set();
+  return cards
+    .map((card) => sanitizeVocabularyCard(card, sourceText))
+    .filter(Boolean)
+    .filter((card) => {
+      const key = `${card.term.toLowerCase()}|${card.partOfSpeech}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, maxCards);
+}
+
+function sanitizeVocabularyCard(card, sourceText) {
+  if (!(card && typeof card === "object")) {
+    return null;
+  }
+
+  const term = normalizeVocabularyTerm(card?.term);
+  if (!term) {
+    return null;
+  }
+
+  const partOfSpeech = normalizeVocabularyPartOfSpeech(card?.partOfSpeech);
+  const meanings = Array.isArray(card?.meanings)
+    ? card.meanings.map((item) => normalizeDisplayText(item).trim()).filter(Boolean).slice(0, 3)
+    : [];
+  const dictionaryMeaning = normalizeDisplayText(card?.dictionaryMeaning || meanings.join(", ")).trim();
+  const example = normalizeDisplayText(card?.example || buildVocabularyExampleFallback(sourceText, term)).trim();
+
+  return {
+    term,
+    partOfSpeech,
+    meanings: meanings.length ? meanings : [dictionaryMeaning || term],
+    dictionaryMeaning: dictionaryMeaning || meanings.join(", ") || term,
+    example,
+  };
+}
+
+function normalizeVocabularyPartOfSpeech(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[\s_-]+/g, "");
+  if (["noun", "n", "명사", "danhtu"].includes(normalized)) {
+    return "noun";
+  }
+  if (["verb", "v", "동사", "dongtu"].includes(normalized)) {
+    return "verb";
+  }
+  if (
+    [
+      "adjective",
+      "adj",
+      "a",
+      "형용사",
+      "tinhtu",
+    ].includes(normalized)
+  ) {
+    return "adjective";
+  }
+  if (["adverb", "adv", "부사", "photu"].includes(normalized)) {
+    return "adverb";
+  }
+  return "noun";
+}
+
+function normalizeVocabularyTerm(value) {
+  return normalizeDisplayText(value || "")
+    .replace(/^[\s"'“”‘’.,!?;:()[\]{}<>]+|[\s"'“”‘’.,!?;:()[\]{}<>]+$/g, "")
+    .trim()
+    .slice(0, 60);
+}
+
+function buildVocabularyExampleFallback(sourceText, term) {
+  const normalizedTerm = String(term || "").toLowerCase();
+  const sentences = String(sourceText || "")
+    .split(/(?<=[.!?。！？])\s+|\n+/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return (
+    sentences.find((sentence) => sentence.toLowerCase().includes(normalizedTerm)) ||
+    String(sourceText || "").trim().slice(0, 120)
+  );
+}
+
 function estimateTranslationOutputTokens(text) {
-  const approximateInputTokens = Math.max(24, Math.ceil(String(text || "").length / 3));
-  const estimatedOutput = Math.ceil(approximateInputTokens * 2.6 + 96);
-  return Math.min(4096, Math.max(192, estimatedOutput));
+  const normalized = String(text || "");
+  const cjkCount = countMatches(normalized, /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/g);
+  const latinCount = countMatches(normalized, /[A-Za-zÀ-ỹ]/g);
+  const otherCount = Math.max(0, normalized.length - cjkCount - latinCount);
+  const approximateInputTokens = Math.max(
+    32,
+    Math.ceil(cjkCount / 1.45) +
+      Math.ceil(latinCount / 3.1) +
+      Math.ceil(otherCount / 2.2),
+  );
+  const estimatedOutput = Math.ceil(approximateInputTokens * 3.2 + 220);
+  return Math.min(8192, Math.max(320, estimatedOutput));
+}
+
+function isTranslationResponseIncomplete(data) {
+  return (
+    String(data?.status || "").trim().toLowerCase() === "incomplete" ||
+    Boolean(data?.incomplete_details?.reason)
+  );
 }
 
 function describeLanguage(code) {
@@ -3309,6 +4067,11 @@ function describeLanguage(code) {
       ko: "Korean",
       en: "English",
       vi: "Vietnamese",
+      ja: "Japanese",
+      zh: "Chinese",
+      fil: "Filipino",
+      ms: "Malay",
+      ru: "Russian",
     }[code] || code
   );
 }
@@ -3330,6 +4093,59 @@ function normalizeTranslatedText(outputText, originalText, options = {}) {
     normalized = normalizeKoreanVietnameseRoleArtifactsSafe(normalized, options);
   }
   return normalized;
+}
+
+function shouldRetrySuspiciousTranslationCompletion({
+  originalText,
+  translatedText,
+}) {
+  const source = String(originalText || "").trim();
+  const output = String(translatedText || "").trim();
+  if (!source || !output) return false;
+
+  const sourceSentenceCount = countSentenceLikeBreaks(source);
+  const outputSentenceCount = countSentenceLikeBreaks(output);
+  const sourceParagraphCount = countParagraphs(source);
+  const outputParagraphCount = countParagraphs(output);
+  const sourceLooksLong =
+    source.length >= 180 || sourceSentenceCount >= 3 || sourceParagraphCount >= 2;
+  if (!sourceLooksLong) {
+    return false;
+  }
+
+  const sourceEndsWithTerminalPunctuation = endsWithSentenceTerminal(source);
+  const outputEndsWithTerminalPunctuation = endsWithSentenceTerminal(output);
+  const abruptEnding =
+    sourceEndsWithTerminalPunctuation &&
+    !outputEndsWithTerminalPunctuation &&
+    /[\p{L}\p{M}\p{N}]$/u.test(output);
+  const missingParagraphs =
+    sourceParagraphCount >= 2 && outputParagraphCount < sourceParagraphCount;
+  const sentenceGap =
+    sourceSentenceCount >= 3 && outputSentenceCount + 1 < sourceSentenceCount;
+  const majorSentenceDrop =
+    sourceSentenceCount >= 5 && outputSentenceCount < Math.ceil(sourceSentenceCount * 0.6);
+  const majorLengthDrop =
+    source.length >= 260 && output.length < Math.ceil(source.length * 0.45);
+
+  return abruptEnding || missingParagraphs || sentenceGap || majorSentenceDrop || majorLengthDrop;
+}
+
+function countSentenceLikeBreaks(value) {
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  return countMatches(text, /[.!?。！？]+(?:["'”’)\]]+)?|\n{2,}/g);
+}
+
+function countParagraphs(value) {
+  return String(value || "")
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean).length;
+}
+
+function endsWithSentenceTerminal(value) {
+  return /[.!?。！？](?:["'”’)\]]+)?\s*$/u.test(String(value || "").trim());
 }
 
 function normalizeVietnameseFamilySpeakerLabels(outputText, options = {}) {
@@ -3583,7 +4399,19 @@ function sanitizeSharedState(state) {
       joinedAt: Number(user?.joinedAt || user?.createdAt || Date.now()),
       lastSeenAt: Number(user?.lastSeenAt || user?.lastLoginAt || user?.joinedAt || user?.createdAt || Date.now()),
       lastLoginAt: Number(user?.lastLoginAt || 0) || null,
-      loginState: user?.loginState === "online" ? "online" : "offline",
+      loginState:
+        user?.loginState === "online" ||
+        user?.presenceStatus === "online" ||
+        user?.presenceStatus === "inRoom" ||
+        (typeof user?.currentRoomId === "string" && user.currentRoomId.trim())
+          ? "online"
+          : "offline",
+      presenceStatus:
+        typeof user?.presenceStatus === "string" && user.presenceStatus.trim()
+          ? user.presenceStatus.trim()
+          : (typeof user?.currentRoomId === "string" && user.currentRoomId.trim())
+            ? "inRoom"
+            : "offline",
       hasUnreadInvites: Boolean(user?.hasUnreadInvites),
       hasUnreadMessages: Boolean(user?.hasUnreadMessages),
     }));
@@ -4008,6 +4836,207 @@ function sanitizeDirectoryUserDocument(value) {
   };
 }
 
+function buildBillingPlansPayload() {
+  return {
+    publicTestMode: true,
+    purchaseEnabled: false,
+    translationLimitEnforced: false,
+    usageTrackingEnabled: true,
+    free: {
+      planTier: "free",
+      dailyTranslations: BILLING_FREE_DAILY_TRANSLATIONS,
+    },
+    premiumMonthly: {
+      planTier: "premiumMonthly",
+      monthlyPriceVatIncludedKrw: BILLING_PREMIUM_MONTHLY_PRICE_VAT_INCLUDED_KRW,
+      monthlyPriceVatExcludedKrw: BILLING_PREMIUM_MONTHLY_PRICE_VAT_EXCLUDED_KRW,
+      vatRate: BILLING_VAT_RATE,
+      targetMarginRateExVat: BILLING_TARGET_MARGIN_RATE_EX_VAT,
+      standardUnitCharacters: BILLING_STANDARD_TRANSLATION_UNIT_CHARACTERS,
+      premiumDailySoftLimitUnits: BILLING_PREMIUM_DAILY_SOFT_LIMIT_UNITS,
+      premiumMonthlySoftLimitUnits: BILLING_PREMIUM_MONTHLY_SOFT_LIMIT_UNITS,
+      productId: BILLING_PREMIUM_PRODUCT_ID,
+      marketedAsUnlimited: true,
+    },
+    tester: {
+      testerCodeEnabled: true,
+      testerAccessDays: BILLING_TESTER_ACCESS_DAYS,
+    },
+  };
+}
+
+function normalizeTesterCode(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidTesterCode(code) {
+  return normalizeTesterCode(code) === BILLING_TESTER_CODE;
+}
+
+function createDefaultTranslationAccess(now = Date.now()) {
+  return {
+    planTier: "free",
+    subscriptionStatus: "inactive",
+    purchaseUiEnabled: true,
+    purchaseEnabled: false,
+    translationLimitEnforced: false,
+    usageTrackingEnabled: true,
+    freeDailyTranslations: BILLING_FREE_DAILY_TRANSLATIONS,
+    monthlyPriceVatIncludedKrw: BILLING_PREMIUM_MONTHLY_PRICE_VAT_INCLUDED_KRW,
+    monthlyPriceVatExcludedKrw: BILLING_PREMIUM_MONTHLY_PRICE_VAT_EXCLUDED_KRW,
+    vatRate: BILLING_VAT_RATE,
+    targetMarginRate: BILLING_TARGET_MARGIN_RATE_EX_VAT,
+    standardUnitCharacters: BILLING_STANDARD_TRANSLATION_UNIT_CHARACTERS,
+    premiumDailySoftLimitUnits: BILLING_PREMIUM_DAILY_SOFT_LIMIT_UNITS,
+    premiumMonthlySoftLimitUnits: BILLING_PREMIUM_MONTHLY_SOFT_LIMIT_UNITS,
+    dailyUsedUnits: 0,
+    monthlyUsedUnits: 0,
+    dailyWindowKey: "",
+    monthlyWindowKey: "",
+    subscriptionProductId: BILLING_PREMIUM_PRODUCT_ID,
+    testerCode: "",
+    testerActivatedAt: null,
+    testerAccessUntil: null,
+    subscriptionActivatedAt: null,
+    subscriptionExpiresAt: null,
+    lastStatusUpdatedAt: now,
+  };
+}
+
+function activateTesterCodeTranslationAccess(currentAccess, code, now = Date.now()) {
+  return sanitizeTranslationAccess({
+    ...createDefaultTranslationAccess(now),
+    ...sanitizeTranslationAccess(currentAccess, { now }),
+    planTier: "tester",
+    testerCode: normalizeTesterCode(code),
+    testerActivatedAt: now,
+    testerAccessUntil: now + BILLING_TESTER_ACCESS_DAYS * 24 * 60 * 60 * 1000,
+    lastStatusUpdatedAt: now,
+  }, { now });
+}
+
+function sanitizeTranslationAccess(value, { now = Date.now() } = {}) {
+  const base = createDefaultTranslationAccess(now);
+  const source = value && typeof value === "object" ? value : {};
+  const testerAccessUntil = readOptionalTimestamp(source?.testerAccessUntil);
+  const subscriptionExpiresAt = readOptionalTimestamp(source?.subscriptionExpiresAt);
+  const testerAccessActive = testerAccessUntil != null && testerAccessUntil > now;
+  const subscriptionStatus = normalizeSubscriptionStatus(source?.subscriptionStatus);
+  const premiumAccessActive =
+    (subscriptionStatus === "active" || subscriptionStatus === "grace") &&
+    (subscriptionExpiresAt == null || subscriptionExpiresAt > now);
+
+  return {
+    ...base,
+    purchaseUiEnabled: readBoolean(source?.purchaseUiEnabled, true),
+    purchaseEnabled: readBoolean(source?.purchaseEnabled, false),
+    translationLimitEnforced: readBoolean(
+      source?.translationLimitEnforced,
+      false,
+    ),
+    usageTrackingEnabled: readBoolean(source?.usageTrackingEnabled, true),
+    freeDailyTranslations: readPositiveInteger(
+      source?.freeDailyTranslations,
+      base.freeDailyTranslations,
+    ),
+    monthlyPriceVatIncludedKrw: readPositiveInteger(
+      source?.monthlyPriceVatIncludedKrw,
+      base.monthlyPriceVatIncludedKrw,
+    ),
+    monthlyPriceVatExcludedKrw: readPositiveInteger(
+      source?.monthlyPriceVatExcludedKrw,
+      base.monthlyPriceVatExcludedKrw,
+    ),
+    vatRate: readPositiveNumber(source?.vatRate, base.vatRate),
+    targetMarginRate: readPositiveNumber(
+      source?.targetMarginRate,
+      base.targetMarginRate,
+    ),
+    standardUnitCharacters: readPositiveInteger(
+      source?.standardUnitCharacters,
+      base.standardUnitCharacters,
+    ),
+    premiumDailySoftLimitUnits: readPositiveInteger(
+      source?.premiumDailySoftLimitUnits,
+      base.premiumDailySoftLimitUnits,
+    ),
+    premiumMonthlySoftLimitUnits: readPositiveInteger(
+      source?.premiumMonthlySoftLimitUnits,
+      base.premiumMonthlySoftLimitUnits,
+    ),
+    dailyUsedUnits: readPositiveInteger(source?.dailyUsedUnits, 0),
+    monthlyUsedUnits: readPositiveInteger(source?.monthlyUsedUnits, 0),
+    dailyWindowKey: String(source?.dailyWindowKey || "").trim(),
+    monthlyWindowKey: String(source?.monthlyWindowKey || "").trim(),
+    subscriptionProductId:
+      String(source?.subscriptionProductId || BILLING_PREMIUM_PRODUCT_ID).trim() ||
+      BILLING_PREMIUM_PRODUCT_ID,
+    testerCode: String(source?.testerCode || "").trim(),
+    testerActivatedAt: readOptionalTimestamp(source?.testerActivatedAt),
+    testerAccessUntil,
+    subscriptionActivatedAt: readOptionalTimestamp(
+      source?.subscriptionActivatedAt,
+    ),
+    subscriptionExpiresAt,
+    subscriptionStatus,
+    planTier: testerAccessActive
+      ? "tester"
+      : premiumAccessActive
+        ? "premiumMonthly"
+        : "free",
+    lastStatusUpdatedAt:
+      readOptionalTimestamp(source?.lastStatusUpdatedAt) || now,
+  };
+}
+
+function normalizeSubscriptionStatus(value) {
+  const normalized = String(value || "").trim();
+  return [
+    "inactive",
+    "pending",
+    "active",
+    "grace",
+    "canceled",
+    "expired",
+  ].includes(normalized)
+    ? normalized
+    : "inactive";
+}
+
+function readOptionalTimestamp(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+}
+
+function readPositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+function readPositiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readBoolean(value, fallback) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return fallback;
+}
+
 function sanitizeAuthUser(user) {
   const id = resolveMongoUserId(user);
   return {
@@ -4028,6 +5057,7 @@ function sanitizeAuthUser(user) {
     lastLoginAt: Number(user?.lastLoginAt || 0) || null,
     currentRoomId: typeof user?.currentRoomId === "string" ? user.currentRoomId : null,
     isAdmin: Boolean(user?.isAdmin),
+    translationAccess: sanitizeTranslationAccess(user?.translationAccess),
     recoveryQuestionKey: RECOVERY_QUESTION_KEYS.includes(user?.recoveryQuestionKey)
       ? user.recoveryQuestionKey
       : getDeterministicRecoveryQuestionKey(user?.name || user?.loginId),
@@ -4102,26 +5132,118 @@ function normalizeBlockedUserIds(user) {
   );
 }
 
-function sanitizeDiscoverableUser(user) {
+function getActivePresenceSignal(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) {
+    return null;
+  }
+
+  const signal = presenceSignals.get(normalizedUserId);
+  if (!signal) {
+    return null;
+  }
+
+  if (!signal.expiresAt || signal.expiresAt <= Date.now()) {
+    presenceSignals.delete(normalizedUserId);
+    return null;
+  }
+
+  return signal;
+}
+
+function applyPresenceSignalToUser(user) {
   const id = resolveMongoUserId(user);
+  if (!id) {
+    return user;
+  }
+
+  const signal = getActivePresenceSignal(id);
+  const baseLastSeenAt =
+    Number(user?.lastSeenAt || user?.lastLoginAt || user?.joinedAt || user?.createdAt || Date.now()) ||
+    Date.now();
+
+  if (!signal) {
+    const currentRoomId =
+      user?.loginState === "online" && typeof user?.currentRoomId === "string" && user.currentRoomId.trim()
+        ? user.currentRoomId.trim()
+        : null;
+    const loginState = user?.loginState === "online" ? "online" : "offline";
+    return {
+      ...user,
+      lastSeenAt: baseLastSeenAt,
+      currentRoomId: loginState === "online" ? currentRoomId : null,
+      loginState,
+      presenceStatus: loginState !== "online"
+        ? "offline"
+        : currentRoomId
+          ? "inRoom"
+          : "online",
+    };
+  }
+
+  const loginState = signal.loginState === "online" ? "online" : "offline";
+  const currentRoomId =
+    loginState === "online" && typeof signal.currentRoomId === "string" && signal.currentRoomId.trim()
+      ? signal.currentRoomId.trim()
+      : null;
+
+  return {
+    ...user,
+    lastSeenAt: Math.max(baseLastSeenAt, Number(signal.lastSeenAt || 0) || Date.now()),
+    currentRoomId,
+    loginState,
+    presenceStatus: loginState !== "online"
+      ? "offline"
+      : currentRoomId
+        ? "inRoom"
+        : "online",
+  };
+}
+
+function buildReadableServerState(state) {
+  const nextUsers = (state?.users || []).map((user) => applyPresenceSignalToUser(user));
+  return {
+    ...(state || {}),
+    users: nextUsers,
+    presences: nextUsers.map((user) => ({
+      userId: user.id,
+      status: user.presenceStatus || "offline",
+      lastSeenAt: Number(user.lastSeenAt || Date.now()) || Date.now(),
+      currentRoomId: typeof user.currentRoomId === "string" && user.currentRoomId.trim()
+        ? user.currentRoomId.trim()
+        : null,
+      recentSeenThresholdMinutes: 60,
+    })),
+  };
+}
+
+function sanitizeDiscoverableUser(user) {
+  const userWithPresence = applyPresenceSignalToUser(user);
+  const id = resolveMongoUserId(userWithPresence);
   if (!id) {
     return null;
   }
 
   return {
     id,
-    loginId: String(user?.loginId || "").trim(),
-    name: normalizeDisplayText(user?.name || user?.loginId || "").trim(),
-    nickname: normalizeDisplayText(user?.nickname || "").trim(),
-    nativeLanguage: String(user?.nativeLanguage || "").trim() || "ko",
-    uiLanguage: String(user?.uiLanguage || "").trim() || "ko",
+    loginId: String(userWithPresence?.loginId || "").trim(),
+    name: normalizeDisplayText(userWithPresence?.name || userWithPresence?.loginId || "").trim(),
+    nickname: normalizeDisplayText(userWithPresence?.nickname || "").trim(),
+    nativeLanguage: String(userWithPresence?.nativeLanguage || "").trim() || "ko",
+    uiLanguage: String(userWithPresence?.uiLanguage || "").trim() || "ko",
     preferredChatLanguage:
-      String(user?.preferredChatLanguage || "").trim() ||
-      String(user?.nativeLanguage || "").trim() ||
+      String(userWithPresence?.preferredChatLanguage || "").trim() ||
+      String(userWithPresence?.nativeLanguage || "").trim() ||
       "ko",
-    profileImage: sanitizeProfileImageSummary(user?.profileImage),
-    joinedAt: Number(user?.joinedAt || 0) || null,
-    lastSeenAt: Number(user?.lastSeenAt || 0) || null,
+    profileImage: sanitizeProfileImageSummary(userWithPresence?.profileImage),
+    joinedAt: Number(userWithPresence?.joinedAt || 0) || null,
+    lastSeenAt: Number(userWithPresence?.lastSeenAt || 0) || null,
+    currentRoomId:
+      typeof userWithPresence?.currentRoomId === "string" && userWithPresence.currentRoomId.trim()
+        ? userWithPresence.currentRoomId.trim()
+        : null,
+    loginState: userWithPresence?.loginState === "online" ? "online" : "offline",
+    presenceStatus: String(userWithPresence?.presenceStatus || "offline").trim() || "offline",
   };
 }
 
