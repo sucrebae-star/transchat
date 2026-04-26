@@ -2104,10 +2104,23 @@ function mergeRooms(previousRooms, nextRooms, deletedRooms = {}) {
     const next = nextById.get(id);
     if (!previous) return next;
     if (!next) return previous;
+    const nextParticipantIds = Array.isArray(next.participantIds)
+      ? next.participantIds
+      : Array.isArray(next.participants)
+        ? next.participants
+        : null;
+    const previousParticipantIds = Array.isArray(previous.participantIds)
+      ? previous.participantIds
+      : Array.isArray(previous.participants)
+        ? previous.participants
+        : [];
+    const participantIds = nextParticipantIds || previousParticipantIds;
 
     return {
       ...previous,
       ...next,
+      participantIds,
+      participants: participantIds,
       messages: mergeMessages(previous.messages || [], next.messages || []),
       unreadByUser: {
         ...(previous.unreadByUser || {}),
@@ -2120,6 +2133,10 @@ function mergeRooms(previousRooms, nextRooms, deletedRooms = {}) {
       mutedByUserId: {
         ...(previous.mutedByUserId || previous.mutedByUser || {}),
         ...(next.mutedByUserId || next.mutedByUser || {}),
+      },
+      hiddenByUserId: {
+        ...(previous.hiddenByUserId || previous.hiddenByUser || previous.leftByUserId || {}),
+        ...(next.hiddenByUserId || next.hiddenByUser || next.leftByUserId || {}),
       },
       lastMessageAt: Math.max(Number(previous.lastMessageAt || 0), Number(next.lastMessageAt || 0)),
       createdAt: Math.min(Number(previous.createdAt || Date.now()), Number(next.createdAt || Date.now())),
@@ -2556,6 +2573,128 @@ function getUserDisplayLanguage(user, fallbackLanguage = "ko") {
   return normalizeMessageLanguageCode(user?.motherLanguage || user?.nativeLanguage || user?.preferredChatLanguage, fallbackLanguage);
 }
 
+function getUserUiLanguage(user, fallbackLanguage = "ko") {
+  const code = String(user?.uiLanguage || user?.ui_language || user?.interfaceLanguage || "").trim();
+  return ALLOWED_LANGUAGES.has(code) ? code : fallbackLanguage;
+}
+
+const PUSH_TEXT = {
+  ko: {
+    newMessage: "새 메시지",
+    newInvite: "새 초대",
+    unknownUser: "알 수 없는 사용자",
+    translating: "번역중..",
+    image: "사진을 보냈어요",
+    video: "영상을 보냈어요",
+    file: "파일을 보냈어요",
+    messageArrived: "새 메시지가 도착했어요",
+    inviteArrived: "새 초대 알림입니다.",
+    systemMessage: "새 메시지 알림입니다.",
+    inviteBody: "{name}님이 채팅 초대를 보냈어요",
+  },
+  en: {
+    newMessage: "New message",
+    newInvite: "New invite",
+    unknownUser: "Unknown user",
+    translating: "Translating...",
+    image: "Sent a photo",
+    video: "Sent a video",
+    file: "Sent a file",
+    messageArrived: "A new message arrived",
+    inviteArrived: "New invite notification",
+    systemMessage: "New message notification",
+    inviteBody: "{name} sent you a chat invite",
+  },
+  vi: {
+    newMessage: "Tin nhan moi",
+    newInvite: "Loi moi moi",
+    unknownUser: "Nguoi dung khong xac dinh",
+    translating: "Dang dich...",
+    image: "Da gui anh",
+    video: "Da gui video",
+    file: "Da gui tep",
+    messageArrived: "Ban co tin nhan moi",
+    inviteArrived: "Thong bao loi moi moi",
+    systemMessage: "Thong bao tin nhan moi",
+    inviteBody: "{name} da gui loi moi chat cho ban",
+  },
+  ja: {
+    newMessage: "新しいメッセージ",
+    newInvite: "新しい招待",
+    unknownUser: "不明なユーザー",
+    translating: "翻訳中...",
+    image: "写真を送信しました",
+    video: "動画を送信しました",
+    file: "ファイルを送信しました",
+    messageArrived: "新しいメッセージが届きました",
+    inviteArrived: "新しい招待のお知らせ",
+    systemMessage: "新しいメッセージのお知らせ",
+    inviteBody: "{name}さんがチャットに招待しました",
+  },
+  zh: {
+    newMessage: "新消息",
+    newInvite: "新邀请",
+    unknownUser: "未知用户",
+    translating: "正在翻译...",
+    image: "发送了一张照片",
+    video: "发送了一个视频",
+    file: "发送了一个文件",
+    messageArrived: "收到一条新消息",
+    inviteArrived: "新的邀请通知",
+    systemMessage: "新消息通知",
+    inviteBody: "{name} 向你发送了聊天邀请",
+  },
+  fil: {
+    newMessage: "Bagong mensahe",
+    newInvite: "Bagong imbitasyon",
+    unknownUser: "Hindi kilalang user",
+    translating: "Isinasalin...",
+    image: "Nagpadala ng larawan",
+    video: "Nagpadala ng video",
+    file: "Nagpadala ng file",
+    messageArrived: "May bagong mensahe",
+    inviteArrived: "Bagong imbitasyon",
+    systemMessage: "Bagong mensahe",
+    inviteBody: "Nagpadala si {name} ng imbitasyon sa chat",
+  },
+  ms: {
+    newMessage: "Mesej baharu",
+    newInvite: "Jemputan baharu",
+    unknownUser: "Pengguna tidak diketahui",
+    translating: "Menterjemah...",
+    image: "Menghantar foto",
+    video: "Menghantar video",
+    file: "Menghantar fail",
+    messageArrived: "Mesej baharu diterima",
+    inviteArrived: "Pemberitahuan jemputan baharu",
+    systemMessage: "Pemberitahuan mesej baharu",
+    inviteBody: "{name} menghantar jemputan sembang",
+  },
+  ru: {
+    newMessage: "Новое сообщение",
+    newInvite: "Новое приглашение",
+    unknownUser: "Неизвестный пользователь",
+    translating: "Переводим...",
+    image: "Отправил(а) фото",
+    video: "Отправил(а) видео",
+    file: "Отправил(а) файл",
+    messageArrived: "Пришло новое сообщение",
+    inviteArrived: "Новое приглашение",
+    systemMessage: "Уведомление о новом сообщении",
+    inviteBody: "{name} отправил(а) приглашение в чат",
+  },
+};
+
+function pushText(user, key, params = {}) {
+  const language = getUserUiLanguage(user, "ko");
+  const dictionary = PUSH_TEXT[language] || PUSH_TEXT.en || PUSH_TEXT.ko;
+  let value = dictionary[key] || PUSH_TEXT.en?.[key] || PUSH_TEXT.ko?.[key] || key;
+  Object.entries(params || {}).forEach(([paramKey, paramValue]) => {
+    value = value.replaceAll(`{${paramKey}}`, String(paramValue ?? ""));
+  });
+  return value;
+}
+
 function findStoredTranslationTextForLanguage(message, language) {
   const baseLanguage = getTranslationVariantLanguage(language);
   if (!baseLanguage) return "";
@@ -2583,12 +2722,12 @@ function buildPushMessagePreviewForUser(message, recipientUser) {
   if (originalText && recipientLanguage === sourceLanguage && !mixedLanguageInput) {
     return originalText.length > 80 ? `${originalText.slice(0, 77)}...` : originalText;
   }
-  if (originalText) return "번역중..";
+  if (originalText) return pushText(recipientUser, "translating");
   const mediaKind = getPushMediaKind(message);
-  if (mediaKind === "image") return "사진을 보냈어요";
-  if (mediaKind === "video") return "영상을 보냈어요";
-  if (mediaKind === "file") return "파일을 보냈어요";
-  return "새 메시지가 도착했어요";
+  if (mediaKind === "image") return pushText(recipientUser, "image");
+  if (mediaKind === "video") return pushText(recipientUser, "video");
+  if (mediaKind === "file") return pushText(recipientUser, "file");
+  return pushText(recipientUser, "messageArrived");
 }
 
 function isRoomPushMutedForUser(room, userId) {
@@ -2639,6 +2778,7 @@ function getPushInviteForUser(userId) {
 
 function buildPushPayloadSnapshot(userId, type) {
   const now = Date.now();
+  const user = (serverState?.users || []).find((entry) => entry.id === userId);
   if (type === "invite") {
     const invite = getPushInviteForUser(userId);
     return {
@@ -2646,10 +2786,10 @@ function buildPushPayloadSnapshot(userId, type) {
       inviteId: invite?.id || `invite-${now}`,
       senderId: "system",
       senderName: "TRANSCHAT",
-      previewText: invite?.previewRoomTitle || "새 초대 알림입니다.",
+      previewText: invite?.previewRoomTitle || pushText(user, "inviteArrived"),
       createdAt: now,
-      title: "새 초대",
-      body: "TRANSCHAT님이 채팅 초대를 보냈어요",
+      title: pushText(user, "newInvite"),
+      body: pushText(user, "inviteBody", { name: "TRANSCHAT" }),
       tag: invite?.id ? `invite:${invite.id}` : `invite:${userId}`,
       clickPath: "/?pushType=invite",
     };
@@ -2661,10 +2801,10 @@ function buildPushPayloadSnapshot(userId, type) {
     roomId: room?.id || "",
     senderId: "system",
     senderName: "TRANSCHAT",
-    previewText: "새 메시지 알림입니다.",
+    previewText: pushText(user, "systemMessage"),
     createdAt: now,
-    title: "새 메시지",
-    body: "TRANSCHAT: 새 메시지 알림입니다.",
+    title: pushText(user, "newMessage"),
+    body: `TRANSCHAT: ${pushText(user, "systemMessage")}`,
     tag: room?.id ? `room:${room.id}` : `room:${userId}`,
     clickPath: room?.id ? `/?pushType=message&roomId=${encodeURIComponent(room.id)}` : "/",
   };
@@ -2809,6 +2949,9 @@ function computeUserUnreadBadgeCount(state, userId) {
   return Math.max(
     0,
     (state?.rooms || []).reduce((total, room) => {
+      if (room?.hiddenByUserId?.[userId] || room?.hiddenByUser?.[userId] || room?.leftByUserId?.[userId]) {
+        return total;
+      }
       const nextTotal = total + Math.max(0, Number(room?.unreadCountByUserId?.[userId] || 0) || 0);
       return nextTotal;
     }, 0),
@@ -2876,16 +3019,17 @@ async function dispatchPushNotifications(previousState, nextState) {
         });
         const previewText = buildPushMessagePreviewForUser(event.message, recipient);
         const badgeCount = computeUserUnreadBadgeCount(nextState, recipientId);
+        const senderName = sender?.name || sender?.loginId || pushText(recipient, "unknownUser");
         await sendPushToUser(recipientId, {
           type: "message",
           roomId: event.room.id,
           senderId: event.message.senderId,
-          senderName: sender?.name || sender?.loginId || "알 수 없는 사용자",
+          senderName,
           previewText,
           badgeCount,
           createdAt: event.message.createdAt,
-          title: "새 메시지",
-          body: `${sender?.name || sender?.loginId || "알 수 없는 사용자"}: ${previewText}`,
+          title: pushText(recipient, "newMessage"),
+          body: `${senderName}: ${previewText}`,
           tag: `room:${event.room.id}`,
           clickPath: `/?pushType=message&roomId=${encodeURIComponent(event.room.id)}`,
         });
@@ -2900,16 +3044,18 @@ async function dispatchPushNotifications(previousState, nextState) {
         inviteeId: invite.inviteeId,
         tokenCount: getPushTokensForUser(invite.inviteeId).length,
       });
+      const invitee = (nextState?.users || []).find((user) => user.id === invite.inviteeId);
+      const inviterName = inviter?.name || inviter?.loginId || pushText(invitee, "unknownUser");
       await sendPushToUser(invite.inviteeId, {
         type: "invite",
         inviteId: invite.id,
         senderId: invite.inviterId,
-        senderName: inviter?.name || inviter?.loginId || "알 수 없는 사용자",
+        senderName: inviterName,
         previewText: invite.previewRoomTitle || "",
         badgeCount,
         createdAt: invite.createdAt,
-        title: "새 초대",
-        body: `${inviter?.name || inviter?.loginId || "알 수 없는 사용자"}님이 채팅 초대를 보냈어요`,
+        title: pushText(invitee, "newInvite"),
+        body: pushText(invitee, "inviteBody", { name: inviterName }),
         tag: `invite:${invite.id}`,
         clickPath: "/?pushType=invite",
       });
@@ -4536,6 +4682,7 @@ function sanitizeSharedState(state) {
       return {
         ...room,
         title: normalizeDisplayText(room.title),
+        participantIds: participants,
         disableExpiration: ROOM_AUTO_EXPIRATION_ENABLED ? persistent : true,
         status: !ROOM_AUTO_EXPIRATION_ENABLED || (persistent && room.status === "expired") ? "active" : room.status,
         expiredAt: ROOM_AUTO_EXPIRATION_ENABLED && !persistent ? room.expiredAt || null : null,
@@ -4543,6 +4690,7 @@ function sanitizeSharedState(state) {
         accessByUser: filterRecordByAllowedKeys(room.accessByUser, userIds),
         unreadByUser: filterRecordByAllowedKeys(room.unreadByUser, userIds),
         mutedByUserId: filterRecordByAllowedKeys(room.mutedByUserId || room.mutedByUser, userIds),
+        hiddenByUserId: filterRecordByAllowedKeys(room.hiddenByUserId || room.hiddenByUser || room.leftByUserId, userIds),
         messages: (room.messages || []).map((message) => sanitizeMessageState(message, userIds)),
       };
     });
@@ -4608,14 +4756,17 @@ function filterRecordByAllowedKeys(record, allowedIds) {
 
 function deriveRoomParticipantIds(room, users = []) {
   const userIds = new Set((users || []).map((user) => user.id));
-  const roomParticipantIds = Array.isArray(room?.participants)
-    ? room.participants
-    : Array.isArray(room?.participantIds)
-      ? room.participantIds
+  const hiddenByUserId = room?.hiddenByUserId || room?.hiddenByUser || room?.leftByUserId || {};
+  const roomParticipantIds = Array.isArray(room?.participantIds)
+    ? room.participantIds
+    : Array.isArray(room?.participants)
+      ? room.participants
       : [];
-  const participantIds = new Set(roomParticipantIds.filter((participantId) => userIds.has(participantId)));
+  const participantIds = new Set(
+    roomParticipantIds.filter((participantId) => userIds.has(participantId) && !hiddenByUserId?.[participantId])
+  );
   (users || []).forEach((user) => {
-    if (user?.currentRoomId === room?.id && userIds.has(user.id)) {
+    if (user?.currentRoomId === room?.id && userIds.has(user.id) && !hiddenByUserId?.[user.id]) {
       participantIds.add(user.id);
     }
   });
