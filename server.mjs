@@ -590,7 +590,7 @@ async function handleVocabularyExtract(req, res) {
     )
       ? String(body?.meaningLanguage || body?.meaning_language).trim()
       : "ko";
-    const maxCards = Math.max(4, Math.min(32, Number(body?.maxCards || body?.max_cards || 12) || 12));
+    const maxCards = Math.max(4, Math.min(80, Number(body?.maxCards || body?.max_cards || 12) || 12));
     const knownTerms = sanitizeVocabularyKnownTerms(body?.knownTerms || body?.known_terms);
 
     if (!text) {
@@ -3915,7 +3915,7 @@ function sanitizeVocabularyKnownTerms(value) {
 
 async function requestVocabularyExtraction({ text, meaningLanguage, maxCards, knownTerms = [] }) {
   let lastError = null;
-  let maxOutputTokens = 2600;
+  let maxOutputTokens = Math.min(12000, Math.max(3200, maxCards * 220));
   for (let attempt = 0; attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS; attempt += 1) {
     try {
       const payload = {
@@ -3956,7 +3956,7 @@ async function requestVocabularyExtraction({ text, meaningLanguage, maxCards, kn
       const data = await response.json();
       if (isTranslationResponseIncomplete(data) && attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS - 1) {
         const incompleteReason = String(data?.incomplete_details?.reason || "response_incomplete").trim();
-        maxOutputTokens = Math.min(8192, Math.max(maxOutputTokens + 512, Math.ceil(maxOutputTokens * 1.6)));
+        maxOutputTokens = Math.min(16000, Math.max(maxOutputTokens + 1024, Math.ceil(maxOutputTokens * 1.6)));
         lastError = new Error(`vocabulary_incomplete:${incompleteReason}`);
         console.warn("[vocabulary] incomplete response; retrying", {
           attempt: attempt + 1,
@@ -3982,7 +3982,7 @@ async function requestVocabularyExtraction({ text, meaningLanguage, maxCards, kn
       if (attempt >= OPENAI_TRANSLATION_MAX_ATTEMPTS - 1 || !shouldRetryVocabularyError(error)) {
         break;
       }
-      maxOutputTokens = Math.min(8192, Math.max(maxOutputTokens + 512, Math.ceil(maxOutputTokens * 1.35)));
+      maxOutputTokens = Math.min(16000, Math.max(maxOutputTokens + 1024, Math.ceil(maxOutputTokens * 1.35)));
       await delayTranslationRetry(attempt);
     }
   }
@@ -4001,6 +4001,7 @@ function buildVocabularyExtractionPrompt({ text, meaningLanguage, maxCards, know
   return [
     "You create compact vocabulary flashcards from a private chat message.",
     `Return up to ${maxCards} useful study words.`,
+    "For long messages, continue until all useful eligible terms are covered or the maxCards limit is reached.",
     `Write meanings and dictionary explanations in ${describeLanguage(meaningLanguage)}.`,
     "",
     "Part-of-speech choices are exactly: noun, verb, adjective, adverb.",
