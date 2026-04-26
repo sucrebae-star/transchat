@@ -590,7 +590,8 @@ async function handleVocabularyExtract(req, res) {
     )
       ? String(body?.meaningLanguage || body?.meaning_language).trim()
       : "ko";
-    const maxCards = Math.max(4, Math.min(18, Number(body?.maxCards || body?.max_cards || 12) || 12));
+    const maxCards = Math.max(4, Math.min(32, Number(body?.maxCards || body?.max_cards || 12) || 12));
+    const knownTerms = sanitizeVocabularyKnownTerms(body?.knownTerms || body?.known_terms);
 
     if (!text) {
       return sendApiError(
@@ -605,6 +606,7 @@ async function handleVocabularyExtract(req, res) {
       text,
       meaningLanguage,
       maxCards,
+      knownTerms,
     });
 
     return sendApiSuccess(res, 200, {
@@ -3862,7 +3864,30 @@ function joinTranslatedChunks(chunks, translatedChunks) {
     .trim();
 }
 
-async function requestVocabularyExtraction({ text, meaningLanguage, maxCards }) {
+function sanitizeVocabularyKnownTerms(value) {
+  const rawTerms = Array.isArray(value)
+    ? value
+    : String(value || "")
+        .split(",")
+        .map((item) => item.trim());
+  const seen = new Set();
+  const terms = [];
+  for (const rawTerm of rawTerms) {
+    const term = normalizeVocabularyTerm(rawTerm);
+    const key = term.toLowerCase();
+    if (term.length < 2 || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    terms.push(term);
+    if (terms.length >= 80) {
+      break;
+    }
+  }
+  return terms;
+}
+
+async function requestVocabularyExtraction({ text, meaningLanguage, maxCards, knownTerms = [] }) {
   let lastError = null;
   let maxOutputTokens = 2600;
   for (let attempt = 0; attempt < OPENAI_TRANSLATION_MAX_ATTEMPTS; attempt += 1) {
@@ -3878,6 +3903,7 @@ async function requestVocabularyExtraction({ text, meaningLanguage, maxCards }) 
           text,
           meaningLanguage,
           maxCards,
+          knownTerms,
         }),
       };
 
@@ -3938,13 +3964,21 @@ async function requestVocabularyExtraction({ text, meaningLanguage, maxCards }) 
   throw lastError || new Error("vocabulary_extract_failed");
 }
 
-function buildVocabularyExtractionPrompt({ text, meaningLanguage, maxCards }) {
+function buildVocabularyExtractionPrompt({ text, meaningLanguage, maxCards, knownTerms = [] }) {
+  const knownTermBlock = knownTerms.length
+    ? [
+        "",
+        "Already saved study terms on this device. Do not return these again unless the same surface form is clearly used with a different part of speech in this message:",
+        knownTerms.join(", "),
+      ]
+    : [];
   return [
     "You create compact vocabulary flashcards from a private chat message.",
-    `Return up to ${maxCards} useful study words only.`,
+    `Return up to ${maxCards} useful study words.`,
     `Write meanings and dictionary explanations in ${describeLanguage(meaningLanguage)}.`,
     "",
     "Part-of-speech choices are exactly: noun, verb, adjective, adverb.",
+    "Cover as many eligible nouns, verbs, adjectives, and adverbs from the message as possible, especially for short stories or study text.",
     "Prefer content words that help a language learner understand the message.",
     "Exclude names, particles, pronouns, filler sounds, URLs, and duplicate variants.",
     "Analysis order is important:",
@@ -3961,6 +3995,7 @@ function buildVocabularyExtractionPrompt({ text, meaningLanguage, maxCards }) {
     "",
     "Return strict JSON only with this schema:",
     '{"cards":[{"term":"...","partOfSpeech":"noun","meanings":["..."],"dictionaryMeaning":"...","example":"..."}]}',
+    ...knownTermBlock,
     "",
     "Message:",
     text,
